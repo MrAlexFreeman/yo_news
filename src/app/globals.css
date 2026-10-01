@@ -1,0 +1,177 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-ink: #0d1014;
+  --color-ink-soft: #3f4750;
+  --color-paper: #fbfaf7;
+  --color-paper-dim: #f2efe9;
+  --color-rule: #ddd8ce;
+  --color-accent: #b3271f;
+  --color-accent-ink: #8d1e18;
+
+  /* «Ё-новости» brand accents.
+     `--color-yo` is the display orange for large text only, `--color-yo-ink` the
+     darker tone that passes contrast on small text, `--color-yo-dot` the amber
+     indicator dots (decorative), `--color-live-ink` the readable badge red. */
+  --color-yo: #e8590c;
+  --color-yo-ink: #9a3412;
+  --color-yo-dot: #f59e0b;
+  --color-live: #e11d48;
+  --color-live-ink: #be123c;
+
+  --font-serif-news: var(--font-lora), Georgia, "Times New Roman", serif;
+}
+
+:root {
+  --background: var(--color-paper);
+  --foreground: var(--color-ink);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "liga" 1;
+}
+
+/* Newspaper masthead: a tight, letter-spaced serif wordmark. */
+.masthead {
+  font-family: var(--font-lora), Georgia, serif;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1;
+}
+
+/* The diaeresis of the logotype Ё is amber, the letter body orange.
+   A gradient clipped to the glyph avoids absolutely positioning two dots over
+   font metrics, and it scales with any font size. */
+.logo-yo {
+  background-image: linear-gradient(
+    to bottom,
+    var(--color-yo-dot) 0%,
+    var(--color-yo-dot) 24%,
+    var(--color-yo) 24%,
+    var(--color-yo) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Fallback for engines without background-clip: text — the letter stays
+   orange and loses only the two-tone treatment. */
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .logo-yo {
+    background: none;
+    color: var(--color-yo);
+  }
+}
+
+/* Pulsing "on air" dot next to the live badge in the header. */
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(225 29 72 / 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 0.5rem rgb(225 29 72 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(225 29 72 / 0);
+  }
+}
+
+.live-dot {
+  animation: live-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+  }
+}
+
+/* Thin horizontal rule used to separate newspaper blocks. */
+.news-rule {
+  border-color: var(--color-rule);
+}
+
+/* Article body typography. The admin editor emits plain block HTML, so the
+   prose plugin carries the hierarchy; these rules tighten it for a newspaper. */
+.article-body {
+  --tw-prose-body: var(--color-ink-soft);
+  --tw-prose-headings: var(--color-ink);
+  --tw-prose-links: var(--color-accent-ink);
+  --tw-prose-bold: var(--color-ink);
+  --tw-prose-quotes: var(--color-ink);
+  --tw-prose-quote-borders: var(--color-accent);
+  --tw-prose-counters: var(--color-accent);
+  --tw-prose-bullets: var(--color-accent);
+  --tw-prose-hr: var(--color-rule);
+  --tw-prose-quotes: var(--color-ink);
+  --tw-prose-captions: var(--color-ink-soft);
+}
+
+.article-body p:first-of-type::first-letter {
+  /* Drop cap on the lead paragraph, newspaper style. */
+  float: left;
+  font-family: var(--font-lora), Georgia, serif;
+  font-size: 3.4em;
+  line-height: 0.82;
+  font-weight: 700;
+  padding-right: 0.08em;
+  padding-top: 0.06em;
+  color: var(--color-accent);
+}
+
+.article-body blockquote {
+  font-family: var(--font-lora), Georgia, serif;
+  font-style: normal;
+}
+
+.article-body figure figcaption {
+  font-family: var(--font-inter), sans-serif;
+  font-size: 0.8125rem;
+}
+
+/* Ticker strip in the header. */
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.ticker-track {
+  animation: ticker-scroll 45s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track {
+    animation: none;
+  }
+}
+
+/* Clamp helpers keep card grids from stretching on very long headlines. */
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

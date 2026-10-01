@@ -1,0 +1,46 @@
+// Prisma schema — SQLite (dev.db)
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// SQLite has no native enum type, so `status` is a String constrained in app
+// code by the `ArticleStatus` union (see src/lib/article-status.ts).
+model Article {
+  id          String    @id @default(cuid())
+  title       String
+  subtitle    String?
+  slug        String    @unique
+  lead        String?
+  contentHtml String
+  coverImage  String?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryId  String?
+  // Distribution flags from the editorial sidebar.
+  isDzen      Boolean   @default(true)
+  isVk        Boolean   @default(true)
+  isExclusive Boolean   @default(false)
+  is18plus    Boolean   @default(false)
+  // "draft" | "published"
+  status      String    @default("draft")
+  views       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  publishedAt DateTime?
+
+  @@index([status, publishedAt])
+  @@index([categoryId])
+}
+
+model Category {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  slug     String    @unique
+  articles Article[]
+}
