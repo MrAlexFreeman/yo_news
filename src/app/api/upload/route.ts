@@ -4,18 +4,18 @@ import path from "node:path";
 
 import { NextResponse } from "next/server";
 
+import { UPLOAD_DIR } from "@/lib/upload-dir";
+
 /**
  * Local media upload for the editorial CMS.
  *
- * Files land in `public/uploads/` and are served from there as static assets,
- * which keeps the publish flow dependency-free for a single-node deployment.
- * For a multi-instance setup this has to become object storage — see the
- * handover notes.
+ * Files are written outside `public/` and served by the /uploads/[...path]
+ * route handler — Next snapshots `public/` at boot and would never serve a file
+ * created afterwards. For a single-node deployment this keeps the publish flow
+ * dependency-free; a multi-instance setup needs object storage instead.
  */
 
 export const runtime = "nodejs";
-
-const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads");
 
 /** Only real raster images; SVG is excluded because it can carry script. */
 const ALLOWED_TYPES: Record<string, string> = {

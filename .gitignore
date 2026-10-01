@@ -19,6 +19,7 @@
 
 # editor uploads are user content, not repository assets
 /public/uploads/
+/uploads/
 
 # tooling files created by `prisma init` (agent skills, not project sources)
 .agents/
