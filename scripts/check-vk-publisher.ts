@@ -142,6 +142,26 @@ async function main() {
     calls[0]?.params.owner_id === "-123456",
     `owner_id=${calls[0]?.params.owner_id}`,
   );
+
+  // Editors routinely paste the club URL instead of the bare id.
+  process.env.VK_COMMUNITY_ID = "https://vk.ru/club241944021";
+  calls = stubVk({});
+  await publishArticleToVk({ title: "Из URL", slug: "from-url" });
+  check(
+    "owner_id: извлекается из URL сообщества",
+    calls[0]?.params.owner_id === "-241944021",
+    `owner_id=${calls[0]?.params.owner_id}`,
+  );
+
+  process.env.VK_COMMUNITY_ID = "public241944021";
+  calls = stubVk({});
+  await publishArticleToVk({ title: "Из slug", slug: "from-slug" });
+  check(
+    "owner_id: извлекается из public-slug",
+    calls[0]?.params.owner_id === "-241944021",
+    `owner_id=${calls[0]?.params.owner_id}`,
+  );
+
   process.env.VK_COMMUNITY_ID = "-123456";
 
   // --- post with cover image -------------------------------------------
