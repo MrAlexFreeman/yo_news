@@ -8,11 +8,12 @@ import {
   VK_COMMUNITY_URL,
 } from "@/lib/site";
 
+// The CMS lives behind /admin and is deliberately absent here: a reader should
+// not be offered a link to the editorial desk.
 const NAV_LINKS = [
   { href: "/", label: "Главная" },
   { href: "/category/tech", label: "Технологии" },
   { href: "/about", label: "О редакции" },
-  { href: "/admin/articles", label: "Редакция" },
 ];
 
 const LEGAL_LINKS = [

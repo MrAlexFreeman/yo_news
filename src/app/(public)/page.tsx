@@ -1,5 +1,3 @@
-import Link from "next/link";
-
 import { ArticleCard } from "@/components/article-card";
 import { Logo } from "@/components/logo";
 import { NewsTicker } from "@/components/news-ticker";
@@ -67,12 +65,6 @@ export default async function HomePage() {
                 Опубликованных материалов пока нет. Они появятся здесь сразу
                 после публикации в редакции.
               </p>
-              <Link
-                href="/admin/articles/new"
-                className="mt-4 inline-block rounded-sm bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-ink"
-              >
-                Создать первый материал
-              </Link>
             </div>
           )}
         </div>

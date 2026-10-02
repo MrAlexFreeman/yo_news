@@ -1,4 +1,4 @@
-import { Search, Settings } from "lucide-react";
+import { Search } from "lucide-react";
 import Link from "next/link";
 
 import { LiveDateline } from "@/components/live-dateline";
@@ -75,7 +75,10 @@ export function PublicHeader({ categories, now }: PublicHeaderProps) {
             Прямой эфир
           </span>
 
-          <nav aria-label="Служебные разделы" className="flex items-center gap-1">
+          {/* No link to /admin: the CMS is for editors, not readers. It stays
+              reachable by typing the path, and Basic Auth in src/proxy.ts is the
+              actual gate. */}
+          <nav aria-label="Поиск по сайту">
             <Link
               href="/search"
               aria-label="Поиск"
@@ -83,15 +86,6 @@ export function PublicHeader({ categories, now }: PublicHeaderProps) {
               className="rounded-full p-2 text-ink-soft transition-colors hover:bg-paper-dim hover:text-ink"
             >
               <Search className="size-5" aria-hidden />
-            </Link>
-            <Link
-              href="/admin/articles"
-              aria-label="Редакция"
-              title="Редакция"
-              className="flex items-center gap-1.5 rounded-full border border-neutral-300 px-3 py-2 text-xs font-medium text-ink-soft transition-colors hover:border-ink hover:bg-ink hover:text-paper"
-            >
-              <Settings className="size-4" aria-hidden />
-              <span className="hidden sm:inline">Редакция</span>
             </Link>
           </nav>
         </div>
