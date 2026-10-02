@@ -84,6 +84,21 @@ type FeedArticle = Prisma.ArticleGetPayload<{
   };
 }>;
 
+/**
+ * MIME type for the enclosure, derived from the stored URL.
+ *
+ * Hardcoding image/jpeg was fine while every cover was a picsum JPEG. The demo
+ * covers are PNG and editors can upload WebP, and Dzen uses this attribute to
+ * decide how to fetch the file, so it has to follow the actual format.
+ */
+function coverMimeType(url: string): string {
+  const path = url.split("?")[0].split("#")[0].toLowerCase();
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".webp")) return "image/webp";
+  if (path.endsWith(".gif")) return "image/gif";
+  return "image/jpeg";
+}
+
 function renderItem(article: FeedArticle, base: string): string {
   const link = `${base}/news/${article.slug}`;
   const date = article.publishedAt ?? article.createdAt;
@@ -102,8 +117,16 @@ function renderItem(article: FeedArticle, base: string): string {
   }
 
   if (article.coverImage) {
+    // coverImage may be stored as a site-relative path (/uploads/x.png) when the
+    // editor used the upload endpoint, so it needs the same absolutising as the
+    // item link. RSS requires an absolute URI here and Dzen refuses to fetch a
+    // relative one.
+    const enclosure = /^https?:\/\//i.test(article.coverImage)
+      ? article.coverImage
+      : `${base}${article.coverImage.startsWith("/") ? "" : "/"}${article.coverImage}`;
+
     parts.push(
-      `      <enclosure url="${escapeXml(article.coverImage)}" type="image/jpeg" length="0" />`,
+      `      <enclosure url="${escapeXml(enclosure)}" type="${coverMimeType(article.coverImage)}" length="0" />`,
     );
   }
 

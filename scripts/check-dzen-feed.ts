@@ -145,6 +145,33 @@ async function main() {
     links[0] ?? "нет ссылок",
   );
 
+  // The cover was the one URL in the feed that was never absolutised, so it
+  // stayed valid only for as long as every cover happened to be a remote URL.
+  const enclosures = items
+    .map((i) => i.querySelector("enclosure"))
+    .filter((e): e is Element => e !== null);
+  const enclosureUrls = enclosures.map((e) => e.getAttribute("url") ?? "");
+  check(
+    "Enclosure: присутствует и абсолютный",
+    enclosureUrls.length > 0 && enclosureUrls.every((u) => u.startsWith("http")),
+    enclosureUrls[0] ?? "нет enclosure",
+  );
+
+  const enclosureTypes = enclosures.map((e) => e.getAttribute("type") ?? "");
+  check(
+    "Enclosure: type соответствует расширению",
+    enclosureUrls.length > 0 &&
+      enclosureUrls.every((url, i) => {
+        const wanted = url.split("?")[0].toLowerCase().endsWith(".png")
+          ? "image/png"
+          : url.split("?")[0].toLowerCase().endsWith(".webp")
+            ? "image/webp"
+            : "image/jpeg";
+        return enclosureTypes[i] === wanted;
+      }),
+    `${enclosureTypes[0] ?? "нет"} для ${enclosureUrls[0] ?? "нет enclosure"}`,
+  );
+
   console.log(`Лента: ${FEED_URL}\n`);
   for (const { name, ok, detail } of checks) {
     console.log(`${ok ? "OK  " : "FAIL"} ${name} — ${detail}`);
