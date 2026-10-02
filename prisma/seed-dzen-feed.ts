@@ -5,6 +5,7 @@
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 import { PrismaClient } from "../src/generated/prisma/client";
+import { absoluteUrl } from "../src/lib/site";
 
 const prisma = new PrismaClient({
   adapter: new PrismaBetterSqlite3({
@@ -33,10 +34,12 @@ const SAMPLES: Sample[] = [
     lead: 'Проверка экранирования: < > & " \' и CDATA с ]]> внутри.',
     contentHtml:
       "<p>Текст с &lt;script&gt;alert(1)&lt;/script&gt; и кавычками.</p><p>Секция CDATA ]]> продолжается.</p>",
-    // picsum.photos rather than example.com/cover.jpg: the fixture must keep
-    // the <enclosure> branch of the feed exercised without leaving a broken
-    // image and a 404 in the server log on every page view.
-    coverImage: "https://picsum.photos/seed/vestnik-dzen/960/640",
+    // An absolute https URL so the <enclosure> branch of the feed is exercised.
+// Pointed at our own bundled placeholder rather than picsum.photos: that used to
+// be justified as "no broken image, no 404 in the log", but the VPS gets a 403
+// from picsum, which is the same broken cover by a different name. The feed
+// checker only cares that the URL is absolute.
+coverImage: absoluteUrl("/placeholder.png"),
     isDzen: true,
     status: "published",
     hoursAgo: 1,

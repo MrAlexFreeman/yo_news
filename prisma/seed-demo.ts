@@ -2,9 +2,14 @@
  * Fills the database with realistic demo material so the public pages have a
  * newspaper-shaped dataset to render. Run with: npm run db:seed:demo
  */
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 import { PrismaClient } from "../src/generated/prisma/client";
+import { UPLOAD_DIR } from "../src/lib/upload-dir";
+import { coverFileName, renderCoverPng } from "./cover-art";
 
 const prisma = new PrismaClient({
   adapter: new PrismaBetterSqlite3({
@@ -14,10 +19,18 @@ const prisma = new PrismaClient({
 
 const HOUR = 60 * 60 * 1000;
 
-/** Deterministic pseudo-random so re-seeding does not shuffle the front page. */
-function cover(seed: string): string {
-  const hash = [...seed].reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return `https://picsum.photos/seed/vestnik${hash % 400}/960/640`;
+/**
+ * Cover art for a demo story, written into UPLOAD_DIR and referenced locally.
+ *
+ * This used to return a picsum.photos URL. That shipped broken: the VPS gets a
+ * 403 from picsum, the optimiser forwards the 403, and the front page rendered
+ * broken-image icons. Generating the art keeps `db:seed:demo` hermetic — no
+ * network, same bytes on every machine.
+ */
+function cover(slug: string): string {
+  const file = coverFileName(slug);
+  writeFileSync(path.join(UPLOAD_DIR, file), renderCoverPng(slug));
+  return `/uploads/${file}`;
 }
 
 type Demo = {
@@ -281,6 +294,11 @@ const DEMOS: Demo[] = [
 ];
 
 async function main() {
+  // The uploads directory is outside public/ and is not in version control, so a
+  // fresh checkout or a wiped deploy volume has to have it created before the
+  // covers below are written.
+  mkdirSync(UPLOAD_DIR, { recursive: true });
+
   const categories = await prisma.category.findMany({
     select: { id: true, name: true, slug: true },
   });
@@ -315,14 +333,18 @@ async function main() {
     // `category` is a slug here but a relation in the schema, so it is pulled
     // out of the spread and passed as categoryId.
     const { hoursAgo, body, category, ...rest } = demo;
+    const coverImage = cover(demo.slug);
     await prisma.article.upsert({
       where: { slug: demo.slug },
-      update: {},
+      // Re-run the cover rewrite on every seed: the artwork lives outside the
+      // database, so converging it is what makes the fixture reproducible after
+      // a schema change, a new palette, or a half-finished previous run.
+      update: { coverImage },
       create: {
         ...rest,
         subtitle: rest.subtitle ?? null,
         contentHtml: body.trim(),
-        coverImage: cover(demo.slug),
+        coverImage,
         status: "published",
         publishedAt: new Date(now - hoursAgo * HOUR),
         categoryId: bySlug.get(category) ?? null,
