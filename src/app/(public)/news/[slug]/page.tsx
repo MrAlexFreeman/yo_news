@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 
 import { ArticleCard } from "@/components/article-card";
+import { CoverImage } from "@/components/cover-image";
 import { ViewCounter } from "@/components/view-counter";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
@@ -184,8 +184,9 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         <figure className="mt-6">
           {/* Goes through next/image like every other cover on the site, so the
               CDN optimises it and the layout keeps its aspect ratio before the
-              bytes arrive. */}
-          <Image
+              bytes arrive. CoverImage swaps in the bundled placeholder if the
+              stored URL fails, which a server render cannot detect. */}
+          <CoverImage
             src={article.coverImage}
             alt={article.title}
             width={1200}

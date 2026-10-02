@@ -1,6 +1,6 @@
-import Image from "next/image";
 import Link from "next/link";
 
+import { CoverImage } from "@/components/cover-image";
 import type { ArticleListItem } from "@/lib/public-queries";
 import { formatDate, formatTime } from "@/lib/date";
 import { SITE_SHORT_NAME } from "@/lib/site";
@@ -77,15 +77,14 @@ function Cover({
 }) {
   if (article.coverImage) {
     return (
-      <Image
+      <CoverImage
         src={article.coverImage}
         alt=""
-        fill
         sizes={sizes}
         // Next 16 deprecated `priority`; `preload` is the replacement and is
         // only correct for the single LCP candidate on the page.
         preload={preload}
-        className={cn("object-cover", className)}
+        className={className}
       />
     );
   }
