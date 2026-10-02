@@ -162,6 +162,27 @@ async function main() {
     `owner_id=${calls[0]?.params.owner_id}`,
   );
 
+  // A community renamed to a custom short name has a URL with no digits in it.
+  // This is the value the deployment actually ships, so it must not degrade into
+  // owner_id="-https://vk.ru/eartnews".
+  process.env.VK_COMMUNITY_ID = "https://vk.ru/eartnews";
+  calls = stubVk({});
+  await publishArticleToVk({ title: "Из кастомного слага", slug: "custom-slug" });
+  check(
+    "owner_id: кастомный слаг из URL -> -public<slug>",
+    calls[0]?.params.owner_id === "-publiceartnews",
+    `owner_id=${calls[0]?.params.owner_id}`,
+  );
+
+  process.env.VK_COMMUNITY_ID = "eartnews";
+  calls = stubVk({});
+  await publishArticleToVk({ title: "Голый слаг", slug: "bare-slug" });
+  check(
+    "owner_id: голый слаг без URL -> -public<slug>",
+    calls[0]?.params.owner_id === "-publiceartnews",
+    `owner_id=${calls[0]?.params.owner_id}`,
+  );
+
   process.env.VK_COMMUNITY_ID = "-123456";
 
   // --- post with cover image -------------------------------------------

@@ -23,7 +23,15 @@ export const SITE_SHORT_NAME = "Ё";
 export const RSS_CHANNEL_TITLE = "Ё-новости";
 export const RSS_CHANNEL_DESCRIPTION = SITE_TAGLINE_LONG;
 
-export const VK_COMMUNITY_URL = "https://vk.com";
+/**
+ * Official VK community link, rendered in the footer.
+ *
+ * Overridable through NEXT_PUBLIC_VK_URL so the same deployed build can follow a
+ * renamed community without a code change. The fallback is the exact address, not
+ * a bare vk.com — a generic link points readers at VK's homepage rather than at us.
+ */
+export const VK_COMMUNITY_URL =
+  process.env.NEXT_PUBLIC_VK_URL?.trim() || "https://vk.ru/eartnews";
 
 /** Builds an absolute URL from a site-relative path. */
 export function absoluteUrl(path: string): string {

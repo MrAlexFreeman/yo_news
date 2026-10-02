@@ -42,23 +42,38 @@ function siteUrl(): string {
  * VK accepts the group id with or without the leading minus, but the `owner_id`
  * parameter always needs the negative form.
  *
- * The value is commonly pasted as a club URL ("https://vk.ru/club241944021")
- * rather than the bare id, so extract the trailing number from any of: the URL,
- * a "public241944021" style slug, "-241944021" or "241944021". Returning a
- * malformed owner_id otherwise makes every wall.post fail with an opaque API
- * error that looks like a token problem.
+ * Editors paste whatever the address bar shows, so all of these have to work:
+ *
+ *   "-241944021"                    -> -241944021
+ *   "241944021"                     -> -241944021
+ *   "https://vk.ru/club241944021"   -> -241944021
+ *   "public241944021"               -> -241944021
+ *   "https://vk.ru/eartnews"        -> -publiceartnews
+ *
+ * The last case is a custom short name rather than a number: VK addresses those
+ * as "public" + the slug. Falling through to a raw concatenation would send
+ * owner_id="-https://vk.ru/eartnews", which fails every wall.post with an opaque
+ * API error that reads like a token problem.
  */
 function ownerId(): string {
   const raw = process.env.VK_COMMUNITY_ID?.trim() ?? "";
 
-  const fromUrl = raw.match(/club(\d+)/i);
-  if (fromUrl) return `-${fromUrl[1]}`;
+  // Reduce a full URL to its last path segment, so "https://vk.ru/eartnews" and a
+  // bare "eartnews" take the same branch. A bare id has no separator and is
+  // already its own segment.
+  const segment = raw.split(/[/?#]/).filter(Boolean).pop() ?? "";
 
-  const fromPublic = raw.match(/^public(\d+)$/i);
+  const fromClub = segment.match(/^club(\d+)$/i);
+  if (fromClub) return `-${fromClub[1]}`;
+
+  const fromPublic = segment.match(/^public(\d+)$/i);
   if (fromPublic) return `-${fromPublic[1]}`;
 
-  const digits = raw.replace(/^-/, "");
-  return /^\d+$/.test(digits) ? `-${digits}` : `-${raw}`;
+  if (/^-?\d+$/.test(segment)) return `-${segment.replace(/^-/, "")}`;
+
+  if (/^[a-z][a-z0-9_.]*$/i.test(segment)) return `-public${segment}`;
+
+  return `-${raw}`;
 }
 
 function accessToken(): string {
