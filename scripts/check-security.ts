@@ -2,7 +2,9 @@
  * Checks the XSS sanitiser, upload validation, the view counter route and the
  * admin auth gate. Run with: npm run checks:security (needs a dev server).
  */
+import { normalizeArticleHtml } from "../src/lib/article-html";
 import { sanitizeArticleHtml } from "../src/lib/sanitize";
+import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
@@ -62,17 +64,136 @@ function checkSanitizer() {
   }
 }
 
+/**
+ * Paragraph and line-break handling, plus the video embed allowlist.
+ *
+ * Both are security-adjacent: the first because it rewrites editor input before
+ * it is stored, the second because allowing <iframe> at all widens the XSS
+ * surface and has to be narrowed back to known video hosts.
+ */
+function checkArticleHtml() {
+  // --- plain text becomes paragraphs ------------------------------------
+  // A blank line is a paragraph break; a single newline is a line break inside
+  // one, so both have to survive.
+  const plain = normalizeArticleHtml("Первый абзац.\n\nВторой абзац.");
+  check(
+    "Абзац из пустой строки",
+    (plain.match(/<p>/g) ?? []).length === 2,
+    plain,
+  );
+
+  const oneBreak = normalizeArticleHtml("Строка один\nстрока два");
+  check(
+    "Перенос строки → <br />",
+    oneBreak.includes("<br />") && (oneBreak.match(/<p>/g) ?? []).length === 1,
+    oneBreak,
+  );
+
+  // The regression that matters visually: a newline the editor typed between two
+  // block tags is formatting whitespace and must not become a line break.
+  const between = normalizeArticleHtml("<p>Готовый абзац</p>\n<h2>Подзаголовок</h2>");
+  check(
+    "Перенос между блоками не даёт <br />",
+    !between.includes("<br />") &&
+      between === "<p>Готовый абзац</p><h2>Подзаголовок</h2>",
+    between,
+  );
+
+  const codeKept = normalizeArticleHtml("До\n<pre><code>line1\nline2</code></pre>\nПосле");
+  check(
+    "Переносы внутри <pre> не трогаются",
+    codeKept.includes("<code>line1\nline2</code>"),
+    codeKept.replace(/\n/g, "\\n").slice(0, 90),
+  );
+
+  // --- video embeds ------------------------------------------------------
+  const youtube = buildVideoEmbed("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+  check(
+    "YouTube → embed iframe",
+    Boolean(youtube?.includes("youtube.com/embed/dQw4w9WgXcQ")),
+    youtube?.slice(0, 80) ?? "null",
+  );
+  check(
+    "YouTube-embed переживает санитайзер",
+    sanitizeArticleHtml(youtube ?? "").includes("youtube.com/embed"),
+    "проверено",
+  );
+
+  const rutube = buildVideoEmbed("https://rutube.ru/video/abc123def456/");
+  check(
+    "Rutube → embed iframe",
+    Boolean(rutube?.includes("rutube.ru/play/embed/abc123def456")),
+    rutube?.slice(0, 80) ?? "null",
+  );
+
+  const vk = buildVideoEmbed("https://vk.com/video-241944021_456239021");
+  check(
+    "VK Видео → embed iframe",
+    Boolean(vk?.includes("oid=") && vk.includes("id=")),
+    vk?.slice(0, 90) ?? "null",
+  );
+
+  check(
+    "Ссылка не на видео отклоняется",
+    buildVideoEmbed("https://example.com/watch") === null,
+    "null",
+  );
+  check(
+    "http (не https) отклоняется",
+    !isAllowedVideoEmbed("http://www.youtube.com/embed/abc"),
+    "http не принимается",
+  );
+  check(
+    "iframe на чужой домен вырезается",
+    !sanitizeArticleHtml(
+      '<iframe src="https://evil.test/x"></iframe>',
+    ).includes("evil.test"),
+    "evil.test отсутствует",
+  );
+  check(
+    "iframe без src вырезается",
+    !sanitizeArticleHtml("<iframe></iframe>").includes("<iframe"),
+    "пустой iframe удалён",
+  );
+}
+
 async function main() {
   checkSanitizer();
+  checkArticleHtml();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
+
+  // /api/upload now sits behind the same Basic Auth as /admin, so every upload
+  // assertion has to carry credentials.
+  const auth = `Basic ${Buffer.from(
+    `${process.env.ADMIN_USER}:${process.env.ADMIN_PASSWORD}`,
+  ).toString("base64")}`;
+
   const post = (body: FormData) =>
-    fetch(`${base}/api/upload`, { method: "POST", body });
+    fetch(`${base}/api/upload`, {
+      method: "POST",
+      body,
+      headers: { authorization: auth },
+    });
 
   // A real 1x1 PNG.
   const PNG = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
     "base64",
+  );
+
+  // The gate that was missing: this endpoint writes attacker-chosen bytes to
+  // disk, so an anonymous POST must not reach the handler.
+  const anonymousUpload = new FormData();
+  anonymousUpload.append("file", new File([PNG], "x.png", { type: "image/png" }));
+  const anonResponse = await fetch(`${base}/api/upload`, {
+    method: "POST",
+    body: anonymousUpload,
+  });
+  check(
+    "/api/upload без авторизации → 401",
+    anonResponse.status === 401,
+    `${anonResponse.status}`,
   );
 
   const good = new FormData();
