@@ -15,6 +15,11 @@ export function categoryPageHref(slug: string, page: number): string {
   return page <= 1 ? `/category/${slug}` : `/category/${slug}/page/${page}`;
 }
 
+/** Same shape as the rubric routes, for tag listings. */
+export function tagsPageHref(slug: string, page: number): string {
+  return page <= 1 ? `/tags/${slug}` : `/tags/${slug}/page/${page}`;
+}
+
 /** Parses a path segment like "3" into a page number, defaulting to 1. */
 export function parsePageSegment(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? "1", 10);
