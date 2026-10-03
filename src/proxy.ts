@@ -85,13 +85,20 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // `/api/upload` is here because it writes attacker-chosen bytes onto the
-  // server's disk and returns a URL for them. It sits outside `/admin`, so the
-  // original `/admin/:path*` matcher left it open: an anonymous POST returned
-  // 201 and left a file in UPLOAD_DIR. The view counter stays public — it is
-  // called from the reader-facing page.
+  // Two routes outside /admin also need the credentials, and each was found the
+  // hard way:
+  //
+  // - /api/upload writes attacker-chosen bytes onto disk and returns a URL for
+  //   them. Measured on production while it was open: an anonymous POST returned
+  //   201 and left a file in UPLOAD_DIR.
+  // - /api/admin/** is the editorial API. It was missed because "starts with
+  //   /admin" was read as a prefix rule rather than a path-segment one, so the
+  //   tag autocomplete answered anonymous callers.
+  //
+  // Both are listed explicitly: a future /api/admin route is open again unless it
+  // is added here. The reader-facing view counter stays public.
   //
   // Inlined rather than referenced from a const: Next parses this export
   // statically and a build fails on an indirection.
-  matcher: ["/admin/:path*", "/api/upload"],
+  matcher: ["/admin/:path*", "/api/admin/:path*", "/api/upload"],
 };
