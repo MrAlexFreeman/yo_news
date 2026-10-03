@@ -124,6 +124,8 @@ export async function getPublishedArticleBySlug(slug: string) {
       lead: true,
       contentHtml: true,
       coverImage: true,
+      photoAuthor: true,
+      photoSource: true,
       isExclusive: true,
       is18plus: true,
       views: true,

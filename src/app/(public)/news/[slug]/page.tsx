@@ -199,6 +199,19 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           <figcaption className="mt-2 text-[11px] text-ink-soft">
             {article.category?.name ?? "Фото"}
           </figcaption>
+
+          {/* Editorial photo credit, printed under the cover in italics. */}
+          {article.photoAuthor || article.photoSource ? (
+            <p className="mt-1 text-[11px] text-ink-soft italic">
+              {article.photoAuthor ? (
+                <span>© {article.photoAuthor}</span>
+              ) : null}
+              {article.photoAuthor && article.photoSource ? (
+                <span aria-hidden> · </span>
+              ) : null}
+              {article.photoSource ? <span>{article.photoSource}</span> : null}
+            </p>
+          ) : null}
         </figure>
       ) : null}
 
