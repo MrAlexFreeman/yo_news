@@ -21,12 +21,18 @@ import {
   createArticleAction,
   deleteArticleAction,
 } from "@/app/admin/articles/actions";
+import { ArticlePreview } from "@/app/admin/articles/components/article-preview";
 import { CharCounter } from "@/app/admin/articles/components/char-counter";
 import { ContentEditor } from "@/app/admin/articles/components/content-editor";
 import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar";
 import { StickyActionBar } from "@/app/admin/articles/components/sticky-action-bar";
 import { TitleField } from "@/app/admin/articles/components/title-field";
-import type { CategoryOption, SaveArticleResult } from "@/app/admin/articles/types";
+import type {
+  ArticleFormValues,
+  ArticleInitialValues,
+  CategoryOption,
+  SaveArticleResult,
+} from "@/app/admin/articles/types";
 import type { ArticleStatus } from "@/lib/article-status";
 import { cn } from "@/lib/utils";
 
@@ -43,17 +49,62 @@ const INITIAL_STATE: SaveArticleResult = { ok: false, message: "" };
 
 const LEAD_LIMIT = 240;
 
-/** `datetime-local` needs "YYYY-MM-DDTHH:mm" in local time, not an ISO string. */
-function toLocalInputValue(date: Date): string {
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+/**
+ * Current Moscow wall clock as "YYYY-MM-DDTHH:mm", the format `datetime-local`
+ * expects.
+ *
+ * The editorial desk publishes on Moscow time regardless of where the editor's
+ * laptop is set, so the default is not taken from the browser. Server time is
+ * used as the base and shifted by the zone's offset, which keeps this correct
+ * on the 709 MB VPS where the process runs on UTC.
+ */
+function moscowNow(): string {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(now)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}`;
 }
+
+/**
+ * Everything the form holds, so a revert has something to revert to.
+ *
+ * Deliberately not `ArticleInitialValues`: the snapshot describes field state
+ * only. Which article is loaded and what its slug is come from the route and the
+ * server, and mixing them in is how a revert ends up restoring a stale id.
+ */
+type FormSnapshot = Omit<
+  ArticleFormValues,
+  "id" | "slug" | "publishedAt"
+> & { publishedAt: string };
+
+type Snapshot = FormSnapshot | null;
 
 type ArticleFormProps = {
   categories: CategoryOption[];
+  /**
+   * Present when editing an existing article. Its absence is what makes the
+   * form a "create" form, so the two modes cannot drift apart.
+   */
+  initial?: ArticleInitialValues;
 };
 
-export function ArticleForm({ categories }: ArticleFormProps) {
+export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [state, formAction, pending] = useActionState(
     // useActionState passes the previous state first; the action reads FormData.
     async (_prevState: SaveArticleResult, formData: FormData) =>
@@ -65,25 +116,34 @@ export function ArticleForm({ categories }: ArticleFormProps) {
   const [deletePending, startDelete] = useTransition();
   const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
 
-  // Created once per mount: the field defaults to "now" as the editorial spec
-  // requires, not to the time of every re-render.
-  const defaultPublishedAt = useMemo(() => toLocalInputValue(new Date()), []);
+  // Computed once per mount so the field starts at "now" rather than tracking
+  // every re-render, and always at Moscow time.
+  const defaultPublishedAt = useMemo(
+    () => initial?.publishedAt || moscowNow(),
+    [initial],
+  );
 
   const [tab, setTab] = useState<TabId>("material");
-  const [title, setTitle] = useState("");
-  const [subtitle, setSubtitle] = useState("");
-  const [lead, setLead] = useState("");
-  const [contentHtml, setContentHtml] = useState("");
-  const [coverImage, setCoverImage] = useState("");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [subtitle, setSubtitle] = useState(initial?.subtitle ?? "");
+  const [lead, setLead] = useState(initial?.lead ?? "");
+  const [contentHtml, setContentHtml] = useState(initial?.contentHtml ?? "");
+  const [coverImage, setCoverImage] = useState(initial?.coverImage ?? "");
+  const [photoAuthor, setPhotoAuthor] = useState(initial?.photoAuthor ?? "");
+  const [photoSource, setPhotoSource] = useState(initial?.photoSource ?? "");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [categoryId, setCategoryId] = useState("");
-  const [status, setStatus] = useState<ArticleStatus>("draft");
-  const [isDzen, setIsDzen] = useState(true);
-  const [isVk, setIsVk] = useState(true);
-  const [isExclusive, setIsExclusive] = useState(false);
-  const [is18plus, setIs18plus] = useState(false);
+  const [categoryId, setCategoryId] = useState(initial?.categoryId ?? "");
+  const [status, setStatus] = useState<ArticleStatus>(
+    initial?.status ?? "draft",
+  );
+  const [publishedAt, setPublishedAt] = useState(defaultPublishedAt);
+  const [isDzen, setIsDzen] = useState(initial?.isDzen ?? true);
+  const [isVk, setIsVk] = useState(initial?.isVk ?? true);
+  const [isExclusive, setIsExclusive] = useState(initial?.isExclusive ?? false);
+  const [is18plus, setIs18plus] = useState(initial?.is18plus ?? false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   // Tags and SEO fields have no columns in the schema yet; kept local-only.
   const [tags, setTags] = useState("");
   const [seoTitle, setSeoTitle] = useState("");
@@ -91,6 +151,102 @@ export function ArticleForm({ categories }: ArticleFormProps) {
 
   const errors = state.fieldErrors ?? {};
   const busy = pending || deletePending;
+
+  /**
+   * The last known-saved field state. A successful save adopts the current
+   * values, so "Отменить" always returns to what is actually on the server
+   * rather than to the values this component happened to mount with.
+   */
+  const [saved, setSaved] = useState<Snapshot>(
+    initial
+      ? {
+          title: initial.title,
+          subtitle: initial.subtitle,
+          lead: initial.lead,
+          contentHtml: initial.contentHtml,
+          coverImage: initial.coverImage,
+          photoAuthor: initial.photoAuthor,
+          photoSource: initial.photoSource,
+          categoryId: initial.categoryId,
+          status: initial.status,
+          publishedAt: initial.publishedAt || defaultPublishedAt,
+          isDzen: initial.isDzen,
+          isVk: initial.isVk,
+          isExclusive: initial.isExclusive,
+          is18plus: initial.is18plus,
+        }
+      : null,
+  );
+
+  /**
+   * The fields as they stand right now, and how far they are from the last
+   * save. Derived rather than tracked by a flag: an edit that ends where it
+   * started is not a change, and a revert that restores identical values is not
+   * one either. Both used to leave the editor looking at unsaved edits that did
+   * not exist.
+   */
+  const current: FormSnapshot = {
+    title,
+    subtitle,
+    lead,
+    contentHtml,
+    coverImage,
+    photoAuthor,
+    photoSource,
+    categoryId,
+    status,
+    publishedAt,
+    isDzen,
+    isVk,
+    isExclusive,
+    is18plus,
+  };
+
+  /**
+   * When the action reports a fresh successful save, the values on screen become
+   * the new baseline.
+   *
+   * Adjusting state during render rather than in an effect: this is React's
+   * documented pattern for reacting to a changed value during render, and it
+   * avoids the extra render pass (and the stale frame) an effect would cause.
+   * `lastHandled` makes sure it runs once per action result.
+   */
+  const [lastHandled, setLastHandled] = useState<SaveArticleResult>(
+    INITIAL_STATE,
+  );
+  if (state !== lastHandled) {
+    setLastHandled(state);
+    if (state.ok) setSaved(current);
+  }
+
+  const dirty = saved
+    ? (Object.keys(current) as (keyof FormSnapshot)[]).some(
+        (key) => current[key] !== saved![key],
+      )
+    : Boolean(
+        title || subtitle || lead || contentHtml || coverImage || photoAuthor || photoSource,
+      );
+
+  function applySnapshot(snapshot: Snapshot) {
+    if (!snapshot) return;
+
+    setTitle(snapshot.title);
+    setSubtitle(snapshot.subtitle);
+    setLead(snapshot.lead);
+    setContentHtml(snapshot.contentHtml);
+    setCoverImage(snapshot.coverImage);
+    setPhotoAuthor(snapshot.photoAuthor);
+    setPhotoSource(snapshot.photoSource);
+    setCategoryId(snapshot.categoryId);
+    setStatus(snapshot.status);
+    setPublishedAt(snapshot.publishedAt);
+    setIsDzen(snapshot.isDzen);
+    setIsVk(snapshot.isVk);
+    setIsExclusive(snapshot.isExclusive);
+    setIs18plus(snapshot.is18plus);
+    setUploadError(null);
+    setPreviewOpen(false);
+  }
 
   /** Posts the chosen file to /api/upload and drops the returned URL in. */
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -126,23 +282,40 @@ export function ArticleForm({ categories }: ArticleFormProps) {
     }
   }
 
-  function resetForm() {
-    setTitle("");
-    setSubtitle("");
-    setLead("");
-    setContentHtml("");
-    setCoverImage("");
-    setCategoryId("");
-    setStatus("draft");
-    setIsDzen(true);
-    setIsVk(true);
-    setIsExclusive(false);
-    setIs18plus(false);
-    setTags("");
-    setSeoTitle("");
-    setSeoDescription("");
-    setUploadError(null);
-    setTab("material");
+  /**
+   * Reverts unsaved edits. Never clears the form: a brand new article has no
+   * saved version to go back to, and wiping a headline and body on a button the
+   * editors had every reason to press is how work gets lost.
+   */
+  function handleCancel() {
+    if (!saved) {
+      if (dirty) {
+        const ok = window.confirm(
+          "Материал ещё не сохранён — отменить все введённые данные?",
+        );
+        if (!ok) return;
+      } else {
+        return;
+      }
+      // A new, never-saved article has nothing to restore, so start clean.
+      setTitle("");
+      setSubtitle("");
+      setLead("");
+      setContentHtml("");
+      setCoverImage("");
+      setPhotoAuthor("");
+      setPhotoSource("");
+      setPublishedAt(moscowNow());
+      setUploadError(null);
+      setPreviewOpen(false);
+      return;
+    }
+
+    if (dirty && !window.confirm("Вернуться к последней сохранённой версии?")) {
+      return;
+    }
+
+    applySnapshot(saved);
   }
 
   function handleDelete() {
@@ -157,7 +330,6 @@ export function ArticleForm({ categories }: ArticleFormProps) {
     startDelete(async () => {
       const result = await deleteArticleAction(formData);
       if (result.ok) {
-        resetForm();
         router.push("/admin/articles");
         return;
       }
@@ -165,20 +337,44 @@ export function ArticleForm({ categories }: ArticleFormProps) {
     });
   }
 
+  const heading = state.id || initial ? "Редактирование материала" : "Новый материал";
+
   return (
     // One form wraps the whole editor so the sticky bar's submit buttons carry
     // every field, including the sidebar and the publication date.
     <form action={formAction} className="flex min-h-dvh flex-col bg-neutral-100">
-      {/* Once saved, the id makes subsequent submits updates instead of creates. */}
-      <input type="hidden" name="id" value={state.id ?? ""} />
+      {/*
+        Once saved, the id makes subsequent submits updates instead of creates.
+      */}
+      <input type="hidden" name="id" value={state.id ?? initial?.id ?? ""} />
+
+      {/*
+        Every state-backed field is submitted through a permanent hidden mirror
+        rather than through its visible input.
+
+        The visible inputs live inside tab panels that are unmounted when the tab
+        is not active, and an unmounted input is not part of the form. Saving
+        from the "Медиа" tab therefore used to send no `contentHtml` at all, and
+        the save failed with "Текст материала обязателен" — which is what an
+        editor uploading a cover would have hit. A panel cannot simply be hidden
+        with CSS instead: `display:none` around a `required` control makes
+        submission fail with "not focusable".
+      */}
+      <input type="hidden" name="publishedAt" value={publishedAt} readOnly />
+      <input type="hidden" name="title" value={title} readOnly />
+      <input type="hidden" name="subtitle" value={subtitle} readOnly />
+      <input type="hidden" name="lead" value={lead} readOnly />
+      <input type="hidden" name="contentHtml" value={contentHtml} readOnly />
+      <input type="hidden" name="coverImage" value={coverImage} readOnly />
+      <input type="hidden" name="photoAuthor" value={photoAuthor} readOnly />
+      <input type="hidden" name="photoSource" value={photoSource} readOnly />
 
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-300 bg-white px-6 py-3">
         <div>
-          <h1 className="text-base font-semibold text-neutral-900">
-            Новый материал
-          </h1>
+          <h1 className="text-base font-semibold text-neutral-900">{heading}</h1>
           <p className="font-mono text-xs text-neutral-500">
-            {state.id ? `ID: ${state.id}` : "ID: не сохранён"}
+            {state.id ?? initial?.id ? `ID: ${state.id ?? initial?.id}` : "ID: не сохранён"}
+            {dirty ? " · есть несохранённые изменения" : ""}
           </p>
         </div>
 
@@ -239,19 +435,24 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                   </label>
                   <input
                     id="publishedAt"
-                    name="publishedAt"
                     type="datetime-local"
-                    defaultValue={defaultPublishedAt}
+                    value={publishedAt}
+                    onChange={(event) => {
+                      setPublishedAt(event.target.value);
+                    }}
                     className="w-full rounded-sm border border-neutral-400 bg-white px-2 py-1.5 text-sm outline-none focus:border-neutral-600 focus:ring-2 focus:ring-neutral-200"
                   />
                   <p className="text-xs text-neutral-400">
-                    Для черновика дата сохраняется, но публикация не происходит.
+                    Московское время (UTC+3). Сохраняется и для черновика — так
+                    материал можно запланировать заранее.
                   </p>
                 </div>
 
                 <TitleField
                   value={title}
-                  onChange={setTitle}
+                  onChange={(value) => {
+                    setTitle(value);
+                  }}
                   error={errors.title}
                 />
 
@@ -267,10 +468,11 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                   </div>
                   <input
                     id="subtitle"
-                    name="subtitle"
                     type="text"
                     value={subtitle}
-                    onChange={(event) => setSubtitle(event.target.value)}
+                    onChange={(event) => {
+                      setSubtitle(event.target.value);
+                    }}
                     placeholder="Необязательно"
                     className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
                   />
@@ -291,9 +493,10 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                   </div>
                   <textarea
                     id="lead"
-                    name="lead"
                     value={lead}
-                    onChange={(event) => setLead(event.target.value)}
+                    onChange={(event) => {
+                      setLead(event.target.value);
+                    }}
                     rows={3}
                     placeholder="Краткое описание материала для анонсов"
                     className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
@@ -302,14 +505,22 @@ export function ArticleForm({ categories }: ArticleFormProps) {
 
                 <ContentEditor
                   value={contentHtml}
-                  onChange={setContentHtml}
+                  onChange={(value) => {
+                    setContentHtml(value);
+                  }}
                   error={errors.contentHtml}
+                />
+
+                <ArticlePreview
+                  html={contentHtml}
+                  open={previewOpen}
+                  onToggle={() => setPreviewOpen((open) => !open)}
                 />
               </>
             ) : null}
 
             {tab === "media" ? (
-              <section className="space-y-3">
+              <section className="space-y-5">
                 <div className="space-y-1.5">
                   <label
                     htmlFor="coverImage"
@@ -319,10 +530,11 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                   </label>
                   <input
                     id="coverImage"
-                    name="coverImage"
                     type="text"
                     value={coverImage}
-                    onChange={(event) => setCoverImage(event.target.value)}
+                    onChange={(event) => {
+                      setCoverImage(event.target.value);
+                    }}
                     placeholder="Загрузите файл или укажите ссылку"
                     className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
                   />
@@ -362,6 +574,11 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                     <img
                       src={coverImage}
                       alt="Предпросмотр обложки"
+                      onError={() =>
+                        setUploadError(
+                          "Обложка не загрузилась по этой ссылке. Проверьте путь или загрузите файл заново.",
+                        )
+                      }
                       className="max-h-72 rounded-md border border-neutral-200 bg-neutral-50 object-contain"
                     />
                     <p className="text-xs text-neutral-400">
@@ -369,6 +586,52 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                     </p>
                   </div>
                 ) : null}
+
+                <hr className="border-neutral-200" />
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="photoAuthor"
+                      className="text-sm font-medium text-neutral-700"
+                    >
+                      Автор фото
+                    </label>
+                    <input
+                      id="photoAuthor"
+                      type="text"
+                      value={photoAuthor}
+                      onChange={(event) => {
+                        setPhotoAuthor(event.target.value);
+                      }}
+                      placeholder="Имя автора или фотобанка"
+                      className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="photoSource"
+                      className="text-sm font-medium text-neutral-700"
+                    >
+                      Источник фото
+                    </label>
+                    <input
+                      id="photoSource"
+                      type="text"
+                      value={photoSource}
+                      onChange={(event) => {
+                        setPhotoSource(event.target.value);
+                      }}
+                      placeholder="Например: Екатеринбург, улица Малышева"
+                      className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
+                    />
+                  </div>
+                </div>
+
+                <p className="text-xs text-neutral-400">
+                  Подпись печатается под обложкой на сайте курсивом.
+                </p>
               </section>
             ) : null}
 
@@ -410,6 +673,7 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                     type="text"
                     value={seoTitle}
                     onChange={(event) => setSeoTitle(event.target.value)}
+                    placeholder={title}
                     disabled
                     className="w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-400 outline-none"
                   />
@@ -425,14 +689,16 @@ export function ArticleForm({ categories }: ArticleFormProps) {
                     id="seoDescription"
                     value={seoDescription}
                     onChange={(event) => setSeoDescription(event.target.value)}
+                    placeholder={lead}
                     rows={3}
                     disabled
                     className="w-full resize-y rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-400 outline-none"
                   />
                 </div>
                 <p className="text-xs text-neutral-400">
-                  Отдельных SEO-полей в модели Article нет. Здесь будут title и
-                  description из метаданных страницы.
+                  Отдельных SEO-полей в модели Article нет. Здесь используются
+                  title и description из метаданных страницы — они показаны выше
+                  как подсказка.
                 </p>
               </section>
             ) : null}
@@ -443,17 +709,29 @@ export function ArticleForm({ categories }: ArticleFormProps) {
           <PublishSidebar
             categories={categories}
             categoryId={categoryId}
-            onCategoryChange={setCategoryId}
+            onCategoryChange={(value) => {
+              setCategoryId(value);
+            }}
             status={status}
-            onStatusChange={setStatus}
+            onStatusChange={(value) => {
+              setStatus(value);
+            }}
             isDzen={isDzen}
-            onIsDzenChange={setIsDzen}
+            onIsDzenChange={(value) => {
+              setIsDzen(value);
+            }}
             isVk={isVk}
-            onIsVkChange={setIsVk}
+            onIsVkChange={(value) => {
+              setIsVk(value);
+            }}
             isExclusive={isExclusive}
-            onIsExclusiveChange={setIsExclusive}
+            onIsExclusiveChange={(value) => {
+              setIsExclusive(value);
+            }}
             is18plus={is18plus}
-            onIs18plusChange={setIs18plus}
+            onIs18plusChange={(value) => {
+              setIs18plus(value);
+            }}
             categoryError={errors.categoryId}
           />
         </div>
@@ -462,8 +740,10 @@ export function ArticleForm({ categories }: ArticleFormProps) {
       <div className="sticky bottom-0">
         <StickyActionBar
           pending={busy}
-          canDelete={Boolean(state.id)}
-          onCancel={resetForm}
+          canDelete={Boolean(state.id ?? initial?.id)}
+          showPublish={status === "draft"}
+          dirty={dirty}
+          onCancel={handleCancel}
           onDelete={handleDelete}
         />
       </div>

@@ -3,7 +3,10 @@
 import { useId } from "react";
 
 import { CharCounter } from "@/app/admin/articles/components/char-counter";
-import { TITLE_SOFT_LIMIT } from "@/app/admin/articles/types";
+import {
+  TITLE_MAX_LENGTH,
+  TITLE_SOFT_LIMIT,
+} from "@/app/admin/articles/types";
 import { cn } from "@/lib/utils";
 
 type TitleFieldProps = {
@@ -13,9 +16,12 @@ type TitleFieldProps = {
 };
 
 /**
- * Required headline input with a live character counter. Past
- * TITLE_SOFT_LIMIT the border turns red and a warning appears — editors rely on
- * this to keep headlines from wrapping into three lines on the site.
+ * Required headline input with a live character counter.
+ *
+ * The counter is advisory, not a gate: `maxLength` sits far above the editorial
+ * soft limit, so a long headline produces a warning rather than a headless stop.
+ * Editors were previously blocked at 70 characters, which is shorter than plenty
+ * of ordinary Russian headlines.
  */
 export function TitleField({ value, onChange, error }: TitleFieldProps) {
   const id = useId();
@@ -37,9 +43,9 @@ export function TitleField({ value, onChange, error }: TitleFieldProps) {
 
       <input
         id={id}
-        name="title"
         type="text"
         required
+        maxLength={TITLE_MAX_LENGTH}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Заголовок материала"
@@ -50,20 +56,21 @@ export function TitleField({ value, onChange, error }: TitleFieldProps) {
           "placeholder:text-neutral-400",
           "focus:ring-2",
           over || error
-            ? "border-red-500 bg-red-50 focus:ring-red-200"
+            ? "border-amber-500 bg-amber-50 focus:ring-amber-200"
             : "border-neutral-300 bg-white focus:border-neutral-500 focus:ring-neutral-200",
         )}
       />
 
       {over ? (
-        <p role="alert" className="text-sm font-medium text-red-600">
-          ⚠ В заголовке больше 70 символов!
+        <p role="status" className="text-sm text-amber-700">
+          Заголовок длиннее {TITLE_SOFT_LIMIT} символов — на сайте он может
+          занять несколько строк.
         </p>
       ) : null}
 
-      {!over && remaining <= 10 ? (
+      {!over && remaining <= 25 ? (
         <p className="text-xs text-neutral-400">
-          Осталось {remaining} символов до рекомендуемого лимита.
+          Осталось {remaining} символов до рекомендуемой длины.
         </p>
       ) : null}
 
