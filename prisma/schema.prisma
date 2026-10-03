@@ -32,13 +32,57 @@ model Article {
   is18plus    Boolean   @default(false)
   // "draft" | "published"
   status      String    @default("draft")
+  // Editorial overrides for the page metadata. All optional: the article page
+  // falls back to title / lead / cover when a field is empty, so an editor only
+  // fills in what the automatic version gets wrong.
+  seoTitle        String?
+  seoDescription  String?
+  // Set when the story is a reprint hosted elsewhere and should point at the
+  // original, which is the usual fix for duplicate-content penalties.
+  seoCanonicalUrl String?
+  // Keeps a published story out of search indexes: syndicated wire copy, legal
+  // notices, embargoed material.
+  noIndex         Boolean   @default(false)
   views       Int       @default(0)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   publishedAt DateTime?
+  tags        ArticleTag[]
 
   @@index([status, publishedAt])
   @@index([categoryId])
+}
+
+/**
+ * Editorial tag. Modelled explicitly rather than as a bare Prisma m-n so the
+ * join table can carry its own indexes and cascade cleanly.
+ *
+ * `nameKey` is a lowercased copy of `name` and carries the uniqueness. The
+ * design asked for COLLATE NOCASE instead, but SQLite's built-in NOCASE folds
+ * ASCII only: measured against a scratch table it rejected "artificial
+ * intelligence" as a duplicate of "Artificial Intelligence" while happily
+ * accepting both "Искусственный интеллект" and "искусственный интеллект". For a
+ * Russian site that is no dedup at all, so the key is computed in JS, where
+ * toLowerCase() handles every letter the site actually uses.
+ */
+model Tag {
+  id        Int          @id @default(autoincrement())
+  name      String
+  nameKey   String       @unique
+  slug      String       @unique
+  createdAt DateTime     @default(now())
+  articles  ArticleTag[]
+}
+
+/// Join row between an article and a tag.
+model ArticleTag {
+  articleId String
+  tagId     Int
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([articleId, tagId])
+  @@index([tagId])
 }
 
 model Category {
