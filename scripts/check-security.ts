@@ -113,6 +113,13 @@ function checkArticleHtml() {
     Boolean(youtube?.includes("youtube.com/embed/dQw4w9WgXcQ")),
     youtube?.slice(0, 80) ?? "null",
   );
+  // The share sheet produces youtu.be links, where the id has no path prefix.
+  const youtubeShort = buildVideoEmbed("https://youtu.be/dQw4w9WgXcQ");
+  check(
+    "YouTube короткая ссылка → embed iframe",
+    Boolean(youtubeShort?.includes("youtube.com/embed/dQw4w9WgXcQ")),
+    youtubeShort?.slice(0, 80) ?? "null",
+  );
   check(
     "YouTube-embed переживает санитайзер",
     sanitizeArticleHtml(youtube ?? "").includes("youtube.com/embed"),

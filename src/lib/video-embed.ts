@@ -20,7 +20,17 @@ const PROVIDERS: readonly Provider[] = [
     label: "YouTube",
     hosts: ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"],
     build: (url: URL): string | null => {
-      // youtube.com/watch?v=ID, youtu.be/ID, or /embed/ID or /shorts/ID
+      // youtu.be/<id> puts the id straight in the path with no prefix at all,
+      // which is the shape the share sheet produces.
+      if (url.hostname.endsWith("youtu.be")) {
+        const short = url.pathname.split("/").filter(Boolean)[0];
+        if (short && /^[A-Za-z0-9_-]{6,20}$/.test(short)) {
+          return `https://www.youtube.com/embed/${short}`;
+        }
+        return null;
+      }
+
+      // youtube.com/watch?v=ID, /embed/ID or /shorts/ID
       const fromQuery = url.searchParams.get("v");
       const fromPath = url.pathname.match(
         /(?:embed|shorts|v)\/([A-Za-z0-9_-]{6,20})/,
