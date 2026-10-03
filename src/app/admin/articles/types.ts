@@ -52,7 +52,22 @@ export type ArticleFormValues = {
   isVk: boolean;
   isExclusive: boolean;
   is18plus: boolean;
+  /** Editorial metadata overrides; empty means "derive it on the page". */
+  seoTitle: string;
+  seoDescription: string;
+  seoCanonicalUrl: string;
+  noIndex: boolean;
+  /** Tag names, already split from the comma-separated submission. */
+  tags: string[];
 };
+
+/** Search-engine lengths above which the field is usually truncated anyway. */
+export const SEO_TITLE_SOFT_LIMIT = 60;
+export const SEO_DESCRIPTION_SOFT_LIMIT = 160;
+
+/** Hard ceilings, comfortably above the soft limits so the warning comes first. */
+export const SEO_TITLE_MAX_LENGTH = 120;
+export const SEO_DESCRIPTION_MAX_LENGTH = 320;
 
 export type CategoryOption = { id: string; name: string };
 
@@ -93,7 +108,4 @@ export const TITLE_MAX_LENGTH = 300;
 export type ArticleInitialValues = ArticleFormValues & {
   id: string;
   slug: string;
-  publishedAt: string;
-  photoAuthor: string;
-  photoSource: string;
 };

@@ -84,6 +84,52 @@ export async function getCategories() {
 }
 
 /**
+ * Tag used by the public tag pages. Counts published articles only, so a tag
+ * that has never had a live story does not get an indexable empty page.
+ */
+export async function getTagBySlug(slug: string) {
+  return prisma.tag.findFirst({
+    where: {
+      slug,
+      articles: { some: { article: { status: "published" } } },
+    },
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      _count: { select: { articles: true } },
+    },
+  });
+}
+
+/** Published stories carrying a tag, freshest first, paginated. */
+export async function getArticlesByTag(
+  slug: string,
+  take: number,
+  skip = 0,
+): Promise<ArticleListItem[]> {
+  return prisma.article.findMany({
+    where: {
+      status: "published",
+      tags: { some: { tag: { slug } } },
+    },
+    orderBy: BY_FRESHNESS,
+    take,
+    skip,
+    select: LIST_FIELDS,
+  });
+}
+
+/** Every tag with at least one published story, for the tag index and sitemap. */
+export async function getTagsWithPublishedArticles() {
+  return prisma.tag.findMany({
+    where: { articles: { some: { article: { status: "published" } } } },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, slug: true },
+  });
+}
+
+/**
  * Sections for the front page grid. Only categories that actually have
  * published articles are returned, so the page never shows an empty block.
  */
@@ -126,6 +172,11 @@ export async function getPublishedArticleBySlug(slug: string) {
       coverImage: true,
       photoAuthor: true,
       photoSource: true,
+      seoTitle: true,
+      seoDescription: true,
+      seoCanonicalUrl: true,
+      noIndex: true,
+      tags: { select: { tag: { select: { id: true, name: true, slug: true } } } },
       isExclusive: true,
       is18plus: true,
       views: true,

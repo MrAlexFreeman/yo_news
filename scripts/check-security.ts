@@ -2,8 +2,9 @@
  * Checks the XSS sanitiser, upload validation, the view counter route and the
  * admin auth gate. Run with: npm run checks:security (needs a dev server).
  */
-import { normalizeArticleHtml } from "../src/lib/article-html";
+import { normalizeArticleHtml, plainTextPreview } from "../src/lib/article-html";
 import { sanitizeArticleHtml } from "../src/lib/sanitize";
+import { normalizeTagList, parseTagsField, tagKey } from "../src/lib/tags";
 import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -164,9 +165,57 @@ function checkArticleHtml() {
   );
 }
 
+/**
+ * Tag normalisation and the metadata fallbacks.
+ *
+ * The case-folding assertions are the point of the `nameKey` column: SQLite's
+ * NOCASE folds ASCII only, so Cyrillic dedup has to happen in JS.
+ */
+function checkSeoAndTags() {
+  const parsed = parseTagsField("нейросети,  разработка ,Гайд,нейросети");
+  check(
+    "Тэги: разбираются и дедуплицируются",
+    parsed.length === 3 && parsed.includes("нейросети") && parsed.includes("разработка"),
+    JSON.stringify(parsed),
+  );
+
+  check(
+    "Тэги: ключ нечувствителен к регистру",
+    tagKey("Искусственный Интеллект") === tagKey("искусственный интеллект"),
+    tagKey("Искусственный Интеллект"),
+  );
+
+  check(
+    "Тэги: пустые и пробельные отбрасываются",
+    normalizeTagList(["  ", "", "   ", "тест"]).length === 1,
+    JSON.stringify(normalizeTagList(["  ", "", "   ", "тест"])),
+  );
+
+  check(
+    "Тэги: лимит на статью соблюдается",
+    normalizeTagList(Array.from({ length: 40 }, (_, i) => `т${i}`)).length === 12,
+    String(normalizeTagList(Array.from({ length: 40 }, (_, i) => `т${i}`)).length),
+  );
+
+  // An unfilled SEO description must degrade to readable text, not raw markup.
+  const derived = plainTextPreview("<p>Первый абзац.</p><h2>Заголовок</h2><p>Второй.</p>", 20);
+  check(
+    "SEO: описание выводится из текста без разметки",
+    !derived.includes("<") && derived.length <= 21,
+    JSON.stringify(derived),
+  );
+
+  check(
+    "SEO: текст без тегов не даёт пустого описания",
+    plainTextPreview("Просто текст без разметки", 160).length > 0,
+    JSON.stringify(plainTextPreview("Просто текст без разметки", 160)),
+  );
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
+  checkSeoAndTags();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 

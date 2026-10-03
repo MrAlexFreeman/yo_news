@@ -7,6 +7,8 @@ import type { SaveArticleResult } from "@/app/admin/articles/types";
 import { normalizeArticleHtml } from "@/lib/article-html";
 import { isArticleStatus } from "@/lib/article-status";
 import { prisma } from "@/lib/prisma";
+import { slugify } from "@/lib/slugify";
+import { parseTagsField, syncArticleTags } from "@/lib/tags";
 import { publishArticleToVk } from "@/lib/vk-publisher";
 
 function str(formData: FormData, key: string): string {
@@ -83,28 +85,6 @@ function moscowOffsetMinutes(at: Date): number {
   return (asUtc - at.getTime()) / 60_000;
 }
 
-const TRANSLIT: Record<string, string> = {
-  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
-  з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o",
-  п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "ts",
-  ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu",
-  я: "ya",
-};
-
-/**
- * Turns a Russian title into a URL slug. Falls back to a stable placeholder
- * when the title is entirely non-Latin, since `slug` is required and unique.
- */
-function slugify(title: string): string {
-  const transliterated = title
-    .toLowerCase()
-    .replace(/[Ѐ-ӿ]/g, (char) => TRANSLIT[char] ?? "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return transliterated || "material";
-}
-
 /**
  * Appends `-2`, `-3`, … until the slug is free. `excludeId` lets an article
  * keep its own slug when re-saved after a title edit.
@@ -177,11 +157,17 @@ export async function createArticleAction(
     };
   }
 
-  // Loaded only on update, to keep the original publishedAt intact.
+  // Loaded only on update, to keep the original publishedAt intact. The current
+  // tag slugs come along too: they are the paths whose cached pages have to be
+  // revalidated if this save moves a tag on or off the story.
   const existing = id
     ? await prisma.article.findUnique({
         where: { id },
-        select: { id: true, publishedAt: true },
+        select: {
+          id: true,
+          publishedAt: true,
+          tags: { select: { tag: { select: { slug: true } } } },
+        },
       })
     : null;
 
@@ -205,6 +191,10 @@ export async function createArticleAction(
     coverImage: optional(str(formData, "coverImage")),
     photoAuthor: optional(str(formData, "photoAuthor")),
     photoSource: optional(str(formData, "photoSource")),
+    seoTitle: optional(str(formData, "seoTitle")),
+    seoDescription: optional(str(formData, "seoDescription")),
+    seoCanonicalUrl: optional(str(formData, "seoCanonicalUrl")),
+    noIndex: checkbox(formData, "noIndex"),
     categoryId,
     isDzen: checkbox(formData, "isDzen"),
     isVk: checkbox(formData, "isVk"),
@@ -217,21 +207,40 @@ export async function createArticleAction(
   // time and simply flip the status to publish later. Visibility is decided by
   // `status`, never by this column, so a scheduled draft stays off the site.
   const chosenDate = publicationDate(formData);
+  const tagNames = parseTagsField(str(formData, "tags"));
 
-  const article = id
-    ? await prisma.article.update({
-        where: { id },
-        data: {
-          ...data,
-          publishedAt: chosenDate ?? existing?.publishedAt ?? new Date(),
-        },
-      })
-    : await prisma.article.create({
-        data: {
-          ...data,
-          publishedAt: chosenDate ?? new Date(),
-        },
-      });
+  // The row write and the tag sync share one transaction: a tag set half-written
+  // against a saved article is exactly the state nobody wants to debug later.
+  const article = await prisma.$transaction(async (tx) => {
+    const row = id
+      ? await tx.article.update({
+          where: { id },
+          data: {
+            ...data,
+            publishedAt: chosenDate ?? existing?.publishedAt ?? new Date(),
+          },
+        })
+      : await tx.article.create({
+          data: {
+            ...data,
+            publishedAt: chosenDate ?? new Date(),
+          },
+        });
+
+    await syncArticleTags(tx, row.id, tagNames);
+    return row;
+  });
+
+  // The tag pages that changed: the ones this story now carries, plus the ones it
+  // used to carry and no longer does.
+  const attachedTags = await prisma.tag.findMany({
+    where: { articles: { some: { articleId: article.id } } },
+    select: { slug: true },
+  });
+  const tagSlugs = new Set(attachedTags.map((tag) => tag.slug));
+  for (const previous of existing?.tags ?? []) {
+    if (!tagSlugs.has(previous.tag.slug)) tagSlugs.add(previous.tag.slug);
+  }
 
   // Repost to VK when the article goes live with the flag on. Wrapped so a
   // missing token or a VK outage never rolls back the database write.
@@ -264,12 +273,20 @@ export async function createArticleAction(
   revalidatePath(`/news/${article.slug}`);
   revalidatePath("/sitemap.xml");
   revalidatePath("/api/feed/dzen.xml");
+
   if (categoryId) {
     const category = await prisma.category.findUnique({
       where: { id: categoryId },
       select: { slug: true },
     });
     if (category) revalidatePath(`/category/${category.slug}`);
+  }
+
+  // Tag listings show this story, so they go stale the moment it gains or loses a
+  // tag — including the ones it just lost, which still list it.
+  revalidatePath("/tags");
+  for (const slug of tagSlugs) {
+    revalidatePath(`/tags/${slug}`);
   }
 
   // "Сохранить" leaves the editor; "Применить" reports back in place.

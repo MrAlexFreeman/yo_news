@@ -26,12 +26,17 @@ import { CharCounter } from "@/app/admin/articles/components/char-counter";
 import { ContentEditor } from "@/app/admin/articles/components/content-editor";
 import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar";
 import { StickyActionBar } from "@/app/admin/articles/components/sticky-action-bar";
+import { TagInput } from "@/app/admin/articles/components/tag-input";
 import { TitleField } from "@/app/admin/articles/components/title-field";
-import type {
-  ArticleFormValues,
-  ArticleInitialValues,
-  CategoryOption,
-  SaveArticleResult,
+import {
+  SEO_DESCRIPTION_MAX_LENGTH,
+  SEO_DESCRIPTION_SOFT_LIMIT,
+  SEO_TITLE_MAX_LENGTH,
+  SEO_TITLE_SOFT_LIMIT,
+  type ArticleFormValues,
+  type ArticleInitialValues,
+  type CategoryOption,
+  type SaveArticleResult,
 } from "@/app/admin/articles/types";
 import type { ArticleStatus } from "@/lib/article-status";
 import { cn } from "@/lib/utils";
@@ -90,8 +95,12 @@ function moscowNow(): string {
  */
 type FormSnapshot = Omit<
   ArticleFormValues,
-  "id" | "slug" | "publishedAt"
-> & { publishedAt: string };
+  "id" | "slug" | "publishedAt" | "tags"
+> & {
+  publishedAt: string;
+  /** Compared as a joined string: the array identity changes on every render. */
+  tags: string;
+};
 
 type Snapshot = FormSnapshot | null;
 
@@ -131,6 +140,15 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [coverImage, setCoverImage] = useState(initial?.coverImage ?? "");
   const [photoAuthor, setPhotoAuthor] = useState(initial?.photoAuthor ?? "");
   const [photoSource, setPhotoSource] = useState(initial?.photoSource ?? "");
+  const [seoTitle, setSeoTitle] = useState(initial?.seoTitle ?? "");
+  const [seoDescription, setSeoDescription] = useState(
+    initial?.seoDescription ?? "",
+  );
+  const [seoCanonicalUrl, setSeoCanonicalUrl] = useState(
+    initial?.seoCanonicalUrl ?? "",
+  );
+  const [noIndex, setNoIndex] = useState(initial?.noIndex ?? false);
+  const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -144,11 +162,6 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [isExclusive, setIsExclusive] = useState(initial?.isExclusive ?? false);
   const [is18plus, setIs18plus] = useState(initial?.is18plus ?? false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  // Tags and SEO fields have no columns in the schema yet; kept local-only.
-  const [tags, setTags] = useState("");
-  const [seoTitle, setSeoTitle] = useState("");
-  const [seoDescription, setSeoDescription] = useState("");
-
   const errors = state.fieldErrors ?? {};
   const busy = pending || deletePending;
 
@@ -174,6 +187,11 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
           isVk: initial.isVk,
           isExclusive: initial.isExclusive,
           is18plus: initial.is18plus,
+          seoTitle: initial.seoTitle,
+          seoDescription: initial.seoDescription,
+          seoCanonicalUrl: initial.seoCanonicalUrl,
+          noIndex: initial.noIndex,
+          tags: initial.tags.join(","),
         }
       : null,
   );
@@ -200,6 +218,12 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     isVk,
     isExclusive,
     is18plus,
+    seoTitle,
+    seoDescription,
+    seoCanonicalUrl,
+    noIndex,
+    // Joined: comparing array identity would report a change on every render.
+    tags: tags.join(","),
   };
 
   /**
@@ -237,6 +261,11 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     setCoverImage(snapshot.coverImage);
     setPhotoAuthor(snapshot.photoAuthor);
     setPhotoSource(snapshot.photoSource);
+    setSeoTitle(snapshot.seoTitle);
+    setSeoDescription(snapshot.seoDescription);
+    setSeoCanonicalUrl(snapshot.seoCanonicalUrl);
+    setNoIndex(snapshot.noIndex);
+    setTags(snapshot.tags ? snapshot.tags.split(",").filter(Boolean) : []);
     setCategoryId(snapshot.categoryId);
     setStatus(snapshot.status);
     setPublishedAt(snapshot.publishedAt);
@@ -305,6 +334,11 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
       setCoverImage("");
       setPhotoAuthor("");
       setPhotoSource("");
+      setSeoTitle("");
+      setSeoDescription("");
+      setSeoCanonicalUrl("");
+      setNoIndex(false);
+      setTags([]);
       setPublishedAt(moscowNow());
       setUploadError(null);
       setPreviewOpen(false);
@@ -368,6 +402,23 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
       <input type="hidden" name="coverImage" value={coverImage} readOnly />
       <input type="hidden" name="photoAuthor" value={photoAuthor} readOnly />
       <input type="hidden" name="photoSource" value={photoSource} readOnly />
+      <input type="hidden" name="seoTitle" value={seoTitle} readOnly />
+      <input
+        type="hidden"
+        name="seoDescription"
+        value={seoDescription}
+        readOnly
+      />
+      <input
+        type="hidden"
+        name="seoCanonicalUrl"
+        value={seoCanonicalUrl}
+        readOnly
+      />
+      {/* Unchecked checkboxes are absent from FormData, so the flag is mirrored
+          as "on" / "" rather than relying on the visible control's presence. */}
+      <input type="hidden" name="noIndex" value={noIndex ? "on" : ""} readOnly />
+      <input type="hidden" name="tags" value={tags.join(",")} readOnly />
 
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-300 bg-white px-6 py-3">
         <div>
@@ -636,70 +687,102 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
             ) : null}
 
             {tab === "tags" ? (
-              <section className="space-y-1.5">
-                <label
-                  htmlFor="tags"
-                  className="text-sm font-medium text-neutral-700"
-                >
-                  Тэги
-                </label>
-                <input
-                  id="tags"
-                  type="text"
-                  value={tags}
-                  onChange={(event) => setTags(event.target.value)}
-                  placeholder="Через запятую"
-                  disabled
-                  className="w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-400 outline-none"
-                />
-                <p className="text-xs text-neutral-400">
-                  В модели Article нет поля для тэгов. Инпут заблокирован до
-                  добавления колонки в схему.
-                </p>
-              </section>
+              <TagInput value={tags} onChange={setTags} />
             ) : null}
 
             {tab === "seo" ? (
               <section className="space-y-4">
+                <p className="text-xs text-neutral-400">
+                  Все поля необязательные: пустое значение означает «взять из
+                  материала». Обычно автоматических заголовка и описания
+                  достаточно — заполняйте, только если они получаются неудачными.
+                </p>
+
                 <div className="space-y-1.5">
-                  <label
-                    htmlFor="seoTitle"
-                    className="text-sm font-medium text-neutral-700"
-                  >
-                    SEO-заголовок
-                  </label>
+                  <div className="flex items-baseline justify-between gap-4">
+                    <label
+                      htmlFor="seoTitle"
+                      className="text-sm font-medium text-neutral-700"
+                    >
+                      SEO-заголовок
+                    </label>
+                    <CharCounter value={seoTitle} limit={SEO_TITLE_SOFT_LIMIT} />
+                  </div>
                   <input
                     id="seoTitle"
                     type="text"
                     value={seoTitle}
                     onChange={(event) => setSeoTitle(event.target.value)}
-                    placeholder={title}
-                    disabled
-                    className="w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-400 outline-none"
+                    placeholder={title || "Заголовок статьи"}
+                    maxLength={SEO_TITLE_MAX_LENGTH}
+                    className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
                   />
                 </div>
+
                 <div className="space-y-1.5">
-                  <label
-                    htmlFor="seoDescription"
-                    className="text-sm font-medium text-neutral-700"
-                  >
-                    SEO-описание
-                  </label>
+                  <div className="flex items-baseline justify-between gap-4">
+                    <label
+                      htmlFor="seoDescription"
+                      className="text-sm font-medium text-neutral-700"
+                    >
+                      SEO-описание
+                    </label>
+                    <CharCounter
+                      value={seoDescription}
+                      limit={SEO_DESCRIPTION_SOFT_LIMIT}
+                    />
+                  </div>
                   <textarea
                     id="seoDescription"
                     value={seoDescription}
                     onChange={(event) => setSeoDescription(event.target.value)}
-                    placeholder={lead}
                     rows={3}
-                    disabled
-                    className="w-full resize-y rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-400 outline-none"
+                    placeholder={lead || "Лид или первые 160 символов текста"}
+                    maxLength={SEO_DESCRIPTION_MAX_LENGTH}
+                    className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
                   />
                 </div>
-                <p className="text-xs text-neutral-400">
-                  Отдельных SEO-полей в модели Article нет. Здесь используются
-                  title и description из метаданных страницы — они показаны выше
-                  как подсказка.
-                </p>
+
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="seoCanonicalUrl"
+                    className="text-sm font-medium text-neutral-700"
+                  >
+                    Канонический URL
+                  </label>
+                  <input
+                    id="seoCanonicalUrl"
+                    type="url"
+                    value={seoCanonicalUrl}
+                    onChange={(event) => setSeoCanonicalUrl(event.target.value)}
+                    placeholder="https://example.com/original"
+                    className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
+                  />
+                  <p className="text-xs text-neutral-400">
+                    Для перепечаток: указывает поисковику оригинал, с которого
+                    взята новость. Пусто — канонический адрес самой статьи.
+                  </p>
+                </div>
+
+                <label
+                  htmlFor="noIndex"
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-neutral-300 bg-neutral-50 p-3"
+                >
+                  <input
+                    id="noIndex"
+                    type="checkbox"
+                    checked={noIndex}
+                    onChange={(event) => setNoIndex(event.target.checked)}
+                    className="mt-0.5 size-4 shrink-0 rounded-sm border-neutral-400 accent-red-700"
+                  />
+                  <span className="text-sm text-neutral-700">
+                    <span className="font-medium">Не индексировать</span>
+                    <span className="block text-xs text-neutral-500">
+                      robots: noindex, nofollow. Для служебных и правовых
+                      материалов, которые не должны попадать в выдачу.
+                    </span>
+                  </span>
+                </label>
               </section>
             ) : null}
           </div>

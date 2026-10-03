@@ -6,6 +6,7 @@ import { ChevronRight } from "lucide-react";
 import { ArticleCard } from "@/components/article-card";
 import { CoverImage } from "@/components/cover-image";
 import { ViewCounter } from "@/components/view-counter";
+import { plainTextPreview } from "@/lib/article-html";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
 import { sanitizeArticleHtml } from "@/lib/sanitize";
@@ -30,6 +31,19 @@ async function loadArticle(slug: string) {
   return article;
 }
 
+/** Absolute URL, or null when the field is empty or not a usable http(s) link. */
+function canonicalUrl(value: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 export async function generateMetadata({
   params,
 }: ArticlePageProps): Promise<Metadata> {
@@ -42,19 +56,35 @@ export async function generateMetadata({
     return { title: "Материал не найден", robots: { index: false, follow: false } };
   }
 
+  // Editorial overrides win; otherwise derive from the story, so an unfilled
+  // field degrades to something sensible instead of an empty tag.
+  const title = article.seoTitle?.trim() || article.title;
   const description =
-    article.lead ?? article.subtitle ?? `${article.title} — ${SITE_NAME}`;
+    article.seoDescription?.trim() ||
+    article.lead?.trim() ||
+    plainTextPreview(article.contentHtml, 160);
   const url = `/news/${article.slug}`;
 
   return {
-    title: article.title,
+    title,
     description,
-    alternates: { canonical: url },
-    keywords: article.category ? [article.category.name] : undefined,
+    // A reprint points its canonical at the original; everything else is
+    // self-canonical.
+    alternates: { canonical: canonicalUrl(article.seoCanonicalUrl) ?? url },
+    // Both branches are explicit. Passing `undefined` for the indexable case
+    // still emitted a robots meta, so an editor toggling noIndex on and off was
+    // never sure which state the page was actually in.
+    robots: article.noIndex
+      ? { index: false, follow: false }
+      : { index: true, follow: true },
+    keywords: [
+      ...(article.category ? [article.category.name] : []),
+      ...article.tags.map((entry) => entry.tag.name),
+    ],
     openGraph: {
       type: "article",
       url,
-      title: article.title,
+      title,
       description,
       siteName: SITE_NAME,
       locale: "ru_RU",
@@ -223,6 +253,24 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           __html: sanitizeArticleHtml(article.contentHtml),
         }}
       />
+
+      {article.tags.length > 0 ? (
+        <ul
+          aria-label="Тэги материала"
+          className="mt-6 flex flex-wrap gap-2 border-t border-rule pt-4"
+        >
+          {article.tags.map((entry) => (
+            <li key={entry.tag.id}>
+              <Link
+                href={`/tags/${entry.tag.slug}`}
+                className="inline-flex items-center rounded-full border border-rule bg-paper-dim px-3 py-1 text-xs font-semibold text-ink-soft transition-colors hover:border-yo hover:text-yo-ink"
+              >
+                {entry.tag.name}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       {related.length > 0 ? (
         <aside

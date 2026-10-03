@@ -13,6 +13,7 @@ import {
 const NAV_LINKS = [
   { href: "/", label: "Главная" },
   { href: "/category/tech", label: "Технологии" },
+  { href: "/tags", label: "Тэги" },
   { href: "/about", label: "О редакции" },
 ];
 
