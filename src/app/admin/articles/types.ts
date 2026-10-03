@@ -16,6 +16,8 @@ export type ArticleField =
   | "slug"
   | "contentHtml"
   | "coverImage"
+  | "photoAuthor"
+  | "photoSource"
   | "categoryId";
 
 /** Shape returned to the client after every save attempt. */
@@ -41,8 +43,11 @@ export type ArticleFormValues = {
   lead: string;
   contentHtml: string;
   coverImage: string;
+  photoAuthor: string;
+  photoSource: string;
   categoryId: string;
   status: ArticleStatus;
+  publishedAt: string;
   isDzen: boolean;
   isVk: boolean;
   isExclusive: boolean;
@@ -66,5 +71,29 @@ export const FALLBACK_CATEGORIES: CategoryOption[] = [
   { id: "incident", name: "Происшествия" },
 ];
 
-/** Editorial soft limit for headlines; past this the editor warns. */
-export const TITLE_SOFT_LIMIT = 70;
+/**
+ * Editorial soft limit for headlines; past this the editor is warned, never
+ * blocked. Long investigative headlines are normal and the server does not
+ * truncate, so a warning is the only honest signal. It used to sit at 70, which
+ * editors kept hitting on ordinary stories.
+ */
+export const TITLE_SOFT_LIMIT = 250;
+
+/**
+ * Hard ceiling, enforced by the input and again on the server. Set above the
+ * soft limit so the warning is the thing editors see, not a silent truncation.
+ */
+export const TITLE_MAX_LENGTH = 300;
+
+/**
+ * Everything the editor needs to render an existing article back into the form.
+ * The shape is deliberately identical to `ArticleFormValues` so switching
+ * between create and edit is a single prop difference.
+ */
+export type ArticleInitialValues = ArticleFormValues & {
+  id: string;
+  slug: string;
+  publishedAt: string;
+  photoAuthor: string;
+  photoSource: string;
+};

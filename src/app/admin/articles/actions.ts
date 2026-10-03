@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import type { SaveArticleResult } from "@/app/admin/articles/types";
+import { normalizeArticleHtml } from "@/lib/article-html";
 import { isArticleStatus } from "@/lib/article-status";
 import { prisma } from "@/lib/prisma";
 import { publishArticleToVk } from "@/lib/vk-publisher";
@@ -23,16 +24,63 @@ function checkbox(formData: FormData, key: string): boolean {
 }
 
 /**
- * `datetime-local` sends "2026-10-01T12:30" with no timezone. `new Date`
- * parses that in the server's local zone, which is what the editor expects —
- * the same wall-clock time they typed.
+ * `datetime-local` sends "2026-10-01T12:30" with no timezone. That is the
+ * editor's wall clock in Moscow, so it is converted explicitly rather than left
+ * to `new Date(...)`, which would read it in the *server's* zone — UTC on the
+ * VPS — and silently shift every scheduled post by three hours.
  */
+const EDITOR_TIME_ZONE = "Europe/Moscow";
+
 function publicationDate(formData: FormData): Date | null {
   const raw = str(formData, "publishedAt");
   if (!raw) return null;
 
-  const parsed = new Date(raw);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  // "YYYY-MM-DDTHH:mm" read as UTC, then re-read in Moscow: if the wall-clock
+  // fields survive the round trip, the offset applied is the Moscow one.
+  const asUtc = Date.parse(`${raw}:00Z`);
+  if (Number.isNaN(asUtc)) return null;
+
+  const wallClock = new Date(asUtc);
+  const offsetMinutes = moscowOffsetMinutes(wallClock);
+  return new Date(asUtc - offsetMinutes * 60_000);
+}
+
+/**
+ * Moscow's UTC offset in minutes for the given instant, DST included.
+ * `Intl` is asked rather than hardcoding +180 so the published dates stay right
+ * across a future change to Russia's timezone rules.
+ */
+function moscowOffsetMinutes(at: Date): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: EDITOR_TIME_ZONE,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(at)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+
+  // `hour` comes back as 24 at midnight under hour12:false in some ICU builds.
+  const hour = parts.hour === 24 ? 0 : parts.hour;
+  const asUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    hour,
+    parts.minute,
+    parts.second,
+  );
+
+  return (asUtc - at.getTime()) / 60_000;
 }
 
 const TRANSLIT: Record<string, string> = {
@@ -111,12 +159,12 @@ export async function createArticleAction(
     categoryId = category?.id ?? null;
   }
 
-  const status =
-    intent === "apply"
-      ? "published"
-      : isArticleStatus(rawStatus)
-        ? rawStatus
-        : "draft";
+  // The sidebar owns the status. "Применить" used to force `published` here,
+  // which silently published drafts the editor had deliberately left as drafts,
+  // and made the segmented control in the sidebar a lie. Only the explicit
+  // "Опубликовать" button sets the status, and it does so by submitting one.
+  const requested = isArticleStatus(rawStatus) ? rawStatus : "draft";
+  const status = intent === "publish" ? "published" : requested;
 
   if (Object.keys(fieldErrors).length > 0) {
     return {
@@ -153,8 +201,10 @@ export async function createArticleAction(
     subtitle: optional(str(formData, "subtitle")),
     slug,
     lead: optional(str(formData, "lead")),
-    contentHtml,
+    contentHtml: normalizeArticleHtml(contentHtml),
     coverImage: optional(str(formData, "coverImage")),
+    photoAuthor: optional(str(formData, "photoAuthor")),
+    photoSource: optional(str(formData, "photoSource")),
     categoryId,
     isDzen: checkbox(formData, "isDzen"),
     isVk: checkbox(formData, "isVk"),
@@ -163,6 +213,9 @@ export async function createArticleAction(
     status,
   };
 
+  // The date is kept for drafts too, so an editor can schedule a story ahead of
+  // time and simply flip the status to publish later. Visibility is decided by
+  // `status`, never by this column, so a scheduled draft stays off the site.
   const chosenDate = publicationDate(formData);
 
   const article = id
@@ -170,18 +223,13 @@ export async function createArticleAction(
         where: { id },
         data: {
           ...data,
-          // publishedAt records the first publication and must survive re-saves
-          // unless the editor explicitly moves the date.
-          ...(status === "published"
-            ? { publishedAt: chosenDate ?? existing?.publishedAt ?? new Date() }
-            : {}),
+          publishedAt: chosenDate ?? existing?.publishedAt ?? new Date(),
         },
       })
     : await prisma.article.create({
         data: {
           ...data,
-          // A draft keeps a null date so it can be scheduled later.
-          ...(status === "published" ? { publishedAt: chosenDate ?? new Date() } : {}),
+          publishedAt: chosenDate ?? new Date(),
         },
       });
 
@@ -209,7 +257,20 @@ export async function createArticleAction(
   }
 
   revalidatePath("/admin/articles");
+  // The public storefront is statically rendered with ISR, so a newly published
+  // story (or an edited one) is invisible until those paths are revalidated.
+  // Without this the editor hits "Опубликовать" and sees no change on the site.
   revalidatePath("/");
+  revalidatePath(`/news/${article.slug}`);
+  revalidatePath("/sitemap.xml");
+  revalidatePath("/api/feed/dzen.xml");
+  if (categoryId) {
+    const category = await prisma.category.findUnique({
+      where: { id: categoryId },
+      select: { slug: true },
+    });
+    if (category) revalidatePath(`/category/${category.slug}`);
+  }
 
   // "Сохранить" leaves the editor; "Применить" reports back in place.
   if (intent === "save") {

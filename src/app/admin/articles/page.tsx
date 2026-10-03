@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Pencil, Plus } from "lucide-react";
 
 import { isArticleStatus } from "@/lib/article-status";
 import { prisma } from "@/lib/prisma";
@@ -93,12 +93,25 @@ export default async function ArticlesListPage() {
                 return (
                   <tr key={article.id} className="border-t border-neutral-200">
                     <td className="px-3 py-2">
-                      <span className="font-medium text-neutral-900">
-                        {article.title}
-                      </span>
-                      <span className="block font-mono text-xs text-neutral-400">
-                        /{article.slug}
-                      </span>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="font-medium text-neutral-900">
+                            {article.title}
+                          </span>
+                          <span className="block font-mono text-xs text-neutral-400">
+                            /{article.slug}
+                          </span>
+                        </div>
+                        {/* The edit route used to be missing entirely, so a draft
+                            could never be opened and re-published. */}
+                        <Link
+                          href={`/admin/articles/${article.id}/edit`}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-sm border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-100"
+                        >
+                          <Pencil className="size-3.5" aria-hidden />
+                          Изменить
+                        </Link>
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-neutral-600">
                       {article.category?.name ?? "—"}

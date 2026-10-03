@@ -20,6 +20,9 @@ model Article {
   lead        String?
   contentHtml String
   coverImage  String?
+  // Photo credit, printed in italics under the cover.
+  photoAuthor String?
+  photoSource String?
   category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   categoryId  String?
   // Distribution flags from the editorial sidebar.
