@@ -85,5 +85,13 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*"],
+  // `/api/upload` is here because it writes attacker-chosen bytes onto the
+  // server's disk and returns a URL for them. It sits outside `/admin`, so the
+  // original `/admin/:path*` matcher left it open: an anonymous POST returned
+  // 201 and left a file in UPLOAD_DIR. The view counter stays public — it is
+  // called from the reader-facing page.
+  //
+  // Inlined rather than referenced from a const: Next parses this export
+  // statically and a build fails on an indirection.
+  matcher: ["/admin/:path*", "/api/upload"],
 };
