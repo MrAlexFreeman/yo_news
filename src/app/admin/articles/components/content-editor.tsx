@@ -15,16 +15,18 @@ import {
   Quote,
   Table as TableIcon,
   Underline,
+  Video,
 } from "lucide-react";
-import { useId, useRef } from "react";
+import { useId, useRef, useState } from "react";
 
+import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { cn } from "@/lib/utils";
 
 /** One toolbar control. `wrap` toggles a tag, `insert` drops in a block. */
 type ToolbarAction = {
   label: string;
   icon: typeof Bold;
-  kind: "wrap" | "insert" | "align";
+  kind: "wrap" | "insert" | "align" | "link" | "video";
   /** Tag for `wrap`, opening tag for `insert`, CSS class for `align`. */
   target: string;
   placeholder?: string;
@@ -65,18 +67,25 @@ const GROUPS: ToolbarAction[][] = [
   ],
   [
     {
+      // Asks for the target instead of dropping a literal "https://" stub the
+      // editor had to hunt for and replace.
       label: "Ссылка",
       icon: LinkIcon,
-      kind: "insert",
-      target: '<a href="https://">',
-      close: "</a>",
+      kind: "link",
+      target: "a",
       placeholder: "текст ссылки",
+    },
+    {
+      label: "Видео",
+      icon: Video,
+      kind: "video",
+      target: "video",
     },
     {
       label: "Изображение",
       icon: ImageIcon,
       kind: "insert",
-      target: '<img src="https://" alt="" />',
+      target: '<img src="/uploads/',
       placeholder: "",
     },
     {
@@ -150,10 +159,13 @@ function withAlignment(tag: string, alignment: string): string {
 export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
   const id = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [toolbarError, setToolbarError] = useState<string | null>(null);
 
   function applyAction(action: ToolbarAction) {
     const textarea = textareaRef.current;
     if (!textarea) return;
+
+    setToolbarError(null);
 
     const { selectionStart, selectionEnd } = textarea;
     const selected = value.slice(selectionStart, selectionEnd);
@@ -163,7 +175,42 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
     let inserted: string;
     let caret: number;
 
-    if (action.kind === "wrap") {
+    if (action.kind === "link") {
+      // The URL is asked for rather than templated in, so the result is a real
+      // link instead of a stub the editor has to find and repair by hand.
+      const href = window.prompt(
+        "Адрес ссылки (https://… или /uploads/…):",
+        "https://",
+      );
+      if (href === null) return;
+
+      const trimmed = href.trim();
+      if (!trimmed) {
+        setToolbarError("Пустой адрес ссылки — вставка отменена.");
+        return;
+      }
+
+      const label = selected || action.placeholder || "ссылка";
+      inserted = `<a href="${trimmed.replace(/"/g, "&quot;")}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      caret = selectionStart + inserted.length;
+    } else if (action.kind === "video") {
+      const url = window.prompt(
+        "Ссылка на видео (YouTube, Rutube или VK Видео):",
+        "https://",
+      );
+      if (url === null) return;
+
+      const embed = buildVideoEmbed(url);
+      if (!embed) {
+        setToolbarError(unsupportedVideoMessage(url));
+        return;
+      }
+
+      const spacer = before.length > 0 && !before.endsWith("\n") ? "\n\n" : "";
+      const closer = after.length > 0 && !after.startsWith("\n") ? "\n\n" : "";
+      inserted = `${spacer}${embed}${closer}`;
+      caret = selectionStart + inserted.length;
+    } else if (action.kind === "wrap") {
       const open = `<${action.target}>`;
       const close = `</${action.target}>`;
       inserted = `${open}${selected}${close}`;
@@ -256,7 +303,6 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
         <textarea
           ref={textareaRef}
           id={id}
-          name="contentHtml"
           value={value}
           onChange={(event) => onChange(event.target.value)}
           rows={20}
@@ -268,6 +314,17 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
           className="block w-full resize-y rounded-b px-3 py-2 font-mono text-sm leading-relaxed outline-none placeholder:text-neutral-400"
         />
       </div>
+
+      {toolbarError ? (
+        <p role="alert" className="text-sm text-red-600">
+          {toolbarError}
+        </p>
+      ) : null}
+
+      <p className="text-xs text-neutral-400">
+        Абзацы разделяются пустой строкой, перенос строки внутри абзаца
+        превращается в разрыв. «Ссылка» и «Видео» спросят адрес.
+      </p>
 
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
     </div>

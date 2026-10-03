@@ -141,6 +141,30 @@ body {
   font-size: 0.8125rem;
 }
 
+/* Video embeds. The iframe needs an aspect ratio so the player reserves its
+   space before the script loads, otherwise the article jumps as it arrives. */
+.article-body .video-embed {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.article-body .video-embed iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  border: 0;
+  border-radius: 2px;
+  background: var(--color-ink, #1a1a1a);
+}
+
+/* An image pasted into the body should never overflow the column. */
+.article-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 2px;
+}
+
 /* Ticker strip in the header. */
 @keyframes ticker-scroll {
   from {
