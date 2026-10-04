@@ -2,6 +2,7 @@ import type { Prisma } from "@/generated/prisma/client";
 
 import { parseMedia } from "@/lib/article-media";
 import { buildDzenContent } from "@/lib/dzen-feed-html";
+import { dzenPublicationMethod, dzenRating } from "@/lib/dzen-publication";
 import { prisma } from "@/lib/prisma";
 import { RSS_CHANNEL_DESCRIPTION, RSS_CHANNEL_TITLE } from "@/lib/site";
 
@@ -85,6 +86,10 @@ type FeedArticle = Prisma.ArticleGetPayload<{
     photoSource: true;
     media: true;
     videoUrl: true;
+    dzenExperiment: true;
+    dzenDirect: true;
+    noIndex: true;
+    is18plus: true;
     publishedAt: true;
     createdAt: true;
     category: { select: { name: true } };
@@ -132,8 +137,25 @@ function renderItem(article: FeedArticle, base: string): string {
     `      <content:encoded>${cdata(body)}</content:encoded>`,
   ];
 
-  if (article.category) {
-    parts.push(`      <category>${escapeXml(article.category.name)}</category>`);
+  // Dzen defines <category> as the *publication method* for a channel feed —
+  // native-draft, format-article, format-post — and reads the value literally.
+  // The rubric that used to go here was therefore never read as a rubric, and it
+  // occupied the very slot the experiment flags need. It is dropped rather than
+  // moved to an invented element: the spec has no place for it, and an
+  // unrecognised tag is a needless risk on a feed that must stay strict.
+  //
+  // Exactly one <category>, ever. The same element also carries indexing
+  // (index/noindex) and commenting in Dzen's docs, but only one value fits, and
+  // the method is the one that controls where the piece actually lands — so the
+  // method wins the slot and the other two are left out rather than guessed at.
+  const method = dzenPublicationMethod(article);
+  if (method) {
+    parts.push(`      <category>${method}</category>`);
+  }
+
+  const rating = dzenRating(article.is18plus);
+  if (rating) {
+    parts.push(`      <media:rating scheme="urn:simple">${rating}</media:rating>`);
   }
 
   if (article.coverImage) {
@@ -160,7 +182,7 @@ function renderItem(article: FeedArticle, base: string): string {
 
 function renderFeed(items: FeedArticle[], base: string, builtAt: Date): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom">
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
   <channel>
     <title>${escapeXml(RSS_CHANNEL_TITLE)}</title>
     <link>${escapeXml(base)}</link>
@@ -191,6 +213,10 @@ export async function GET() {
       photoSource: true,
       media: true,
       videoUrl: true,
+      dzenExperiment: true,
+      dzenDirect: true,
+      noIndex: true,
+      is18plus: true,
       publishedAt: true,
       createdAt: true,
       category: { select: { name: true } },

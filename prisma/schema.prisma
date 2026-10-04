@@ -55,6 +55,17 @@ model Article {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   publishedAt DateTime?
+  // Dzen syndication experiment, per editorial rule: it can only be switched on at
+  // the moment of first publication. Enforced server-side in actions.ts, not just
+  // by disabling the checkbox — see src/lib/dzen-experiment.ts.
+  //
+  // Appended at the end on purpose: SQLite can only ADD COLUMN at the end of a
+  // table, so inserting these among the other flags made Prisma rebuild the whole
+  // Article table instead of adding two columns.
+  dzenExperiment Boolean @default(false)
+  // Publish straight into Dzen instead of holding the item for review. Only has an
+  // effect together with dzenExperiment, which is the stronger claim.
+  dzenDirect     Boolean @default(false)
   tags        ArticleTag[]
 
   @@index([status, publishedAt])

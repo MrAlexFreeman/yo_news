@@ -31,6 +31,7 @@ import { TitleField } from "@/app/admin/articles/components/title-field";
 import { AiCoverGenerator } from "@/app/admin/articles/components/ai-cover-generator";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
 import { parseMediaField, serializeMedia, type MediaItem } from "@/lib/article-media";
+import { canSetDzenExperiment } from "@/lib/dzen-experiment";
 import {
   DZEN_MIN_CARD_WIDTH,
   NARROW_COVER_WARNING,
@@ -95,6 +96,21 @@ function moscowNow(): string {
 }
 
 /**
+ * Inverse of `moscowNow` for the value in the datetime-local field: a
+ * "YYYY-MM-DDTHH:mm" string read back as a Date, for display-only comparisons.
+ *
+ * Only used to decide whether the experiment flag is still editable, so a small
+ * three-hour skew around the window boundary costs at most one checkbox update.
+ * The stored date — and therefore the authoritative decision — comes from the
+ * action, which does the conversion properly.
+ */
+function moscowInputToDate(value: string): Date | null {
+  if (!value) return null;
+  const parsed = Date.parse(`${value}:00Z`);
+  return Number.isNaN(parsed) ? null : new Date(parsed);
+}
+
+/**
  * Everything the form holds, so a revert has something to revert to.
  *
  * Deliberately not `ArticleInitialValues`: the snapshot describes field state
@@ -103,7 +119,7 @@ function moscowNow(): string {
  */
 type FormSnapshot = Omit<
   ArticleFormValues,
-  "id" | "slug" | "publishedAt" | "tags" | "media"
+  "id" | "slug" | "publishedAt" | "tags" | "media" | "dzenExperimentLocked"
 > & {
   publishedAt: string;
   /** Compared as a joined string: the array identity changes on every render. */
@@ -175,7 +191,28 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [isVk, setIsVk] = useState(initial?.isVk ?? true);
   const [isExclusive, setIsExclusive] = useState(initial?.isExclusive ?? false);
   const [is18plus, setIs18plus] = useState(initial?.is18plus ?? false);
+  const [dzenExperiment, setDzenExperiment] = useState(initial?.dzenExperiment ?? false);
+  const [dzenDirect, setDzenDirect] = useState(initial?.dzenDirect ?? false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  // Owned by the client for immediate feedback when the editor moves the publish
+  // date, but refreshed from every save result so a server-side lock (a crafted
+  // POST, or a rule this client does not know about) becomes visible at once.
+  const [dzenExperimentLockedByServer, setDzenExperimentLockedByServer] = useState(
+    initial?.dzenExperimentLocked ?? false,
+  );
+
+  /**
+   * The same rule the action applies, evaluated against the date currently shown
+   * in the form so the checkbox locks the moment an editor backdates the story
+   * rather than after a save. `canSetDzenExperiment` is a pure function, so the
+   * form and the action cannot drift apart in their answer.
+   */
+  const dzenExperimentLocked =
+    dzenExperimentLockedByServer ||
+    !canSetDzenExperiment({
+      storedPublishedAt: null,
+      chosenPublishedAt: moscowInputToDate(publishedAt),
+    });
   const errors = state.fieldErrors ?? {};
   const busy = pending || deletePending;
 
@@ -205,6 +242,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
           seoDescription: initial.seoDescription,
           seoCanonicalUrl: initial.seoCanonicalUrl,
           noIndex: initial.noIndex,
+          dzenExperiment: initial.dzenExperiment,
+          dzenDirect: initial.dzenDirect,
           tags: initial.tags.join(","),
           media: serializeMedia(initial.media),
           videoUrl: initial.videoUrl,
@@ -238,6 +277,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     seoDescription,
     seoCanonicalUrl,
     noIndex,
+    dzenExperiment,
+    dzenDirect,
     // Joined: comparing array identity would report a change on every render.
     tags: tags.join(","),
     media: serializeMedia(media),
@@ -258,7 +299,16 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   );
   if (state !== lastHandled) {
     setLastHandled(state);
-    if (state.ok) setSaved(current);
+    if (state.ok) {
+      setSaved(current);
+      // Adopt whatever the server actually stored. If the rule rejected the
+      // submitted flag, the checkbox has to snap back — leaving it ticked would
+      // tell the editor an experiment is running when no feed markup was emitted.
+      if (typeof state.dzenExperiment === "boolean") {
+        setDzenExperiment(state.dzenExperiment);
+      }
+      setDzenExperimentLockedByServer(Boolean(state.dzenExperimentLocked));
+    }
   }
 
   const dirty = saved
@@ -291,6 +341,11 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     setSeoDescription(snapshot.seoDescription);
     setSeoCanonicalUrl(snapshot.seoCanonicalUrl);
     setNoIndex(snapshot.noIndex);
+    setDzenExperiment(snapshot.dzenExperiment);
+    setDzenDirect(snapshot.dzenDirect);
+    // The snapshot is the last *saved* state, so whatever lock applied then
+    // applies again. Recomputed from the restored publish date below.
+    setDzenExperimentLockedByServer(false);
     setTags(snapshot.tags ? snapshot.tags.split(",").filter(Boolean) : []);
     setMedia(parseMediaField(snapshot.media));
     setVideoUrl(snapshot.videoUrl);
@@ -383,6 +438,9 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
       setSeoDescription("");
       setSeoCanonicalUrl("");
       setNoIndex(false);
+      setDzenExperiment(false);
+      setDzenDirect(false);
+      setDzenExperimentLockedByServer(false);
       setTags([]);
       setMedia([]);
       setVideoUrl("");
@@ -466,6 +524,21 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
       {/* Unchecked checkboxes are absent from FormData, so the flag is mirrored
           as "on" / "" rather than relying on the visible control's presence. */}
       <input type="hidden" name="noIndex" value={noIndex ? "on" : ""} readOnly />
+      {/* The Dzen checkboxes live in the sidebar, which is always mounted — but a
+          *disabled* input is not submitted at all, so the locked experiment flag
+          still needs a mirror for the action to read its stored value. */}
+      <input
+        type="hidden"
+        name="dzenExperiment"
+        value={dzenExperiment ? "on" : ""}
+        readOnly
+      />
+      <input
+        type="hidden"
+        name="dzenDirect"
+        value={dzenDirect ? "on" : ""}
+        readOnly
+      />
       <input type="hidden" name="tags" value={tags.join(",")} readOnly />
       {/* Gallery travels as JSON for the same reason the mirror exists: the
           MediaEditor lives on the "Медиа" tab and unmounts with it. */}
@@ -932,6 +1005,15 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
             onIs18plusChange={(value) => {
               setIs18plus(value);
             }}
+            dzenExperiment={dzenExperiment}
+            onDzenExperimentChange={(value) => {
+              setDzenExperiment(value);
+            }}
+            dzenDirect={dzenDirect}
+            onDzenDirectChange={(value) => {
+              setDzenDirect(value);
+            }}
+            dzenExperimentLocked={dzenExperimentLocked}
             categoryError={errors.categoryId}
           />
         </div>

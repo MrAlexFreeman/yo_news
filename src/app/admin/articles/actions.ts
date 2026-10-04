@@ -8,6 +8,11 @@ import type { SaveArticleResult } from "@/app/admin/articles/types";
 import { normalizeArticleHtml } from "@/lib/article-html";
 import { isArticleStatus } from "@/lib/article-status";
 import { parseMediaField } from "@/lib/article-media";
+import {
+  DZEN_EXPERIMENT_LOCKED_HINT,
+  canSetDzenExperiment,
+  resolveDzenExperiment,
+} from "@/lib/dzen-experiment";
 import { prisma } from "@/lib/prisma";
 import { slugify } from "@/lib/slugify";
 import { parseTagsField, syncArticleTags } from "@/lib/tags";
@@ -196,6 +201,7 @@ export async function createArticleAction(
         select: {
           id: true,
           publishedAt: true,
+          dzenExperiment: true,
           tags: { select: { tag: { select: { slug: true } } } },
         },
       })
@@ -211,6 +217,22 @@ export async function createArticleAction(
 
   const slugBase = slugify(str(formData, "slug") || title);
   const slug = await uniqueSlug(slugBase, id || undefined);
+
+  // Editorial rule: the Dzen experiment flag may only be granted at the moment of
+  // first publication. Enforced here, not in the form — a disabled checkbox is a
+  // UI convention, and this handler is reachable by any POST that carries the
+  // Basic Auth header.
+  const chosenDate = publicationDate(formData);
+  const dzenExperimentLocked = !canSetDzenExperiment({
+    storedPublishedAt: existing?.publishedAt ?? null,
+    chosenPublishedAt: chosenDate,
+  });
+  const dzenExperiment = resolveDzenExperiment({
+    submitted: checkbox(formData, "dzenExperiment"),
+    stored: existing?.dzenExperiment ?? false,
+    storedPublishedAt: existing?.publishedAt ?? null,
+    chosenPublishedAt: chosenDate,
+  });
 
   const data = {
     title,
@@ -232,13 +254,14 @@ export async function createArticleAction(
     is18plus: checkbox(formData, "is18plus"),
     videoUrl,
     media: mediaColumn(str(formData, "media")),
+    dzenExperiment,
+    dzenDirect: checkbox(formData, "dzenDirect"),
     status,
   };
 
   // The date is kept for drafts too, so an editor can schedule a story ahead of
   // time and simply flip the status to publish later. Visibility is decided by
   // `status`, never by this column, so a scheduled draft stays off the site.
-  const chosenDate = publicationDate(formData);
   const tagNames = parseTagsField(str(formData, "tags"));
 
   // The row write and the tag sync share one transaction: a tag set half-written
@@ -326,12 +349,23 @@ export async function createArticleAction(
     redirect("/admin/articles");
   }
 
+  // Echoed back so the editor sees *why* the checkbox is locked and whether their
+  // submitted value was accepted. Silently ignoring a checked box is the one
+  // outcome that would leave an editor believing an experiment is running.
+  const experimentRejected = dzenExperimentLocked && checkbox(formData, "dzenExperiment");
+
   return {
     ok: true,
-    message: id ? "Материал обновлён." : "Материал создан.",
+    message: experimentRejected
+      ? `${id ? "Материал обновлён." : "Материал создан."} Эксперимент с Дзен не включён: ${DZEN_EXPERIMENT_LOCKED_HINT}.`
+      : id
+        ? "Материал обновлён."
+        : "Материал создан.",
     id: article.id,
     slug: article.slug,
     dzenQueued: article.status === "published" && article.isDzen,
+    dzenExperiment: article.dzenExperiment,
+    dzenExperimentLocked,
     vkQueued: article.status === "published" && article.isVk,
     vkPostId,
   };

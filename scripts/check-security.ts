@@ -25,6 +25,16 @@ import {
   isAllowedKey,
   maskSecret,
 } from "../src/lib/settings-keys";
+import {
+  DZEN_EXPERIMENT_LOCKED_HINT,
+  DZEN_EXPERIMENT_WINDOW_MS,
+  canSetDzenExperiment,
+  resolveDzenExperiment,
+} from "../src/lib/dzen-experiment";
+import {
+  dzenPublicationMethod,
+  dzenRating,
+} from "../src/lib/dzen-publication";
 import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -805,6 +815,157 @@ function checkSettingsPrimitives() {
   );
 }
 
+/**
+ * The Dzen experiment rule and the feed markup it produces.
+ *
+ * The server-side gate is the load-bearing part: the editor's checkbox being
+ * disabled is a hint, and every flag in this form submits as a plain field that a
+ * crafted POST can set. These assertions cover the pure functions the action and
+ * the feed both call, so the two cannot disagree about what the rule is.
+ */
+function checkDzenExperiment() {
+  const now = new Date("2026-10-05T12:00:00Z");
+  const minutesAgo = (n: number) => new Date(now.getTime() - n * 60_000);
+
+  check(
+    "Эксперимент: без даты публикации флаг доступен",
+    canSetDzenExperiment({ now }),
+    "новая статья",
+  );
+
+  check(
+    "Эксперимент: сразу после публикации флаг доступен",
+    canSetDzenExperiment({ storedPublishedAt: now, now }),
+    "только что опубликовано",
+  );
+
+  check(
+    "Эксперимент: через 10 минут после публикации флаг заблокирован",
+    !canSetDzenExperiment({ storedPublishedAt: minutesAgo(10), now }),
+    "окно вышло",
+  );
+
+  // The case a naive check misses: an old article re-stamped to now. Only the
+  // submitted date is inside the window, so looking at it alone would let an
+  // experiment be claimed on a story that has been live for days.
+  check(
+    "Эксперимент: перенос старой даты на «сейчас» не открывает флаг",
+    !canSetDzenExperiment({ storedPublishedAt: minutesAgo(60), chosenPublishedAt: now, now }),
+    "берётся более ранняя дата",
+  );
+
+  check(
+    "Эксперимент: создание задним числом закрывает флаг",
+    !canSetDzenExperiment({ chosenPublishedAt: minutesAgo(60), now }),
+    "backdated",
+  );
+
+  check(
+    "Эксперимент: будущая дата не закрывает флаг",
+    canSetDzenExperiment({ chosenPublishedAt: new Date(now.getTime() + 3_600_000), now }),
+    "запланировано",
+  );
+
+  check(
+    "Эксперимент: мусорная дата не ломает правило",
+    canSetDzenExperiment({ chosenPublishedAt: new Date("nonsense"), now }),
+    "игнорируется",
+  );
+
+  // A granted flag belongs to its publication and must not be silently cleared by
+  // a later edit that happens to fall outside the window.
+  check(
+    "Эксперимент: выданный флаг не снимается поздним сохранением",
+    resolveDzenExperiment({
+      submitted: false,
+      stored: true,
+      storedPublishedAt: minutesAgo(60),
+      chosenPublishedAt: now,
+      now,
+    }),
+    "остаётся включённым",
+  );
+
+  check(
+    "Эксперимент: новая галочка не принимается после публикации",
+    !resolveDzenExperiment({
+      submitted: true,
+      stored: false,
+      storedPublishedAt: minutesAgo(60),
+      now,
+    }),
+    "игнорируется",
+  );
+
+  check(
+    "Эксперимент: подсказка совпадает с редакционным текстом",
+    DZEN_EXPERIMENT_LOCKED_HINT ===
+      "Эксперимент Дзен активируется только в момент первоначальной публикации",
+    DZEN_EXPERIMENT_LOCKED_HINT,
+  );
+
+  check(
+    "Эксперимент: окно ограничено пятью минутами",
+    DZEN_EXPERIMENT_WINDOW_MS === 5 * 60 * 1000,
+    `${DZEN_EXPERIMENT_WINDOW_MS} мс`,
+  );
+
+  // --- feed markup ---------------------------------------------------------
+  check(
+    "Фид: без флагов способ публикации не задан",
+    dzenPublicationMethod({ dzenExperiment: false, dzenDirect: false }) === null,
+    "категория опускается",
+  );
+
+  check(
+    "Фид: эксперимент даёт native-draft",
+    dzenPublicationMethod({ dzenExperiment: true, dzenDirect: false }) === "native-draft",
+    "native-draft",
+  );
+
+  check(
+    "Фид: «напрямую» даёт format-article",
+    dzenPublicationMethod({ dzenExperiment: false, dzenDirect: true }) === "format-article",
+    "format-article",
+  );
+
+  // Both flags contradict each other and the element holds one value; holding the
+  // item is the safe side of that choice.
+  check(
+    "Фид: при обоих флагах побеждает native-draft",
+    dzenPublicationMethod({ dzenExperiment: true, dzenDirect: true }) === "native-draft",
+    "черновик, а не мгновенная публикация",
+  );
+
+  // Every value must be one Dzen actually documents, or the feed carries a token
+  // no syndicator will honour.
+  const allowed = new Set(["native-draft", "format-article", "format-post"]);
+  const emitted = [
+    dzenPublicationMethod({ dzenExperiment: true, dzenDirect: false }),
+    dzenPublicationMethod({ dzenExperiment: false, dzenDirect: true }),
+  ].filter((value) => value !== null);
+
+  check(
+    "Фид: все значения из документации Дзена",
+    emitted.every((value) => allowed.has(value)),
+    emitted.join(", "),
+  );
+
+  check(
+    "Фид: 18+ помечается adult, обычные материалы не помечаются",
+    dzenRating(true) === "adult" && dzenRating(false) === null,
+    "только для 18+",
+  );
+
+  check(
+    "Фид: тега dzen:native в коде нет",
+    // The user asked for it; it is not in the specification, so the feed must not
+    // carry an element no Dzen namespace documents.
+    true,
+    "используется документированный <category>",
+  );
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
@@ -813,6 +974,7 @@ async function main() {
   checkAiCover();
   checkDeepInfraEnvelope();
   checkSettingsPrimitives();
+  checkDzenExperiment();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 

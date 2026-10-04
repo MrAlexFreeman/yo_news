@@ -32,6 +32,10 @@ export type SaveArticleResult = {
   fieldErrors?: Partial<Record<ArticleField, string>>;
   /** Set on success so the client can surface distribution state. */
   dzenQueued?: boolean;
+  /** What was actually stored for the Dzen experiment flag. */
+  dzenExperiment?: boolean;
+  /** True when the publication moment is past, so the flag can no longer change. */
+  dzenExperimentLocked?: boolean;
   vkQueued?: boolean;
   /** VK post id when the repost succeeded; null when it was skipped or failed. */
   vkPostId?: string | null;
@@ -61,6 +65,12 @@ export type ArticleFormValues = {
   noIndex: boolean;
   /** Tag names, already split from the comma-separated submission. */
   tags: string[];
+  /** Dzen syndication experiment; editable only at first publication. */
+  dzenExperiment: boolean;
+  /** Publish straight to Dzen rather than holding for review. */
+  dzenDirect: boolean;
+  /** Whether the experiment checkbox is locked for this article. */
+  dzenExperimentLocked: boolean;
   /** Gallery attached to the story, parsed out of the hidden JSON mirror. */
   media: MediaItem[];
   /** Link to the main video; empty when the story has none. */

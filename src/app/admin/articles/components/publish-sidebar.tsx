@@ -2,6 +2,7 @@
 
 import type { ArticleStatus } from "@/lib/article-status";
 import type { CategoryOption } from "@/app/admin/articles/types";
+import { DZEN_EXPERIMENT_LOCKED_HINT } from "@/lib/dzen-experiment";
 import { cn } from "@/lib/utils";
 
 type PublishSidebarProps = {
@@ -18,6 +19,12 @@ type PublishSidebarProps = {
   onIsExclusiveChange: (value: boolean) => void;
   is18plus: boolean;
   onIs18plusChange: (value: boolean) => void;
+  dzenExperiment: boolean;
+  onDzenExperimentChange: (value: boolean) => void;
+  dzenDirect: boolean;
+  onDzenDirectChange: (value: boolean) => void;
+  /** True once the publication moment has passed; locks the experiment flag. */
+  dzenExperimentLocked: boolean;
   categoryError?: string;
 };
 
@@ -71,6 +78,11 @@ export function PublishSidebar({
   onIsExclusiveChange,
   is18plus,
   onIs18plusChange,
+  dzenExperiment,
+  onDzenExperimentChange,
+  dzenDirect,
+  onDzenDirectChange,
+  dzenExperimentLocked,
   categoryError,
 }: PublishSidebarProps) {
   return (
@@ -97,6 +109,71 @@ export function PublishSidebar({
               checked={isVk}
               onChange={onIsVkChange}
             />
+          </div>
+
+          <div className="space-y-1">
+            <span className="text-xs font-medium tracking-wide text-neutral-500 uppercase">
+              Синдикация и эксперимент Дзен
+            </span>
+            {/*
+              Disabled rather than hidden: an editor looking at a story that has
+              been live for a week needs to see that the experiment option exists
+              and why it is no longer available. Hiding it would leave them
+              wondering whether the newsroom has a feature nobody told them about.
+
+              The server enforces the same rule — see src/lib/dzen-experiment.ts —
+              so this attribute is an explanation, not the lock.
+            */}
+            <label
+              htmlFor="dzenExperiment"
+              title={dzenExperimentLocked ? DZEN_EXPERIMENT_LOCKED_HINT : undefined}
+              className={cn(
+                "flex items-start gap-2 py-0.5 text-sm",
+                dzenExperimentLocked ? "cursor-not-allowed" : "cursor-pointer",
+              )}
+            >
+              <input
+                id="dzenExperiment"
+                name="dzenExperiment"
+                type="checkbox"
+                checked={dzenExperiment}
+                disabled={dzenExperimentLocked}
+                onChange={(event) => onDzenExperimentChange(event.target.checked)}
+                className="mt-0.5 size-4 shrink-0 rounded-sm border-neutral-400 accent-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <span className={dzenExperimentLocked ? "text-neutral-400" : "text-neutral-700"}>
+                Эксперимент с Дзен
+              </span>
+            </label>
+
+            {dzenExperimentLocked ? (
+              <p className="mb-1 pl-6 text-[11px] leading-snug text-amber-700">
+                {DZEN_EXPERIMENT_LOCKED_HINT}
+              </p>
+            ) : null}
+
+            <label
+              htmlFor="dzenDirect"
+              className="flex cursor-pointer items-center gap-2 py-0.5 text-sm text-neutral-700 hover:text-neutral-900"
+            >
+              <input
+                id="dzenDirect"
+                name="dzenDirect"
+                type="checkbox"
+                checked={dzenDirect}
+                onChange={(event) => onDzenDirectChange(event.target.checked)}
+                className="size-4 shrink-0 rounded-sm border-neutral-400 accent-blue-700"
+              />
+              Напрямую в Дзен
+            </label>
+
+            <p className="pl-6 text-[11px] leading-snug text-neutral-400">
+              {dzenExperiment
+                ? "Материал придёт в Дзен как черновик — «Напрямую» при включённом эксперименте не действует."
+                : dzenDirect
+                  ? "Материал уйдёт в Дзен сразу статьёй, минуя ручную вычитку."
+                  : "Без галочек материал публикуется в Дзен автоматически при выходе на сайте."}
+            </p>
           </div>
 
           <div className="space-y-1">

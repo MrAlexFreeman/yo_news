@@ -9,6 +9,7 @@ const FEED_URL =
 
 const CONTENT_NS = "http://purl.org/rss/1.0/modules/content/";
 const ATOM_NS = "http://www.w3.org/2005/Atom";
+const MEDIA_NS = "http://search.yahoo.com/mrss/";
 
 // RFC-822 in GMT, e.g. "Thu, 01 Oct 2026 08:11:21 GMT".
 const RFC_822 =
@@ -305,6 +306,69 @@ async function main() {
     "Галерея попадает в content:encoded, а не в enclosure",
     enclosureCountMatchesCovers,
     enclosureCountMatchesCovers ? "соответствует" : "расхождение",
+  );
+
+  // --- Dzen experiment / publication method ---------------------------------
+  // <category> is Dzen's publication-method selector and holds exactly one value.
+  // A second one, or an invented element, is how a strict syndicator decides the
+  // feed is malformed.
+  check(
+    "Объявлен xmlns:media (нужен для media:rating)",
+    root.getAttribute("xmlns:media") === "http://search.yahoo.com/mrss/",
+    root.getAttribute("xmlns:media") ?? "нет",
+  );
+
+  const categoriesPerItem = items.map((item) =>
+    item.querySelectorAll("category").length,
+  );
+  check(
+    "Не больше одного <category> на элемент",
+    categoriesPerItem.every((count) => count <= 1),
+    `максимум ${Math.max(0, ...categoriesPerItem)}`,
+  );
+
+  const METHODS = new Set(["native-draft", "format-article", "format-post", "index", "noindex"]);
+  const methodValues = items
+    .map((item) => item.querySelector("category")?.textContent?.trim() ?? "")
+    .filter(Boolean);
+
+  check(
+    "Значения <category> — из документации Дзена",
+    methodValues.every((value) => METHODS.has(value)),
+    methodValues.length > 0
+      ? [...new Set(methodValues)].join(", ")
+      : "нет категорий (ожидаемо без флагов)",
+  );
+
+  check(
+    "Нет недокументированного тега dzen:native",
+    !/dzen:native/.test(xml),
+    "отсутствует",
+  );
+
+  // media:rating only makes sense with its namespace, and Dzen spells the value
+  // "adult" for 18+ material.
+  const ratings = [...doc.getElementsByTagNameNS(MEDIA_NS, "rating")];
+  check(
+    "media:rating использует схему urn:simple",
+    ratings.every((node) => node.getAttribute("scheme") === "urn:simple"),
+    `${ratings.length} элементов`,
+  );
+  check(
+    "media:rating содержит только adult/nonadult",
+    ratings.every((node) => ["adult", "nonadult"].includes(node.textContent?.trim() ?? "")),
+    ratings.map((n) => n.textContent?.trim()).join(", ") || "нет",
+  );
+
+  // The rubric used to be emitted here. It is no longer, because Dzen reads this
+  // element as the publication method and the two cannot share it.
+  check(
+    "Рубрика больше не занимает <category>",
+    !items.some((item) => {
+      const value = item.querySelector("category")?.textContent?.trim() ?? "";
+      return value.length > 0 && !METHODS.has(value);
+    }),
+    "только способы публикации",
   );
 
   console.log(`Лента: ${FEED_URL}\n`);

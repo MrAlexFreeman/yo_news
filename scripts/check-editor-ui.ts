@@ -13,6 +13,8 @@ import { AiCoverGenerator } from "../src/app/admin/articles/components/ai-cover-
 import { AiCoverPanel } from "../src/app/admin/articles/components/ai-cover-panel";
 import { MediaEditor } from "../src/app/admin/articles/components/media-editor";
 import { TitleField } from "../src/app/admin/articles/components/title-field";
+import { PublishSidebar } from "../src/app/admin/articles/components/publish-sidebar";
+import { DZEN_EXPERIMENT_LOCKED_HINT } from "../src/lib/dzen-experiment";
 import { SettingsForm } from "../src/app/admin/settings/components/settings-form";
 import { ArticleGallery } from "../src/components/article-gallery";
 import { SubscribeBlock } from "../src/components/subscribe-block";
@@ -109,6 +111,47 @@ const settingsFilledHtml = render(SettingsForm as never, {
     deepseekApiKey: { isSet: true, masked: "sk-abc…7890", source: "database" },
     deepinfraApiKey: { isSet: true, masked: "sk-xyz…1111", source: "environment" },
   },
+});
+
+// --- Dzen experiment block in the publish sidebar --------------------------
+const sidebarDefaults = {
+  categories: [],
+  categoryId: "",
+  onCategoryChange: noop,
+  status: "draft" as const,
+  onStatusChange: noop,
+  isDzen: true,
+  onIsDzenChange: noop,
+  isVk: true,
+  onIsVkChange: noop,
+  isExclusive: false,
+  onIsExclusiveChange: noop,
+  is18plus: false,
+  onIs18plusChange: noop,
+  dzenExperiment: false,
+  onDzenExperimentChange: noop,
+  dzenDirect: false,
+  onDzenDirectChange: noop,
+};
+
+const sidebarOpenHtml = render(PublishSidebar as never, {
+  ...sidebarDefaults,
+  dzenExperimentLocked: false,
+});
+const sidebarLockedHtml = render(PublishSidebar as never, {
+  ...sidebarDefaults,
+  dzenExperimentLocked: true,
+  dzenExperiment: true,
+});
+const sidebarExperimentHtml = render(PublishSidebar as never, {
+  ...sidebarDefaults,
+  dzenExperimentLocked: false,
+  dzenExperiment: true,
+});
+const sidebarDirectHtml = render(PublishSidebar as never, {
+  ...sidebarDefaults,
+  dzenExperimentLocked: false,
+  dzenDirect: true,
 });
 
 check("Галерея: зона для перетаскивания", mediaHtml.includes("Перетащите сюда пачку фото"), "на месте");
@@ -425,6 +468,97 @@ check(
   "Настройки: форма не отдаёт полный ключ в разметке",
   !settingsFilledHtml.includes("sk-abcdefghij"),
   "только маска",
+);
+
+// --- Dzen experiment block --------------------------------------------------
+check(
+  "Дзен: блок «Синдикация и эксперимент Дзен» в сайдбаре",
+  sidebarOpenHtml.includes("Синдикация и эксперимент Дзен"),
+  "заголовок блока",
+);
+check(
+  "Дзен: оба чекбокса присутствуют",
+  sidebarOpenHtml.includes('id="dzenExperiment"') &&
+    sidebarOpenHtml.includes('id="dzenDirect"'),
+  "эксперимент и напрямую",
+);
+check(
+  "Дзен: подписи чекбоксов как в задании",
+  sidebarOpenHtml.includes("Эксперимент с Дзен") &&
+    sidebarOpenHtml.includes("Напрямую в Дзен"),
+  "формулировки совпадают",
+);
+check(
+  "Дзен: у обоих чекбоксов есть name (значение уходит в форму)",
+  /name="dzenExperiment"/.test(sidebarOpenHtml) && /name="dzenDirect"/.test(sidebarOpenHtml),
+  "name на месте",
+);
+/**
+ * Reads one input's attributes out of rendered markup.
+ *
+ * The class list contains `disabled:opacity-50` as a Tailwind variant, so a
+ * naive "does the tag mention disabled" test matches the *styling*, not the
+ * attribute. The class attribute is stripped before the lookup.
+ */
+function inputAttrs(html: string, id: string): string {
+  const tag = html.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0] ?? "";
+  return tag.replace(/class="[^"]*"/g, "");
+}
+
+const isDisabled = (html: string, id: string) =>
+  /\sdisabled(=|\s|$)/.test(inputAttrs(html, id));
+
+check(
+  "Дзен: в открытом состоянии флаг доступен",
+  !isDisabled(sidebarOpenHtml, "dzenExperiment"),
+  "без disabled",
+);
+check(
+  "Дзен: после публикации флаг заблокирован",
+  isDisabled(sidebarLockedHtml, "dzenExperiment"),
+  "disabled",
+);
+check(
+  "Дзен: заблокированный флаг сохраняет включённое состояние",
+  /\schecked(=|\s|$)/.test(inputAttrs(sidebarLockedHtml, "dzenExperiment")) &&
+    isDisabled(sidebarLockedHtml, "dzenExperiment"),
+  "checked + disabled",
+);
+check(
+  "Дзен: подсказка о блокировке видна",
+  sidebarLockedHtml.includes(DZEN_EXPERIMENT_LOCKED_HINT),
+  "текст из редакционного требования",
+);
+check(
+  "Дзен: подсказка не показывается, пока флаг доступен",
+  !sidebarOpenHtml.includes(DZEN_EXPERIMENT_LOCKED_HINT),
+  "нет лишнего текста",
+);
+check(
+  "Дзен: у заблокированного флага есть title",
+  sidebarLockedHtml.includes('title="') &&
+    sidebarLockedHtml.includes("первоначальной публикации"),
+  "title для наведения",
+);
+check(
+  "Дзен: «Напрямую» остаётся доступным при заблокированном эксперименте",
+  !isDisabled(sidebarLockedHtml, "dzenDirect"),
+  "enabled",
+);
+check(
+  "Дзен: при включённом эксперименте объяснено, что «напрямую» не действует",
+  sidebarExperimentHtml.includes("не действует"),
+  "пояснение есть",
+);
+check(
+  "Дзен: при «напрямую» объяснён мгновенный выход",
+  sidebarDirectHtml.includes("сразу статьёй"),
+  "пояснение есть",
+);
+check(
+  "Дзен: без галочек описано поведение по умолчанию",
+  sidebarOpenHtml.includes("автоматически"),
+  "пояснение есть",
 );
 
 for (const { name, ok, detail } of checks) {

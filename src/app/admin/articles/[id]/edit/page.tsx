@@ -5,6 +5,7 @@ import { ArticleForm } from "@/app/admin/articles/components/article-form";
 import { FALLBACK_CATEGORIES } from "@/app/admin/articles/types";
 import { isArticleStatus } from "@/lib/article-status";
 import { parseMedia } from "@/lib/article-media";
+import { canSetDzenExperiment } from "@/lib/dzen-experiment";
 import { prisma } from "@/lib/prisma";
 
 export const metadata: Metadata = {
@@ -71,6 +72,8 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         seoDescription: true,
         seoCanonicalUrl: true,
         noIndex: true,
+        dzenExperiment: true,
+        dzenDirect: true,
         media: true,
         videoUrl: true,
         categoryId: true,
@@ -108,6 +111,14 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         seoDescription: article.seoDescription ?? "",
         seoCanonicalUrl: article.seoCanonicalUrl ?? "",
         noIndex: article.noIndex,
+        dzenExperiment: article.dzenExperiment,
+        dzenDirect: article.dzenDirect,
+        // Same rule the action applies, evaluated on load so a story that has been
+        // live for a week renders with the flag already locked and its tooltip
+        // showing — not only after the editor presses save.
+        dzenExperimentLocked: !canSetDzenExperiment({
+          storedPublishedAt: article.publishedAt,
+        }),
         tags: article.tags.map((entry) => entry.tag.name),
         media: parseMedia(article.media),
         videoUrl: article.videoUrl ?? "",
