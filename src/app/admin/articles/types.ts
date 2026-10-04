@@ -1,4 +1,5 @@
 import type { ArticleStatus } from "@/lib/article-status";
+import type { MediaItem } from "@/lib/article-media";
 
 /**
  * Types shared between the article editor and its Server Actions.
@@ -18,7 +19,8 @@ export type ArticleField =
   | "coverImage"
   | "photoAuthor"
   | "photoSource"
-  | "categoryId";
+  | "categoryId"
+  | "videoUrl";
 
 /** Shape returned to the client after every save attempt. */
 export type SaveArticleResult = {
@@ -59,6 +61,10 @@ export type ArticleFormValues = {
   noIndex: boolean;
   /** Tag names, already split from the comma-separated submission. */
   tags: string[];
+  /** Gallery attached to the story, parsed out of the hidden JSON mirror. */
+  media: MediaItem[];
+  /** Link to the main video; empty when the story has none. */
+  videoUrl: string;
 };
 
 /** Search-engine lengths above which the field is usually truncated anyway. */

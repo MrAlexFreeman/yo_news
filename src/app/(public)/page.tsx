@@ -1,6 +1,7 @@
 import { ArticleCard } from "@/components/article-card";
 import { Logo } from "@/components/logo";
 import { NewsTicker } from "@/components/news-ticker";
+import { SubscribeBlock } from "@/components/subscribe-block";
 import { SectionGrid } from "@/components/section-grid";
 import {
   getHeroArticle,
@@ -69,10 +70,16 @@ export default async function HomePage() {
           )}
         </div>
 
-        <NewsTicker
-          articles={tickerItems.slice(0, TICKER_COUNT)}
-          now={new Date()}
-        />
+        {/* Right column: the live ticker, then the syndication block. Both sit
+            under the hero rather than beside it, because the hero is the one
+            element on this page that must stay full width. */}
+        <div className="space-y-6">
+          <NewsTicker
+            articles={tickerItems.slice(0, TICKER_COUNT)}
+            now={new Date()}
+          />
+          <SubscribeBlock />
+        </div>
       </div>
 
       {/* Reading rail. */}

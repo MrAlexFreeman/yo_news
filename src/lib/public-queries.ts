@@ -176,6 +176,8 @@ export async function getPublishedArticleBySlug(slug: string) {
       seoDescription: true,
       seoCanonicalUrl: true,
       noIndex: true,
+      media: true,
+      videoUrl: true,
       tags: { select: { tag: { select: { id: true, name: true, slug: true } } } },
       isExclusive: true,
       is18plus: true,

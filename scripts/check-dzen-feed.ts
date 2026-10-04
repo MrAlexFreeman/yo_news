@@ -172,6 +172,141 @@ async function main() {
     `${enclosureTypes[0] ?? "нет"} для ${enclosureUrls[0] ?? "нет enclosure"}`,
   );
 
+  // --- Dzen's documented rules -------------------------------------------------
+  // https://dzen.ru/help/ru/website/rss-modify.html and
+  // https://dzen.ru/help/ru/export-content/export.html
+
+  // A feed Dzen cannot finish fetching is not a partially-rendered feed, so the
+  // documented 10 MB ceiling is worth asserting rather than assuming.
+  const FEED_MAX_BYTES = 10 * 1024 * 1024;
+  check(
+    "Фид меньше 10 МБ",
+    Buffer.byteLength(xml, "utf8") < FEED_MAX_BYTES,
+    `${(Buffer.byteLength(xml, "utf8") / 1024 / 1024).toFixed(2)} МБ`,
+  );
+
+  /** Dzen renders this tag set inside content:encoded and ignores the rest. */
+  const DZEN_SUPPORTED_TAGS = new Set([
+    "p", "br", "h1", "h2", "h3", "h4",
+    "b", "i", "u", "s",
+    "blockquote",
+    "ul", "ol", "li",
+    "a", "figure", "img", "figcaption",
+  ]);
+
+  const itemsWithBody = items
+    .map((item) => ({
+      item,
+      body:
+        item.getElementsByTagNameNS(CONTENT_NS, "encoded")[0]?.textContent ?? "",
+    }))
+    .filter(({ body }) => body.trim().length > 0);
+
+  // Stripped tags keep their text (KEEP_CONTENT), so text-level scraping is the
+  // right check: anything outside the set that survived as an element would be
+  // rendered by the site and silently dropped by Dzen.
+  const foreignTags = new Set<string>();
+  const relativeUrls: string[] = [];
+  const imgUrls: string[] = [];
+  let captionsOutsideFigure = 0;
+  let iframeCount = 0;
+
+  for (const { body } of itemsWithBody) {
+    const htmlDom = new JSDOM(`<body>${body}</body>`);
+    for (const element of htmlDom.window.document.body.querySelectorAll("*")) {
+      const tag = element.tagName.toLowerCase();
+      if (tag === "iframe") iframeCount += 1;
+      if (!DZEN_SUPPORTED_TAGS.has(tag)) foreignTags.add(tag);
+
+      for (const attribute of ["href", "src"]) {
+        const value = element.getAttribute(attribute);
+        if (value && !/^(https?:|mailto:|tel:|#)/i.test(value)) {
+          relativeUrls.push(value);
+        }
+      }
+      if (tag === "img") imgUrls.push(element.getAttribute("src") ?? "");
+    }
+    // Dzen takes a caption from <figcaption>, so a caption stranded outside a
+    // <figure> would never be shown next to its photo.
+    captionsOutsideFigure += htmlDom.window.document.body.querySelectorAll(
+      "figcaption:not(figure > figcaption)",
+    ).length;
+  }
+
+  check(
+    "content:encoded: только поддерживаемые теги",
+    foreignTags.size === 0,
+    foreignTags.size === 0
+      ? "посторонних тегов нет"
+      : `найдены: ${[...foreignTags].join(", ")}`,
+  );
+
+  check(
+    "content:encoded: нет iframe (Дзен ждёт ссылку на видео)",
+    iframeCount === 0,
+    `${iframeCount} iframe`,
+  );
+
+  check(
+    "content:encoded: все ссылки и картинки абсолютные",
+    relativeUrls.length === 0,
+    relativeUrls.length === 0
+      ? `${imgUrls.length} <img>, все абсолютные`
+      : `относительные: ${relativeUrls.slice(0, 3).join(", ")}`,
+  );
+
+  check(
+    "content:encoded: figcaption только внутри figure",
+    captionsOutsideFigure === 0,
+    `${captionsOutsideFigure} подписей вне figure`,
+  );
+
+  // «Этот тег обязателен, но игнорируется при конвертации материала в пост. Если
+  // вы хотите, чтобы заголовок отображался в посте, продублируйте его внутри
+  // элемента content:encoded.»
+  const missingHeadline = itemsWithBody.filter(({ body }) => !/^\s*<h1[\s>]/i.test(body));
+  check(
+    "content:encoded начинается с <h1> (заголовок для поста)",
+    missingHeadline.length === 0,
+    missingHeadline.length === 0
+      ? "у всех элементов есть заголовок"
+      : `без <h1>: ${missingHeadline.length}`,
+  );
+
+  // «Первое изображение в статье появится на карточке» — so an item that has both
+  // an enclosure and images must lead with a figure, not with the text.
+  const figuresBeforeText = itemsWithBody.filter(
+    ({ body }) => /^\s*<h1[\s>]/i.test(body) && /<figure/i.test(body.split("</h1>")[1] ?? ""),
+  ).length;
+  check(
+    "Обложка figure идёт до текста",
+    figuresBeforeText > 0,
+    `${figuresBeforeText} элементов с figure до текста`,
+  );
+
+  // One enclosure per item is both the RSS 2.0 rule and Dzen's: the enclosure is
+  // the cover / medialock image, which «не отображается внутри текста».
+  const multiEnclosure = items.filter(
+    (item) => item.querySelectorAll("enclosure").length > 1,
+  );
+  check(
+    "Не больше одного enclosure на элемент",
+    multiEnclosure.length === 0,
+    `${enclosures.length} enclosure на ${items.length} элементов`,
+  );
+
+  // Gallery images belong in the body, not in enclosures.
+  const enclosureCountMatchesCovers = items.every((item) => {
+    const has = item.querySelector("enclosure") !== null;
+    const body = item.getElementsByTagNameNS(CONTENT_NS, "encoded")[0]?.textContent ?? "";
+    return has || !/<figure/i.test(body);
+  });
+  check(
+    "Галерея попадает в content:encoded, а не в enclosure",
+    enclosureCountMatchesCovers,
+    enclosureCountMatchesCovers ? "соответствует" : "расхождение",
+  );
+
   console.log(`Лента: ${FEED_URL}\n`);
   for (const { name, ok, detail } of checks) {
     console.log(`${ok ? "OK  " : "FAIL"} ${name} — ${detail}`);

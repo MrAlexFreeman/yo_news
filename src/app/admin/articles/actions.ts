@@ -3,12 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
+import { Prisma } from "@/generated/prisma/client";
 import type { SaveArticleResult } from "@/app/admin/articles/types";
 import { normalizeArticleHtml } from "@/lib/article-html";
 import { isArticleStatus } from "@/lib/article-status";
+import { parseMediaField } from "@/lib/article-media";
 import { prisma } from "@/lib/prisma";
 import { slugify } from "@/lib/slugify";
 import { parseTagsField, syncArticleTags } from "@/lib/tags";
+import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { publishArticleToVk } from "@/lib/vk-publisher";
 
 function str(formData: FormData, key: string): string {
@@ -23,6 +26,19 @@ function optional(value: string): string | null {
 function checkbox(formData: FormData, key: string): boolean {
   const value = formData.get(key);
   return value === "on" || value === "true" || value === "1";
+}
+
+/**
+ * Turns the gallery mirror into what goes in the `media` column.
+ *
+ * SQL NULL rather than `[]` for an empty gallery: a story with no photos should
+ * be indistinguishable in the database from one written before the column
+ * existed, and every read path already treats both as "no gallery".
+ */
+function mediaColumn(raw: string): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  const items = parseMediaField(raw);
+  if (items.length === 0) return Prisma.JsonNull;
+  return items as unknown as Prisma.InputJsonValue;
 }
 
 /**
@@ -126,6 +142,20 @@ export async function createArticleAction(
   if (!title) fieldErrors.title = "Заголовок обязателен.";
   if (!contentHtml) fieldErrors.contentHtml = "Текст материала обязателен.";
 
+  // Validated here rather than trusted from the form: the same hidden mirror that
+  // makes the field survive a tab switch is also a plain text field an editor can
+  // edit by hand, and a link we cannot turn into a player is a dead field that
+  // looks fine in the list.
+  const rawVideoUrl = str(formData, "videoUrl");
+  let videoUrl: string | null = null;
+  if (rawVideoUrl) {
+    if (buildVideoEmbed(rawVideoUrl)) {
+      videoUrl = rawVideoUrl;
+    } else {
+      fieldErrors.videoUrl = unsupportedVideoMessage(rawVideoUrl);
+    }
+  }
+
   const rawCategoryId = str(formData, "categoryId");
   let categoryId: string | null = null;
   if (rawCategoryId) {
@@ -200,6 +230,8 @@ export async function createArticleAction(
     isVk: checkbox(formData, "isVk"),
     isExclusive: checkbox(formData, "isExclusive"),
     is18plus: checkbox(formData, "is18plus"),
+    videoUrl,
+    media: mediaColumn(str(formData, "media")),
     status,
   };
 

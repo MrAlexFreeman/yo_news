@@ -43,6 +43,14 @@ model Article {
   // Keeps a published story out of search indexes: syndicated wire copy, legal
   // notices, embargoed material.
   noIndex         Boolean   @default(false)
+  /// Gallery attached to the story: [{ type, url, caption, source, width, height }].
+  /// Stored as JSON rather than a join table because an image has no fields
+  /// worth querying on, it is only ever read as an ordered list with the article.
+  media            Json?
+  /// Link to the story's main video — VK Video, Rutube or YouTube. Rendered as an
+  /// embedded player on the site and as a plain link in the RSS feed, which is
+  /// how Dzen turns it into a widget.
+  videoUrl         String?
   views       Int       @default(0)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt

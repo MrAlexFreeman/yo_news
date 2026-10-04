@@ -28,6 +28,8 @@ import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar"
 import { StickyActionBar } from "@/app/admin/articles/components/sticky-action-bar";
 import { TagInput } from "@/app/admin/articles/components/tag-input";
 import { TitleField } from "@/app/admin/articles/components/title-field";
+import { MediaEditor } from "@/app/admin/articles/components/media-editor";
+import { parseMediaField, serializeMedia, type MediaItem } from "@/lib/article-media";
 import {
   SEO_DESCRIPTION_MAX_LENGTH,
   SEO_DESCRIPTION_SOFT_LIMIT,
@@ -95,11 +97,13 @@ function moscowNow(): string {
  */
 type FormSnapshot = Omit<
   ArticleFormValues,
-  "id" | "slug" | "publishedAt" | "tags"
+  "id" | "slug" | "publishedAt" | "tags" | "media"
 > & {
   publishedAt: string;
   /** Compared as a joined string: the array identity changes on every render. */
   tags: string;
+  /** Same reason as tags — compared by value, not by reference. */
+  media: string;
 };
 
 type Snapshot = FormSnapshot | null;
@@ -149,6 +153,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   );
   const [noIndex, setNoIndex] = useState(initial?.noIndex ?? false);
   const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
+  const [media, setMedia] = useState<MediaItem[]>(initial?.media ?? []);
+  const [videoUrl, setVideoUrl] = useState(initial?.videoUrl ?? "");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -192,6 +198,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
           seoCanonicalUrl: initial.seoCanonicalUrl,
           noIndex: initial.noIndex,
           tags: initial.tags.join(","),
+          media: serializeMedia(initial.media),
+          videoUrl: initial.videoUrl,
         }
       : null,
   );
@@ -224,6 +232,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     noIndex,
     // Joined: comparing array identity would report a change on every render.
     tags: tags.join(","),
+    media: serializeMedia(media),
+    videoUrl,
   };
 
   /**
@@ -248,7 +258,15 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
         (key) => current[key] !== saved![key],
       )
     : Boolean(
-        title || subtitle || lead || contentHtml || coverImage || photoAuthor || photoSource,
+        title ||
+          subtitle ||
+          lead ||
+          contentHtml ||
+          coverImage ||
+          photoAuthor ||
+          photoSource ||
+          media.length > 0 ||
+          videoUrl,
       );
 
   function applySnapshot(snapshot: Snapshot) {
@@ -266,6 +284,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     setSeoCanonicalUrl(snapshot.seoCanonicalUrl);
     setNoIndex(snapshot.noIndex);
     setTags(snapshot.tags ? snapshot.tags.split(",").filter(Boolean) : []);
+    setMedia(parseMediaField(snapshot.media));
+    setVideoUrl(snapshot.videoUrl);
     setCategoryId(snapshot.categoryId);
     setStatus(snapshot.status);
     setPublishedAt(snapshot.publishedAt);
@@ -339,6 +359,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
       setSeoCanonicalUrl("");
       setNoIndex(false);
       setTags([]);
+      setMedia([]);
+      setVideoUrl("");
       setPublishedAt(moscowNow());
       setUploadError(null);
       setPreviewOpen(false);
@@ -419,6 +441,10 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
           as "on" / "" rather than relying on the visible control's presence. */}
       <input type="hidden" name="noIndex" value={noIndex ? "on" : ""} readOnly />
       <input type="hidden" name="tags" value={tags.join(",")} readOnly />
+      {/* Gallery travels as JSON for the same reason the mirror exists: the
+          MediaEditor lives on the "Медиа" tab and unmounts with it. */}
+      <input type="hidden" name="media" value={serializeMedia(media)} readOnly />
+      <input type="hidden" name="videoUrl" value={videoUrl} readOnly />
 
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-300 bg-white px-6 py-3">
         <div>
@@ -683,6 +709,33 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                 <p className="text-xs text-neutral-400">
                   Подпись печатается под обложкой на сайте курсивом.
                 </p>
+
+                <hr className="border-neutral-200" />
+
+                <div className="space-y-1.5">
+                  <label htmlFor="videoUrl" className="text-sm font-medium text-neutral-700">
+                    Ссылка на видео (VK / Rutube / YouTube)
+                  </label>
+                  <input
+                    id="videoUrl"
+                    type="text"
+                    value={videoUrl}
+                    onChange={(event) => {
+                      setVideoUrl(event.target.value);
+                    }}
+                    placeholder="https://youtu.be/… или https://vkvideo.ru/video…"
+                    className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
+                  />
+                  <p className="text-xs text-neutral-400">
+                    На сайте вставится адаптивный плеер, в RSS-ленте — обычная
+                    ссылка: Дзен сам превращает ссылки на VK Видео, YouTube и
+                    Рутюб в видеовиджет.
+                  </p>
+                </div>
+
+                <hr className="border-neutral-200" />
+
+                <MediaEditor items={media} onChange={setMedia} />
               </section>
             ) : null}
 

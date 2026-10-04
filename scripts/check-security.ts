@@ -3,6 +3,13 @@
  * admin auth gate. Run with: npm run checks:security (needs a dev server).
  */
 import { normalizeArticleHtml, plainTextPreview } from "../src/lib/article-html";
+import {
+  MAX_MEDIA_ITEMS,
+  meetsDzenMinimum,
+  parseMedia,
+  parseMediaField,
+} from "../src/lib/article-media";
+import { buildDzenContent } from "../src/lib/dzen-feed-html";
 import { sanitizeArticleHtml } from "../src/lib/sanitize";
 import { normalizeTagList, parseTagsField, tagKey } from "../src/lib/tags";
 import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
@@ -212,10 +219,175 @@ function checkSeoAndTags() {
   );
 }
 
+/**
+ * Gallery JSON and the Dzen feed body.
+ *
+ * Both are attacker-reachable: the gallery mirror is a plain text field in the
+ * form, and the feed is public. A malformed entry must degrade to "no gallery"
+ * rather than throw on a page render, and the feed body must not smuggle markup
+ * past the narrower Dzen allowlist.
+ */
+function checkArticleMedia() {
+  check(
+    "Медиа: не-JSON не ломает разбор",
+    parseMediaField("{not json").length === 0,
+    "пустой галереи",
+  );
+
+  check(
+    "Медиа: не-массив игнорируется",
+    parseMedia({ url: "/uploads/a.jpg" }).length === 0,
+    "пустой галереи",
+  );
+
+  check(
+    "Медиа: мусорные записи отбрасываются",
+    parseMedia([
+      null,
+      "строка",
+      42,
+      { noUrl: true },
+      { url: "   " },
+      { url: "/uploads/ok.jpg", caption: "Ок" },
+    ]).length === 1,
+    JSON.stringify(parseMedia([null, "s", 42, {}, { url: "/uploads/ok.jpg" }])),
+  );
+
+  check(
+    "Медиа: дубли URL схлопываются",
+    parseMedia([
+      { url: "/uploads/a.jpg", caption: "раз" },
+      { url: "/uploads/a.jpg", caption: "два" },
+    ]).length === 1,
+    "одна запись",
+  );
+
+  const capped = parseMedia(
+    Array.from({ length: 40 }, (_, i) => ({ url: `/uploads/${i}.jpg` })),
+  );
+  check(
+    "Медиа: галерея ограничена 10 фото",
+    capped.length === MAX_MEDIA_ITEMS,
+    `${capped.length} из 40`,
+  );
+
+  check(
+    "Медиа: каптион обрезан по длине",
+    parseMedia([{ url: "/uploads/a.jpg", caption: "я".repeat(1000) }])[0].caption.length ===
+      300,
+    "300 символов",
+  );
+
+  // Dzen drops a picture under its minimum and publishes the piece with no
+  // media at all, so an oversized-but-tiny pair must not be shipped.
+  check(
+    "Медиа: фото меньше 480×320 не проходит в RSS",
+    !meetsDzenMinimum({ url: "/uploads/a.jpg", caption: "", source: "", width: 320, height: 240 }) &&
+      meetsDzenMinimum({ url: "/uploads/a.jpg", caption: "", source: "", width: 1200, height: 800 }),
+    "320×240 отклонено, 1200×800 принято",
+  );
+
+  check(
+    "Медиа: неподдерживаемый формат отклонён",
+    !meetsDzenMinimum({ url: "/uploads/a.webp", caption: "", source: "", width: 1200, height: 800 }) &&
+      meetsDzenMinimum({ url: "/uploads/a.png", caption: "", source: "", width: 1200, height: 800 }),
+    ".webp отклонён, .png принят",
+  );
+
+  const dzenBody = buildDzenContent({
+    title: "Заголовок",
+    subtitle: "Подзаголовок",
+    base: "https://eartnews.ru",
+    coverImage: "/uploads/cover.png",
+    gallery: [
+      { url: "/uploads/one.jpg", caption: "Один", source: "Фото АС", width: 1200, height: 800 },
+      { url: "https://cdn.example.com/two.jpg", caption: "", source: "", width: 0, height: 0 },
+    ],
+    videoUrl: "https://youtu.be/dQw4w9WgXcQ",
+    contentHtml:
+      '<p style="color:red">Текст</p><table><tr><td>Таблица</td></tr></table>' +
+      '<div>Обёртка</div><iframe src="https://www.youtube.com/embed/x"></iframe>' +
+      '<a href="/news/other">Ссылка</a><img src="/uploads/inline.jpg" />',
+  });
+
+  check(
+    "Дзен: разметка вне поддерживаемого набора вырезана",
+    !/<table|<div|<span|<pre|class=|style=/i.test(dzenBody),
+    "только разрешённые теги",
+  );
+
+  check(
+    "Дзен: iframe не попадает в ленту",
+    !/<iframe/i.test(dzenBody),
+    "нет iframe",
+  );
+
+  check(
+    "Дзен: текст удалённого тега сохранён",
+    dzenBody.includes("Таблица") && dzenBody.includes("Обёртка"),
+    "KEEP_CONTENT",
+  );
+
+  check(
+    "Дзен: все URL абсолютные",
+    !/(?:href|src)="\/(?!\/)/i.test(dzenBody),
+    "нет относительных ссылок",
+  );
+
+  check(
+    "Дзен: заголовок начинает тело",
+    /^<h1>Заголовок<\/h1>/.test(dzenBody),
+    dzenBody.slice(0, 40),
+  );
+
+  check(
+    "Дзен: обложка первым figure",
+    dzenBody.indexOf("uploads/cover.png") < dzenBody.indexOf("uploads/one.jpg"),
+    "cover раньше галереи",
+  );
+
+  check(
+    "Дзен: галерея с подписью в figure",
+    dzenBody.includes("<figcaption>Один. Фото АС</figcaption>"),
+    "figcaption на месте",
+  );
+
+  check(
+    "Дзен: видео — обычная ссылка",
+    dzenBody.includes('<a href="https://youtu.be/dQw4w9WgXcQ">') && !/<iframe/i.test(dzenBody),
+    "ссылка вместо плеера",
+  );
+
+  // The link is what Dzen turns into a widget; shipping an unsupported host would
+  // render as a dead anchor.
+  const badVideo = buildDzenContent({
+    title: "Т",
+    subtitle: null,
+    base: "https://eartnews.ru",
+    coverImage: null,
+    gallery: [],
+    videoUrl: "https://example.com/video.mp4",
+    contentHtml: "<p>Текст</p>",
+  });
+  check(
+    "Дзен: неподдерживаемый источник видео не вставляется",
+    !badVideo.includes("example.com/video.mp4"),
+    "ссылка отброшена",
+  );
+
+  // One enclosure per item is the RSS rule; the feed must not multiply them.
+  check(
+    "Дзен: внешняя ссылка не дублируется в галерее",
+    !dzenBody.match(/cdn\.example\.com\/two\.jpg/g)?.slice(1).length,
+    "нет повторов",
+  );
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
   checkSeoAndTags();
+  checkArticleMedia();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 

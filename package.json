@@ -21,7 +21,8 @@
     "feed:check": "tsx scripts/check-dzen-feed.ts",
     "vk:check": "tsx scripts/check-vk-publisher.ts",
     "checks:security": "tsx --env-file=.env scripts/check-security.ts",
-    "check": "npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security",
+    "ui:check": "tsx --env-file=.env scripts/check-editor-ui.ts",
+    "check": "npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run ui:check",
     "postinstall": "prisma generate"
   },
   "dependencies": {

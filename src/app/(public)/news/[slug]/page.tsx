@@ -4,8 +4,12 @@ import { notFound } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 
 import { ArticleCard } from "@/components/article-card";
+import { ArticleGallery } from "@/components/article-gallery";
+import { ArticleVideo } from "@/components/article-video";
 import { CoverImage } from "@/components/cover-image";
+import { SubscribeBlock } from "@/components/subscribe-block";
 import { ViewCounter } from "@/components/view-counter";
+import { parseMedia } from "@/lib/article-media";
 import { plainTextPreview } from "@/lib/article-html";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
@@ -124,6 +128,12 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   );
 
   const timestamp = article.publishedAt ?? article.createdAt;
+
+  // Read out of the JSON column here rather than in the query layer, so every
+  // caller gets the same defensive parsing for a column that holds anything a
+  // hand-written script might have put there.
+  const gallery = parseMedia(article.media);
+  const videoUrl = article.videoUrl ?? "";
 
   return (
     <article className="mx-auto max-w-3xl">
@@ -258,6 +268,12 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         }}
       />
 
+      {videoUrl ? <ArticleVideo url={videoUrl} /> : null}
+
+      {gallery.length > 0 ? (
+        <ArticleGallery items={gallery} alt={article.title} />
+      ) : null}
+
       {article.tags.length > 0 ? (
         <ul
           aria-label="Тэги материала"
@@ -294,6 +310,8 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           </div>
         </aside>
       ) : null}
+
+      <SubscribeBlock variant="inline" className="mt-10" />
     </article>
   );
 }

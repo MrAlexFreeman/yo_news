@@ -33,6 +33,19 @@ export const RSS_CHANNEL_DESCRIPTION = SITE_TAGLINE_LONG;
 export const VK_COMMUNITY_URL =
   process.env.NEXT_PUBLIC_VK_URL?.trim() || "https://vk.ru/eartnews";
 
+/**
+ * Syndication destinations for the subscribe block.
+ *
+ * `TG_URL` is deliberately nullable rather than defaulted: an empty value means
+ * "we have no Telegram channel", and the button is hidden instead of pointing
+ * readers somewhere that does not exist. The other two have a real destination to
+ * fall back to.
+ */
+export const DZEN_URL =
+  process.env.NEXT_PUBLIC_DZEN_URL?.trim() || "https://dzen.ru/";
+
+export const TG_URL = process.env.NEXT_PUBLIC_TG_URL?.trim() || null;
+
 /** Builds an absolute URL from a site-relative path. */
 export function absoluteUrl(path: string): string {
   return new URL(path, siteUrl).toString();

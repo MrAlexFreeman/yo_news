@@ -1,5 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 
+import { parseMedia } from "@/lib/article-media";
+import { buildDzenContent } from "@/lib/dzen-feed-html";
 import { prisma } from "@/lib/prisma";
 import { RSS_CHANNEL_DESCRIPTION, RSS_CHANNEL_TITLE } from "@/lib/site";
 
@@ -74,10 +76,15 @@ type FeedArticle = Prisma.ArticleGetPayload<{
   select: {
     id: true;
     title: true;
+    subtitle: true;
     slug: true;
     lead: true;
     contentHtml: true;
     coverImage: true;
+    photoAuthor: true;
+    photoSource: true;
+    media: true;
+    videoUrl: true;
     publishedAt: true;
     createdAt: true;
     category: { select: { name: true } };
@@ -103,13 +110,26 @@ function renderItem(article: FeedArticle, base: string): string {
   const link = `${base}/news/${article.slug}`;
   const date = article.publishedAt ?? article.createdAt;
 
+  const body = buildDzenContent({
+    title: article.title,
+    subtitle: article.subtitle,
+    contentHtml: article.contentHtml,
+    coverImage: article.coverImage,
+    gallery: parseMedia(article.media),
+    videoUrl: article.videoUrl,
+    base,
+  });
+
   const parts = [
     `      <title>${escapeXml(article.title)}</title>`,
     `      <link>${escapeXml(link)}</link>`,
+    // Left as the row id: it is stable, unique and already published to Dzen.
+    // The docs merely *recommend* a permalink here, and changing a published
+    // guid is what makes a syndicator treat every old story as new.
     `      <guid isPermaLink="false">${escapeXml(article.id)}</guid>`,
     `      <pubDate>${toRfc822(date)}</pubDate>`,
     `      <description>${cdata(article.lead ?? "")}</description>`,
-    `      <content:encoded>${cdata(article.contentHtml)}</content:encoded>`,
+    `      <content:encoded>${cdata(body)}</content:encoded>`,
   ];
 
   if (article.category) {
@@ -121,6 +141,11 @@ function renderItem(article: FeedArticle, base: string): string {
     // editor used the upload endpoint, so it needs the same absolutising as the
     // item link. RSS requires an absolute URI here and Dzen refuses to fetch a
     // relative one.
+    //
+    // One enclosure per item, and only ever the cover: Dzen documents it as the
+    // image for the article's cover and the news-slot medialock, «не
+    // отображается внутри текста публикации». Gallery photos ride in
+    // content:encoded as <figure> instead — see buildDzenContent.
     const enclosure = /^https?:\/\//i.test(article.coverImage)
       ? article.coverImage
       : `${base}${article.coverImage.startsWith("/") ? "" : "/"}${article.coverImage}`;
@@ -157,10 +182,15 @@ export async function GET() {
     select: {
       id: true,
       title: true,
+      subtitle: true,
       slug: true,
       lead: true,
       contentHtml: true,
       coverImage: true,
+      photoAuthor: true,
+      photoSource: true,
+      media: true,
+      videoUrl: true,
       publishedAt: true,
       createdAt: true,
       category: { select: { name: true } },
