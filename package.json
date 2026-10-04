@@ -15,6 +15,7 @@
     "db:seed": "tsx --env-file=.env prisma/seed.ts",
     "db:seed:dzen": "tsx --env-file=.env prisma/seed-dzen-feed.ts",
     "db:seed:demo": "tsx --env-file=.env prisma/seed-demo.ts",
+    "db:seed:tags": "tsx --env-file=.env prisma/seed-tags.ts",
     "db:seed:clean": "tsx --env-file=.env prisma/seed-clean.ts",
     "db:check": "tsx --env-file=.env src/lib/db-check.ts",
     "feed:check": "tsx scripts/check-dzen-feed.ts",
