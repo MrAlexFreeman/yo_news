@@ -34,9 +34,16 @@ const items: MediaItem[] = [
 
 const noop = () => {};
 
-/** createElement, not a direct call: these are function components using hooks. */
+/**
+ * createElement, not a direct call: these are function components using hooks.
+ *
+ * React's streaming SSR renderer separates adjacent text and interpolated
+ * expressions with `<!-- -->` hydration markers, which `renderToStaticMarkup`
+ * omits. Assertions run against the normalised form so they test the copy the
+ * browser actually receives rather than a slightly different string.
+ */
 const render = (Component: never, props: object) =>
-  renderToStaticMarkup(createElement(Component, props));
+  renderToStaticMarkup(createElement(Component, props)).replaceAll("<!-- -->", "");
 
 const mediaHtml = render(MediaEditor as never, { items, onChange: noop });
 const emptyHtml = render(MediaEditor as never, { items: [], onChange: noop });
