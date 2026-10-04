@@ -50,7 +50,7 @@ export default async function ArticlesListPage() {
   });
 
   return (
-    <div className="flex min-h-dvh flex-col bg-neutral-100">
+    <div className="flex flex-1 flex-col bg-neutral-100">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-300 bg-white px-6 py-3">
         <div>
           <h1 className="text-base font-semibold text-neutral-900">Материалы</h1>

@@ -424,7 +424,7 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   return (
     // One form wraps the whole editor so the sticky bar's submit buttons carry
     // every field, including the sidebar and the publication date.
-    <form action={formAction} className="flex min-h-dvh flex-col bg-neutral-100">
+    <form action={formAction} className="flex flex-1 flex-col bg-neutral-100">
       {/*
         Once saved, the id makes subsequent submits updates instead of creates.
       */}

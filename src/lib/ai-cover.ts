@@ -8,6 +8,7 @@ import {
   PHOTO_STYLE_SUFFIX,
 } from "@/lib/cover-prompt";
 import { extractImageBytes } from "@/lib/deepinfra-response";
+import { getSetting } from "@/lib/settings";
 
 /**
  * Re-exported so the route imports every cover constant from one place. The
@@ -71,11 +72,19 @@ const MAX_TITLE_LENGTH = AI_TITLE_LIMIT;
 /** Re-exported for the route handler. */
 export { MAX_TITLE_LENGTH };
 
-function requireKey(name: "DEEPSEEK_API_KEY" | "DEEPINFRA_API_KEY"): string {
-  const value = process.env[name]?.trim();
+/**
+ * Reads an API key through the settings service, not `process.env`.
+ *
+ * This is what makes a key saved in /admin/settings take effect immediately: the
+ * lookup happens per request, so a paste followed by a reload needs no pm2
+ * restart. Reading the environment directly here would pin the value at module
+ * load and quietly ignore anything the editor just saved.
+ */
+async function requireKey(name: "DEEPSEEK_API_KEY" | "DEEPINFRA_API_KEY"): Promise<string> {
+  const value = await getSetting(name);
   if (!value) {
     throw new AiCoverError(
-      `Не задан ${name}. Добавьте ключ в .env на сервере и перезапустите приложение — без него генерация обложек не работает.`,
+      `Не задан ${name}. Укажите его в разделе «Настройки» (/admin/settings) или в .env — без него генерация обложек не работает.`,
       "prompt",
     );
   }
@@ -107,7 +116,7 @@ export async function buildPhotoPrompt(source: {
     );
   }
 
-  const apiKey = requireKey("DEEPSEEK_API_KEY");
+  const apiKey = await requireKey("DEEPSEEK_API_KEY");
 
   const material = [
     title && `Headline: ${title}`,
@@ -181,7 +190,7 @@ export async function buildPhotoPrompt(source: {
  * sends — the caller decides what to store after inspecting the bytes.
  */
 export async function renderCover(prompt: string): Promise<Buffer> {
-  const apiKey = requireKey("DEEPINFRA_API_KEY");
+  const apiKey = await requireKey("DEEPINFRA_API_KEY");
 
   const response = await fetch(DEEPINFRA_URL, {
     method: "POST",

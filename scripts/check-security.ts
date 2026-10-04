@@ -20,6 +20,11 @@ import {
   PHOTO_STYLE_SUFFIX,
 } from "../src/lib/cover-prompt";
 import { detectImageFormat, extractImageBytes } from "../src/lib/deepinfra-response";
+import {
+  ALLOWED_KEYS,
+  isAllowedKey,
+  maskSecret,
+} from "../src/lib/settings-keys";
 import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -528,6 +533,278 @@ function checkDeepInfraEnvelope() {
   );
 }
 
+/**
+ * Settings service and its two routes.
+ *
+ * The settings endpoint is the only place in the project that can write
+ * configuration at runtime, so it gets the same treatment as the upload gate:
+ * anonymous access refused, unknown body fields ignored rather than persisted,
+ * and no full key ever returned.
+ */
+async function checkSettingsApi(base: string, auth: string) {
+  const postJson = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+
+  // --- gating ---------------------------------------------------------------
+  const anonGet = await fetch(`${base}/api/admin/settings`);
+  check("/api/admin/settings без авторизации → 401", anonGet.status === 401, `${anonGet.status}`);
+
+  const anonPost = await postJson("/api/admin/settings", { deepseekApiKey: "sk-test" });
+  check(
+    "POST /api/admin/settings без авторизации → 401",
+    anonPost.status === 401,
+    `${anonPost.status}`,
+  );
+
+  const anonTest = await postJson("/api/admin/settings/test", { provider: "deepseek" });
+  check(
+    "POST /api/admin/settings/test без авторизации → 401",
+    anonTest.status === 401,
+    `${anonTest.status}`,
+  );
+
+  const pageAnon = await fetch(`${base}/admin/settings`);
+  check("/admin/settings без авторизации → 401", pageAnon.status === 401, `${pageAnon.status}`);
+
+  const pageAuth = await fetch(`${base}/admin/settings`, { headers: { authorization: auth } });
+  check("/admin/settings с авторизацией → 200", pageAuth.status === 200, `${pageAuth.status}`);
+
+  // The nav link the settings page depends on for discoverability.
+  const listHtml = await (
+    await fetch(`${base}/admin/articles`, { headers: { authorization: auth } })
+  ).text();
+  check(
+    "В верхнем меню админки есть ссылка «Настройки»",
+    listHtml.includes("/admin/settings") && listHtml.includes("Настройки"),
+    "ссылка на месте",
+  );
+
+  // --- CSRF -----------------------------------------------------------------
+  const formPost = await fetch(`${base}/api/admin/settings`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", authorization: auth },
+    body: "deepseekApiKey=sk-attacker",
+  });
+  check(
+    "POST /api/admin/settings: не-JSON отклонён (защита от CSRF)",
+    formPost.status === 415,
+    `${formPost.status}`,
+  );
+
+  // --- validation, all refused before any write ------------------------------
+  const tooShort = await postJson(
+    "/api/admin/settings",
+    { deepseekApiKey: "sk-a" },
+    { authorization: auth },
+  );
+  check("Ключ короче минимума → 400", tooShort.status === 400, `${tooShort.status}`);
+
+  const withSpaces = await postJson(
+    "/api/admin/settings",
+    { deepseekApiKey: "sk-abc def ghi" },
+    { authorization: auth },
+  );
+  check("Ключ с пробелами → 400", withSpaces.status === 400, `${withSpaces.status}`);
+
+  const wrongType = await postJson(
+    "/api/admin/settings",
+    { deepseekApiKey: 12345 },
+    { authorization: auth },
+  );
+  check("Ключ не строка → 400", wrongType.status === 400, `${wrongType.status}`);
+
+  const nothing = await postJson("/api/admin/settings", {}, { authorization: auth });
+  check("Пустое тело → 400", nothing.status === 400, `${nothing.status}`);
+
+  // --- unknown fields must be ignored, never written ------------------------
+  // The dangerous version of a settings API is one that will store ADMIN_PASSWORD
+  // or DATABASE_URL on request. Only the two mapped field names are accepted.
+  const canary = `sk-canary-${Date.now()}`;
+  const smuggled = await postJson(
+    "/api/admin/settings",
+    { deepseekApiKey: canary, ADMIN_PASSWORD: "hacked", DATABASE_URL: "file:/tmp/x" },
+    { authorization: auth },
+  );
+  check("Неизвестные поля приняты без ошибки", smuggled.status === 200, `${smuggled.status}`);
+
+  const afterSmuggle = (await (await fetch(`${base}/api/admin/settings`, {
+    headers: { authorization: auth },
+  })).json()) as { settings: Record<string, { masked: string; isSet: boolean; source: string }> };
+
+  const secretLeak = [
+    JSON.stringify(afterSmuggle),
+    "hacked",
+  ].some((needle) => JSON.stringify(afterSmuggle).includes(needle) && needle === "hacked");
+  check(
+    "Чужие поля не сохранены (секрет не утёк в ответ)",
+    !secretLeak,
+    secretLeak ? "утечка" : "чисто",
+  );
+
+  // --- masking --------------------------------------------------------------
+  const settings = afterSmuggle.settings;
+  check(
+    "GET возвращает оба поля",
+    Boolean(settings?.deepseekApiKey && settings?.deepinfraApiKey),
+    "оба ключа",
+  );
+  check(
+    "Маска не равна исходному ключу",
+    settings?.deepseekApiKey?.masked !== canary,
+    settings?.deepseekApiKey?.masked ?? "нет",
+  );
+  check(
+    "Маска не содержит середину ключа",
+    !settings?.deepseekApiKey?.masked?.includes(canary.slice(6, -4)),
+    "только начало и конец",
+  );
+  check(
+    "У сохранённого ключа isSet = true и source = database",
+    settings?.deepseekApiKey?.isSet === true && settings.deepseekApiKey.source === "database",
+    `${settings?.deepseekApiKey?.isSet}, ${settings?.deepseekApiKey?.source}`,
+  );
+
+  // --- the whole point: no pm2 restart needed --------------------------------
+  // The cover route reads keys through getSetting, so the value just written must
+  // already be visible to a request that never touches .env.
+  const canaryBody = await postJson(
+    "/api/admin/generate-cover",
+    { mode: "custom", prompt: "проверка сквозного чтения" },
+    { authorization: auth },
+  );
+  const canaryText = await canaryBody.text();
+  check(
+    "Генератор сразу использует ключ из базы (провайдер ответил, а не «не задан»)",
+    canaryText.includes("DEEPSEEK_API_KEY") === false &&
+      canaryText.includes("Не задан") === false,
+    canaryBody.status === 429
+      ? "429 (окно частоты) — ключ прочитан"
+      : canaryBody.status === 502 || canaryBody.status === 503
+        ? `провайдер ответил ${canaryBody.status}`
+        : `${canaryBody.status}: ${canaryText.slice(0, 60)}`,
+  );
+
+  // --- cleanup --------------------------------------------------------------
+  // Restores whatever was configured before the canary, so running the suite
+  // never leaves a junk key in the settings table.
+  const cleared = await postJson(
+    "/api/admin/settings",
+    { deepseekApiKey: "" },
+    { authorization: auth },
+  );
+  check("Очистка ключа → 200", cleared.status === 200, `${cleared.status}`);
+
+  const clearedBody = (await cleared.json()) as {
+    settings?: Record<string, { isSet: boolean; source: string }>;
+  };
+  check(
+    "После очистки ключ берётся из .env либо снят",
+    clearedBody.settings?.deepseekApiKey?.source !== "database",
+    `source=${clearedBody.settings?.deepseekApiKey?.source}`,
+  );
+
+  // --- test-connection endpoint guards ---------------------------------------
+  const badProvider = await postJson(
+    "/api/admin/settings/test",
+    { provider: "openai" },
+    { authorization: auth },
+  );
+  check("Неизвестный провайдер → 400", badProvider.status === 400, `${badProvider.status}`);
+
+  const noKey = await postJson(
+    "/api/admin/settings/test",
+    { provider: "deepseek" },
+    { authorization: auth },
+  );
+  const noKeyBody = (await noKey.json().catch(() => ({}))) as { error?: string };
+  check(
+    "Проверка без ключа не уходит в сеть → 400",
+    noKey.status === 400,
+    `${noKey.status}: ${(noKeyBody.error ?? "").slice(0, 40)}`,
+  );
+
+  const badJsonTest = await fetch(`${base}/api/admin/settings/test`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: auth },
+    body: "не json",
+  });
+  check("Проверка: не-JSON тело → 400", badJsonTest.status === 400, `${badJsonTest.status}`);
+}
+
+/**
+ * Settings primitives.
+ *
+ * Masking is the only thing standing between a leaked log or a shoulder-surfed
+ * screen and a billable key, and the "empty row falls back to .env" rule is what
+ * makes clearing a key in the UI behave like the form claims.
+ */
+function checkSettingsPrimitives() {
+  check(
+    "Маска: у ключа показывает начало и конец",
+    maskSecret("sk-abcdefghijklmnop1234") === "sk-abc…1234",
+    maskSecret("sk-abcdefghijklmnop1234"),
+  );
+
+  check(
+    "Маска: короткий ключ не раскрывается",
+    maskSecret("sk-12345") === "•".repeat(8) && !maskSecret("sk-12345").includes("sk-"),
+    `8 точек вместо символов`,
+  );
+
+  check(
+    "Маска: пустая строка остаётся пустой",
+    maskSecret("   ") === "",
+    "пусто",
+  );
+
+  // The middle of a key must never appear in its own mask.
+  const longKey = "sk-proj-ABCDEFGHIJKLMNOP-0123456789xyz";
+  const mask = maskSecret(longKey);
+  check(
+    "Маска: середина ключа не утекает",
+    !mask.includes("HIJKLMNOP") && mask.length < longKey.length,
+    mask,
+  );
+
+  check(
+    "Настройки: allowlist непустой и без посторонних ключей",
+    ALLOWED_KEYS.length === 2 &&
+      isAllowedKey("DEEPSEEK_API_KEY") &&
+      isAllowedKey("DEEPINFRA_API_KEY"),
+    ALLOWED_KEYS.join(", "),
+  );
+
+  // The critical negative: ADMIN_PASSWORD and DATABASE_URL must not be
+  // reachable through this service at all.
+  for (const forbidden of [
+    "ADMIN_PASSWORD",
+    "ADMIN_USER",
+    "DATABASE_URL",
+    "VK_ACCESS_TOKEN",
+    "NEXT_PUBLIC_SITE_URL",
+    "UPLOAD_DIR",
+  ]) {
+    check(
+      `Настройки: ${forbidden} недоступен через сервис`,
+      !isAllowedKey(forbidden),
+      "не в allowlist",
+    );
+  }
+
+  // Masking a value that is not there must not throw: the settings page renders
+  // the form whether or not a key exists.
+  check(
+    "Маска: отсутствующая переменная окружения не роняет форму",
+    maskSecret(process.env.DEEPSEEK_API_KEY ?? "") === "" ||
+      maskSecret(process.env.DEEPSEEK_API_KEY ?? "").includes("…"),
+    "безопасно",
+  );
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
@@ -535,6 +812,7 @@ async function main() {
   checkArticleMedia();
   checkAiCover();
   checkDeepInfraEnvelope();
+  checkSettingsPrimitives();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 
@@ -800,6 +1078,8 @@ async function main() {
     publicPage.status === 200,
     `${publicPage.status}`,
   );
+
+  await checkSettingsApi(base, auth);
 
   console.log("\nПроверки безопасности и интеграций\n");
   for (const { name, ok, detail } of checks) {

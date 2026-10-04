@@ -93,6 +93,23 @@ model ArticleTag {
   @@index([tagId])
 }
 
+/**
+ * Editor-managed configuration, stored as plain key/value rows.
+ *
+ * Exists so an API key can be changed from /admin/settings without editing .env
+ * and restarting pm2. The key names are the same environment variable names, and
+ * a row here overrides the environment — see src/lib/settings.ts.
+ *
+ * Only the names listed in ALLOWED_KEYS there are readable or writable through
+ * the API. A generic settings endpoint would otherwise hand out every secret the
+ * process has, ADMIN_PASSWORD included.
+ */
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
 model Category {
   id       String    @id @default(cuid())
   name     String    @unique

@@ -13,6 +13,7 @@ import { AiCoverGenerator } from "../src/app/admin/articles/components/ai-cover-
 import { AiCoverPanel } from "../src/app/admin/articles/components/ai-cover-panel";
 import { MediaEditor } from "../src/app/admin/articles/components/media-editor";
 import { TitleField } from "../src/app/admin/articles/components/title-field";
+import { SettingsForm } from "../src/app/admin/settings/components/settings-form";
 import { ArticleGallery } from "../src/components/article-gallery";
 import { SubscribeBlock } from "../src/components/subscribe-block";
 import { ArticleVideo } from "../src/components/article-video";
@@ -94,6 +95,20 @@ const aiErrorHtml = render(AiCoverPanel as never, {
 const aiResultHtml = render(AiCoverPanel as never, {
   ...panelDefaults,
   result: { url: "/uploads/ai-cover-abc.webp", prompt: "a wet street at night" },
+});
+
+// --- Settings form ----------------------------------------------------------
+const settingsDefaults = {
+  deepseekApiKey: { isSet: false, masked: "", source: "unset" as const },
+  deepinfraApiKey: { isSet: false, masked: "", source: "unset" as const },
+};
+
+const settingsEmptyHtml = render(SettingsForm as never, { initial: settingsDefaults });
+const settingsFilledHtml = render(SettingsForm as never, {
+  initial: {
+    deepseekApiKey: { isSet: true, masked: "sk-abc…7890", source: "database" },
+    deepinfraApiKey: { isSet: true, masked: "sk-xyz…1111", source: "environment" },
+  },
 });
 
 check("Галерея: зона для перетаскивания", mediaHtml.includes("Перетащите сюда пачку фото"), "на месте");
@@ -341,6 +356,75 @@ check(
   "Генератор: панель закрывается",
   aiAutoHtml.includes('aria-label="Закрыть генератор"'),
   "кнопка есть",
+);
+
+// --- Settings form ----------------------------------------------------------
+check(
+  "Настройки: оба поля присутствуют",
+  settingsEmptyHtml.includes("Ключ DeepSeek API") &&
+    settingsEmptyHtml.includes("Ключ DeepInfra API"),
+  "два поля",
+);
+check(
+  "Настройки: поля замаскированы и пусты",
+  (settingsEmptyHtml.match(/type="password"/g) ?? []).length === 2 &&
+    !/value="sk-/.test(settingsFilledHtml),
+  "два password без значения",
+);
+check(
+  "Настройки: кнопка показа/скрытия у каждого поля",
+  (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length === 2,
+  "2 кнопки",
+);
+// Counted as buttons, not as a substring: the explanatory section below the form
+// mentions the same phrase in prose.
+check(
+  "Настройки: «Тест подключения» у каждого поля",
+  (settingsFilledHtml.match(/>Тест подключения<\/button>/g) ?? []).length === 2,
+  "2 кнопки",
+);
+check(
+  "Настройки: маска из БД показана как источник",
+  settingsFilledHtml.includes("sk-abc…7890") && settingsFilledHtml.includes("(в базе данных)"),
+  "источник указан",
+);
+check(
+  "Настройки: маска из .env отличима от базы",
+  settingsFilledHtml.includes("sk-xyz…1111") &&
+    settingsFilledHtml.includes("(из .env, в базе пусто)"),
+  "источник указан",
+);
+check(
+  "Настройки: при незаданном ключе обещано понятное сообщение",
+  settingsEmptyHtml.includes("генерация обложек вернёт понятную ошибку"),
+  "подсказка есть",
+);
+check(
+  "Настройки: кнопка очистки только у заданного ключа",
+  (settingsFilledHtml.match(/>Очистить</g) ?? []).length === 2 &&
+    !settingsEmptyHtml.includes(">Очистить<"),
+  "скрыта при unset",
+);
+check(
+  "Настройки: кнопка сохранения на месте",
+  settingsEmptyHtml.includes("Сохранить настройки"),
+  "на месте",
+);
+check(
+  "Настройки: сказано, что перезапуск не нужен",
+  settingsEmptyHtml.includes("Перезапуск приложения не требуется"),
+  "подсказка в шапке формы",
+);
+check(
+  "Настройки: показано, куда уходит ключ",
+  settingsFilledHtml.includes("api.deepseek.com") &&
+    settingsFilledHtml.includes("api.deepinfra.com"),
+  "оба домена",
+);
+check(
+  "Настройки: форма не отдаёт полный ключ в разметке",
+  !settingsFilledHtml.includes("sk-abcdefghij"),
+  "только маска",
 );
 
 for (const { name, ok, detail } of checks) {
