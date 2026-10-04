@@ -9,6 +9,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { AiCoverGenerator } from "../src/app/admin/articles/components/ai-cover-generator";
+import { AiCoverPanel } from "../src/app/admin/articles/components/ai-cover-panel";
 import { MediaEditor } from "../src/app/admin/articles/components/media-editor";
 import { TitleField } from "../src/app/admin/articles/components/title-field";
 import { ArticleGallery } from "../src/components/article-gallery";
@@ -60,6 +62,39 @@ const noVideoHtml = renderToStaticMarkup(
 const galleryHtml = render(ArticleGallery as never, { items, alt: "Заголовок" });
 const singleHtml = render(ArticleGallery as never, { items: items.slice(0, 1) });
 const emptyGalleryHtml = render(ArticleGallery as never, { items: [] });
+
+// --- AI cover generator -----------------------------------------------------
+const aiProps = { title: "Заголовок", lead: "Лид", content: "<p>Текст</p>", onGenerated: noop };
+const panelDefaults = {
+  mode: "auto" as const,
+  hint: "",
+  busy: false,
+  error: null,
+  result: null,
+  onModeChange: noop,
+  onHintChange: noop,
+  onGenerate: noop,
+  onApply: noop,
+  onDiscard: noop,
+  onClose: noop,
+};
+
+const aiClosedHtml = render(AiCoverGenerator as never, aiProps);
+const aiAutoHtml = render(AiCoverPanel as never, panelDefaults);
+const aiCustomHtml = render(AiCoverPanel as never, {
+  ...panelDefaults,
+  mode: "custom",
+  hint: "Ночная улица после ливня",
+});
+const aiBusyHtml = render(AiCoverPanel as never, { ...panelDefaults, busy: true });
+const aiErrorHtml = render(AiCoverPanel as never, {
+  ...panelDefaults,
+  error: "Не задан DEEPSEEK_API_KEY.",
+});
+const aiResultHtml = render(AiCoverPanel as never, {
+  ...panelDefaults,
+  result: { url: "/uploads/ai-cover-abc.webp", prompt: "a wet street at night" },
+});
 
 check("Галерея: зона для перетаскивания", mediaHtml.includes("Перетащите сюда пачку фото"), "на месте");
 check("Галерея: кнопка выбора файлов", mediaHtml.includes("Выбрать файлы"), "на месте");
@@ -232,6 +267,80 @@ check(
   NARROW_COVER_WARNING ===
     "Ширина обложки меньше 700 px — Дзен может не создать большую карточку материала",
   NARROW_COVER_WARNING,
+);
+
+// --- AI cover generator -----------------------------------------------------
+check(
+  "Генератор: свёрнут в одну кнопку",
+  aiClosedHtml.includes("Сгенерировать ИИ-обложку") && !aiClosedHtml.includes("aiCoverHint"),
+  "кнопка без панели",
+);
+
+check(
+  "Генератор: обе радиокнопки на месте",
+  aiAutoHtml.includes("По тексту статьи") && aiAutoHtml.includes("По своей подсказке"),
+  "два варианта",
+);
+check(
+  "Генератор: в режиме «по тексту» подсказка неактивна",
+  /<textarea[^>]*id="aiCoverHint"[^>]*disabled/.test(aiAutoHtml),
+  "disabled",
+);
+check(
+  "Генератор: в режиме «по своей подсказке» поле активно",
+  /<textarea[^>]*id="aiCoverHint"/.test(aiCustomHtml) &&
+    !/id="aiCoverHint"[^>]*disabled/.test(aiCustomHtml),
+  "enabled",
+);
+check(
+  "Генератор: счётчик длины подсказки",
+  aiCustomHtml.includes("из 600"),
+  "0 из 600",
+);
+check(
+  "Генератор: в режиме auto сказано, что составит DeepSeek",
+  aiAutoHtml.includes("составит DeepSeek"),
+  "подсказка объяснена",
+);
+check(
+  "Генератор: при загрузке кнопка заблокирована и показывает спиннер",
+  aiBusyHtml.includes("Генерируем…") &&
+    aiBusyHtml.includes("animate-spin") &&
+    /disabled=""/.test(aiBusyHtml) &&
+    aiAutoHtml.includes("Сгенерировать") &&
+    !aiBusyHtml.includes(">Сгенерировать<"),
+  "disabled + spinner + смена подписи",
+);
+check(
+  "Генератор: при загрузке объясняется двухшаговость",
+  aiBusyHtml.includes("Два запроса"),
+  "подсказка есть",
+);
+check(
+  "Генератор: ошибка показывается как alert с текстом",
+  aiErrorHtml.includes('role="alert"') && aiErrorHtml.includes("Не задан DEEPSEEK_API_KEY."),
+  "alert",
+);
+check(
+  "Генератор: результат показан с превью и промптом",
+  aiResultHtml.includes("/uploads/ai-cover-abc.webp") &&
+    aiResultHtml.includes("a wet street at night"),
+  "превью + промпт",
+);
+check(
+  "Генератор: результат можно принять или отменить",
+  aiResultHtml.includes("Использовать как обложку") && aiResultHtml.includes("Отменить"),
+  "две кнопки",
+);
+check(
+  "Генератор: без результата кнопок принятия нет",
+  !aiAutoHtml.includes("Использовать как обложку"),
+  "чистое состояние",
+);
+check(
+  "Генератор: панель закрывается",
+  aiAutoHtml.includes('aria-label="Закрыть генератор"'),
+  "кнопка есть",
 );
 
 for (const { name, ok, detail } of checks) {

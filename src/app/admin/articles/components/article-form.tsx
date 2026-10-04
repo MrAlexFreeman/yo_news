@@ -28,6 +28,7 @@ import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar"
 import { StickyActionBar } from "@/app/admin/articles/components/sticky-action-bar";
 import { TagInput } from "@/app/admin/articles/components/tag-input";
 import { TitleField } from "@/app/admin/articles/components/title-field";
+import { AiCoverGenerator } from "@/app/admin/articles/components/ai-cover-generator";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
 import { parseMediaField, serializeMedia, type MediaItem } from "@/lib/article-media";
 import {
@@ -666,6 +667,24 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                     JPG, PNG или WebP, до 8 МБ
                   </span>
                 </div>
+
+                {/*
+                  The generator writes to the same UPLOAD_DIR as the file input
+                  and hands back a URL, so adopting its result is just
+                  setCoverImage — no second code path for storing a cover.
+                */}
+                <AiCoverGenerator
+                  title={title}
+                  lead={lead}
+                  content={contentHtml}
+                  onGenerated={(url) => {
+                    setCoverImage(url);
+                    // 1024 px wide by construction, so the narrow-cover warning
+                    // from a manual upload does not apply here.
+                    setUploadWarning(null);
+                    setUploadError(null);
+                  }}
+                />
 
                 {uploadError ? (
                   <p role="alert" className="text-sm text-red-600">

@@ -12,9 +12,32 @@ import {
 import { buildDzenContent } from "../src/lib/dzen-feed-html";
 import { sanitizeArticleHtml } from "../src/lib/sanitize";
 import { normalizeTagList, parseTagsField, tagKey } from "../src/lib/tags";
+import {
+  AI_HINT_LIMIT,
+  COVER_HEIGHT,
+  COVER_STEPS,
+  COVER_WIDTH,
+  PHOTO_STYLE_SUFFIX,
+} from "../src/lib/cover-prompt";
+import { detectImageFormat, extractImageBytes } from "../src/lib/deepinfra-response";
 import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
+
+/**
+ * A real 1x1 PNG, concatenated 20 times so the decoded length clears the
+ * parser's 1 KB floor. Concatenating the *bytes* and encoding once matters:
+ * repeating a padded base64 string does not repeat the data, because a decoder
+ * stops at the first "==" it meets.
+ */
+const IMAGE_FIXTURE_BASE64 = Buffer.concat(
+  Array.from({ length: 20 }, () =>
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  ),
+).toString("base64");
 
 function check(name: string, ok: boolean, detail: string) {
   checks.push({ name, ok, detail });
@@ -383,11 +406,135 @@ function checkArticleMedia() {
   );
 }
 
+/**
+ * Cover generation input handling, exercised without touching a provider.
+ *
+ * The response parser is the fragile part: DeepInfra's v1/inference API has
+ * shipped several envelopes for image models, and silently failing to find the
+ * image is the difference between "cover generated" and an empty article.
+ */
+function checkAiCover() {
+  check(
+    "Генератор: стиль добавляется к подсказке",
+    PHOTO_STYLE_SUFFIX.includes("strictly no text") &&
+      PHOTO_STYLE_SUFFIX.includes("16:9 aspect ratio"),
+    "brief на месте",
+  );
+
+  check(
+    "Генератор: лимит подсказки 600 символов",
+    AI_HINT_LIMIT === 600,
+    `${AI_HINT_LIMIT}`,
+  );
+
+  // FLUX rejects dimensions that are not multiples of 16, and the frame has to be
+  // 16:9 for the news card — a regression on either breaks generation outright.
+  check(
+    "Генератор: кадр 1024×576 (16:9, кратно 16)",
+    COVER_WIDTH === 1024 &&
+      COVER_HEIGHT === 576 &&
+      COVER_WIDTH / COVER_HEIGHT === 16 / 9 &&
+      COVER_WIDTH % 16 === 0 &&
+      COVER_HEIGHT % 16 === 0,
+    `${COVER_WIDTH}×${COVER_HEIGHT}`,
+  );
+
+  check(
+    "Генератор: ширина выше минимума Дзена в 700 px",
+    COVER_WIDTH >= 700,
+    `${COVER_WIDTH} >= 700`,
+  );
+
+  check(
+    "Генератор: 4 шага FLUX-1-schnell",
+    COVER_STEPS === 4,
+    `${COVER_STEPS}`,
+  );
+}
+
+/** Exercises the image extractor against every envelope DeepInfra has shipped. */
+function checkDeepInfraEnvelope() {
+  const payload = IMAGE_FIXTURE_BASE64;
+
+  const shapes: Record<string, unknown> = {
+    "output: base64": { output: payload },
+    "image: base64": { image: payload },
+    "images: массив": { images: [payload] },
+    "images: объекты": { images: [{ b64_json: payload }] },
+    "data: массив": { data: [{ b64_json: payload }] },
+    "inference.output": { inference: { output: payload } },
+    "data URL": { output: `data:image/png;base64,${payload}` },
+    "голая строка": payload,
+  };
+
+  for (const [name, body] of Object.entries(shapes)) {
+    const found = extractImageBytes(body);
+    check(
+      `Генератор: разбор «${name}»`,
+      found !== null,
+      found ? `${found.length} байт` : "не найдено",
+    );
+  }
+
+  // Magic-byte detection is what stops a plausible-length non-image being
+  // accepted: "x" is a valid base64 character, so 4096 of them decode to over
+  // 3 KB of nothing.
+  const junk: Record<string, unknown> = {
+    "ошибка": { error: "model not found" },
+    "пустой объект": {},
+    "короткая строка": { output: "abcd" },
+    "не-base64, но верной длины": { output: "x".repeat(4096) },
+    "base64 без сигнатуры файла": { output: Buffer.alloc(4096, 7).toString("base64") },
+    "число вместо строки": { output: 12345 },
+    "url вместо картинки": { url: "https://example.com/cover.png" },
+  };
+
+  for (const [name, body] of Object.entries(junk)) {
+    const found = extractImageBytes(body);
+    check(
+      `Генератор: «${name}» не принят за картинку`,
+      found === null,
+      found ? "ложное срабатывание" : "отклонено",
+    );
+  }
+
+  // Each supported format is recognised, so a provider switch to JPEG or WebP
+  // does not silently start failing.
+  const onePixel = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  check(
+    "Генератор: сигнатура PNG распознаётся",
+    detectImageFormat(onePixel) === "image/png",
+    detectImageFormat(onePixel) ?? "нет",
+  );
+  check(
+    "Генератор: сигнатура JPEG распознаётся",
+    detectImageFormat(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0])) === "image/jpeg",
+    "image/jpeg",
+  );
+  check(
+    "Генератор: сигнатура WebP распознаётся",
+    detectImageFormat(
+      Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBP")]),
+    ) === "image/webp",
+    "image/webp",
+  );
+  check(
+    "Генератор: сигнатура ELF не считается картинкой",
+    detectImageFormat(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0])) === null,
+    "отклонено",
+  );
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
   checkSeoAndTags();
   checkArticleMedia();
+  checkAiCover();
+  checkDeepInfraEnvelope();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 
@@ -493,6 +640,131 @@ async function main() {
     method: "POST",
   });
   check("Несуществующая статья → 404", missing.status === 404, `${missing.status}`);
+
+  // --- AI cover endpoint ----------------------------------------------------
+  // It spends money per call and writes to UPLOAD_DIR, so the gate matters more
+  // here than for any other route. These assertions never reach the providers:
+  // every case is refused before a key is read.
+  const aiBody = JSON.stringify({ mode: "auto", title: "Тест" });
+
+  const aiAnon = await fetch(`${base}/api/admin/generate-cover`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: aiBody,
+  });
+  check(
+    "Генератор обложки без авторизации → 401",
+    aiAnon.status === 401,
+    `${aiAnon.status}`,
+  );
+
+  const aiWrong = await fetch(`${base}/api/admin/generate-cover`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Basic ${Buffer.from("admin:nope").toString("base64")}`,
+    },
+    body: aiBody,
+  });
+  check(
+    "Генератор обложки с неверным паролем → 401",
+    aiWrong.status === 401,
+    `${aiWrong.status}`,
+  );
+
+  // With credentials, a form-shaped body must still be refused: an HTML form can
+  // only send urlencoded/multipart/text-plain, so requiring JSON is what stops a
+  // page on another origin from spending the account's credit.
+  const aiForm = await fetch(`${base}/api/admin/generate-cover`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      authorization: auth,
+    },
+    body: "mode=auto&title=test",
+  });
+  check(
+    "Генератор: не-JSON отклонён (защита от CSRF)",
+    aiForm.status === 415,
+    `${aiForm.status}`,
+  );
+
+  const aiBadJson = await fetch(`${base}/api/admin/generate-cover`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: auth },
+    body: "not json at all",
+  });
+  check(
+    "Генератор: не-JSON тело → 400",
+    aiBadJson.status === 400,
+    `${aiBadJson.status}`,
+  );
+
+  // Empty story: refused before any provider call, so this passes with no keys
+  // configured and costs nothing.
+  const aiEmpty = await fetch(`${base}/api/admin/generate-cover`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: auth },
+    body: JSON.stringify({ mode: "auto" }),
+  });
+  const aiEmptyBody = (await aiEmpty.json().catch(() => ({}))) as { error?: string };
+  check(
+    "Генератор: пустая статья отклонена до вызова провайдера",
+    aiEmpty.status === 400 && (aiEmptyBody.error ?? "").includes("Нечего описать"),
+    `${aiEmpty.status}: ${(aiEmptyBody.error ?? "").slice(0, 48)}`,
+  );
+
+  const aiNoHint = await fetch(`${base}/api/admin/generate-cover`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: auth },
+    body: JSON.stringify({ mode: "custom" }),
+  });
+  const aiNoHintBody = (await aiNoHint.json().catch(() => ({}))) as { error?: string };
+  check(
+    "Генератор: пустая подсказка отклонена",
+    aiNoHint.status === 400 && (aiNoHintBody.error ?? "").includes("подсказку"),
+    `${aiNoHint.status}: ${(aiNoHintBody.error ?? "").slice(0, 40)}`,
+  );
+
+  // The two rejections above must not have consumed the rate-limit slot, or an
+  // editor's typo would block their own retry.
+  const keysConfigured = Boolean(
+    process.env.DEEPSEEK_API_KEY?.trim() && process.env.DEEPINFRA_API_KEY?.trim(),
+  );
+
+  if (keysConfigured) {
+    check("Генератор: ключи настроены", true, "проверка 503 пропущена — ключи есть");
+  } else {
+    // With no keys set the endpoint must answer with a readable 503 that names the
+    // missing variable, not a stack trace and not a silent success.
+    const aiNoKeys = await fetch(`${base}/api/admin/generate-cover`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: auth },
+      body: JSON.stringify({ mode: "custom", prompt: "Проверка наличия ключа" }),
+    });
+    const aiNoKeysBody = (await aiNoKeys.json().catch(() => ({}))) as { error?: string };
+    check(
+      "Генератор: без ключей — понятная ошибка с именем переменной",
+      aiNoKeys.status === 503 &&
+        /DEEPSEEK_API_KEY|DEEPINFRA_API_KEY/.test(aiNoKeysBody.error ?? ""),
+      `${aiNoKeys.status}: ${(aiNoKeysBody.error ?? "").slice(0, 64)}`,
+    );
+  }
+
+  // Each generation costs money, so back-to-back calls are refused. Asserted last
+  // among the authenticated cases because it depends on the previous one having
+  // just taken a slot.
+  const aiRate = await fetch(`${base}/api/admin/generate-cover`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: auth },
+    body: JSON.stringify({ mode: "custom", prompt: "Повторный запрос" }),
+  });
+  const aiRateBody = (await aiRate.json().catch(() => ({}))) as { error?: string };
+  check(
+    "Генератор: повторный вызов ограничен по частоте",
+    aiRate.status === 429,
+    `${aiRate.status}: ${(aiRateBody.error ?? "").slice(0, 40)}`,
+  );
 
   const malformed = await fetch(`${base}/api/articles/short/view`, { method: "POST" });
   check("Некорректный формат id → 400", malformed.status === 400, `${malformed.status}`);
