@@ -77,9 +77,13 @@ export async function generateMetadata({
     robots: article.noIndex
       ? { index: false, follow: false }
       : { index: true, follow: true },
+    // De-duplicated: a story whose rubric is "Спорт" and which also carries a
+    // "Спорт" tag would otherwise emit the keyword twice.
     keywords: [
-      ...(article.category ? [article.category.name] : []),
-      ...article.tags.map((entry) => entry.tag.name),
+      ...new Set([
+        ...(article.category ? [article.category.name] : []),
+        ...article.tags.map((entry) => entry.tag.name),
+      ]),
     ],
     openGraph: {
       type: "article",
