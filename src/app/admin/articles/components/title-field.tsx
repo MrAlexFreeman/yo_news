@@ -4,6 +4,7 @@ import { useId } from "react";
 
 import { CharCounter } from "@/app/admin/articles/components/char-counter";
 import {
+  DZEN_TITLE_LIMIT,
   TITLE_MAX_LENGTH,
   TITLE_SOFT_LIMIT,
 } from "@/app/admin/articles/types";
@@ -28,6 +29,9 @@ export function TitleField({ value, onChange, error }: TitleFieldProps) {
   const length = value.trim().length;
   const over = length > TITLE_SOFT_LIMIT;
   const remaining = TITLE_SOFT_LIMIT - length;
+  // A third state, distinct from both the editorial warning and the hard error:
+  // short enough for the site, long enough that Dzen will cut it in its feed.
+  const overDzen = length > DZEN_TITLE_LIMIT;
 
   return (
     <div className="space-y-1.5">
@@ -38,7 +42,11 @@ export function TitleField({ value, onChange, error }: TitleFieldProps) {
             *
           </span>
         </label>
-        <CharCounter value={value} limit={TITLE_SOFT_LIMIT} />
+        <CharCounter
+          value={value}
+          limit={TITLE_SOFT_LIMIT}
+          warnAt={DZEN_TITLE_LIMIT}
+        />
       </div>
 
       <input
@@ -60,6 +68,24 @@ export function TitleField({ value, onChange, error }: TitleFieldProps) {
             : "border-neutral-300 bg-white focus:border-neutral-500 focus:ring-neutral-200",
         )}
       />
+
+      {/*
+        Syndication hint. Always visible rather than only once exceeded: an
+        editor has to learn the ceiling before hitting it, and the ceiling comes
+        from a third party rather than from the site.
+      */}
+      <p
+        role={overDzen ? "status" : undefined}
+        className={cn(
+          "text-xs",
+          overDzen ? "text-amber-700" : "text-neutral-400",
+        )}
+      >
+        Для корректного отображения в Дзене рекомендуем до {DZEN_TITLE_LIMIT} символов
+        {overDzen
+          ? ` — сейчас ${length}, Дзен обрежет заголовок.`
+          : "."}
+      </p>
 
       {over ? (
         <p role="status" className="text-sm text-amber-700">

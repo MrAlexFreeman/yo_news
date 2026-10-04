@@ -101,6 +101,17 @@ export const FALLBACK_CATEGORIES: CategoryOption[] = [
 export const TITLE_SOFT_LIMIT = 250;
 
 /**
+ * Dzen's documented ceiling for a headline, and the reason the counter has an
+ * amber band rather than only a red one.
+ *
+ * The editorial soft limit stays at 250 — a long investigative headline is normal
+ * on the site — but past this length Dzen truncates the title in its own feed
+ * with no warning, so an editor who does not know that will be surprised by a
+ * different headline in the syndication. Advisory only; nothing is blocked.
+ */
+export const DZEN_TITLE_LIMIT = 200;
+
+/**
  * Hard ceiling, enforced by the input and again on the server. Set above the
  * soft limit so the warning is the thing editors see, not a silent truncation.
  */

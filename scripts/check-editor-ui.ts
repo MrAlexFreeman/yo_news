@@ -10,10 +10,17 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { MediaEditor } from "../src/app/admin/articles/components/media-editor";
+import { TitleField } from "../src/app/admin/articles/components/title-field";
 import { ArticleGallery } from "../src/components/article-gallery";
 import { SubscribeBlock } from "../src/components/subscribe-block";
 import { ArticleVideo } from "../src/components/article-video";
 import { MAX_MEDIA_ITEMS, type MediaItem } from "../src/lib/article-media";
+import {
+  DZEN_MIN_CARD_WIDTH,
+  NARROW_COVER_WARNING,
+} from "../src/lib/image-dimensions";
+import { DZEN_TITLE_LIMIT, TITLE_SOFT_LIMIT } from "../src/app/admin/articles/types";
+import { DZEN_URL } from "../src/lib/site";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 const check = (name: string, ok: boolean, detail: string) => {
@@ -89,6 +96,14 @@ check(
 );
 
 check("Подписка: заголовок", subscribeHtml.includes("Подписывайтесь"), "на месте");
+// The button has to point at whatever NEXT_PUBLIC_DZEN_URL says. Next.js inlines
+// NEXT_PUBLIC_* at build time, so a wrong value here is only ever caught by
+// rebuilding — this assertion at least catches the wiring being broken.
+check(
+  "Подписка: ссылка Дзена из NEXT_PUBLIC_DZEN_URL",
+  subscribeHtml.includes(`href="${DZEN_URL}"`),
+  DZEN_URL,
+);
 check("Подписка: Дзен", subscribeHtml.includes("Наш канал в Дзене"), "кнопка есть");
 check("Подписка: ВКонтакте", subscribeHtml.includes("Мы во ВКонтакте"), "кнопка есть");
 check(
@@ -139,6 +154,77 @@ check(
   "Галерея: лайтбокс закрыт до клика",
   !galleryHtml.includes('role="dialog"'),
   "нет диалога в разметке",
+);
+
+// --- Headline: Dzen's 200-character ceiling ---------------------------------
+const titleAt = (length: number) =>
+  render(TitleField as never, { value: "я".repeat(length), onChange: noop });
+
+const shortTitle = titleAt(50);
+const dzenLongTitle = titleAt(DZEN_TITLE_LIMIT + 10);
+const overSoftTitle = titleAt(TITLE_SOFT_LIMIT + 10);
+
+check(
+  "Заголовок: подсказка про Дзен видна всегда",
+  shortTitle.includes(`Для корректного отображения в Дзене рекомендуем до ${DZEN_TITLE_LIMIT} символов`),
+  "постоянная подпись",
+);
+check(
+  "Заголовок: до 200 счётчик спокоен",
+  !shortTitle.includes("text-amber-600") && !shortTitle.includes("text-amber-700"),
+  "нет янтарного",
+);
+check(
+  "Заголовок: после 200 счётчик янтарный",
+  dzenLongTitle.includes("text-amber-600"),
+  "text-amber-600",
+);
+check(
+  "Заголовок: после 200 подсказка объясняет обрезку",
+  dzenLongTitle.includes("Дзен обрежет заголовок"),
+  "пояснение есть",
+);
+check(
+  "Заголовок: после 250 счётчик красный, не янтарный",
+  overSoftTitle.includes("text-red-600") && !overSoftTitle.includes("text-amber-600"),
+  "красный",
+);
+check(
+  "Заголовок: поле не заблокировано на 200",
+  shortTitle.includes(`maxlength="${TITLE_SOFT_LIMIT + 50}"`) ||
+    shortTitle.includes(`maxLength="${TITLE_SOFT_LIMIT + 50}"`) ||
+    !/maxlength="200"/i.test(shortTitle),
+  "maxLength не 200",
+);
+// The required asterisk is also red, so the assertion looks for the error
+// paragraph's own markup rather than for red text anywhere in the field.
+check(
+  "Заголовок: длина не порождает ошибку поля",
+  !dzenLongTitle.includes('<p class="text-sm text-red-600">') &&
+    !overSoftTitle.includes('<p class="text-sm text-red-600">'),
+  "error-параграфа нет",
+);
+check(
+  "Заголовок: подсказка при 200+ не блокирует ввод",
+  dzenLongTitle.includes('aria-invalid="false"'),
+  "aria-invalid=false",
+);
+check(
+  "Заголовок: после 250 вход помечен для скринридера",
+  overSoftTitle.includes('aria-invalid="true"'),
+  "aria-invalid=true",
+);
+
+check(
+  "Обложка: порог 700 px",
+  DZEN_MIN_CARD_WIDTH === 700,
+  `${DZEN_MIN_CARD_WIDTH} px`,
+);
+check(
+  "Обложка: точная формулировка предупреждения",
+  NARROW_COVER_WARNING ===
+    "Ширина обложки меньше 700 px — Дзен может не создать большую карточку материала",
+  NARROW_COVER_WARNING,
 );
 
 for (const { name, ok, detail } of checks) {

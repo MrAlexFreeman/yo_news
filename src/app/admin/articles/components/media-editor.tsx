@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 
 import type { MediaItem } from "@/lib/article-media";
 import { DZEN_MIN_HEIGHT, DZEN_MIN_WIDTH, MAX_MEDIA_ITEMS } from "@/lib/article-media";
+import { readImageDimensions } from "@/lib/image-dimensions";
 import { cn } from "@/lib/utils";
 
 type MediaEditorProps = {
@@ -79,7 +80,7 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
       }
 
       try {
-        const dimensions = await readDimensions(file);
+        const dimensions = await readImageDimensions(file);
 
         const body = new FormData();
         body.append("file", file);
@@ -279,36 +280,4 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
       </p>
     </div>
   );
-}
-
-/**
- * Reads a file's pixel size in the browser.
- *
- * createImageBitmap is the cheap path and works for the formats the endpoint
- * accepts; the Image() fallback covers Safari's older behaviour. Both are
- * decode-only, so a large photo costs a few milliseconds and nothing is uploaded.
- */
-function readDimensions(file: File): Promise<{ width: number; height: number }> {
-  return createImageBitmap(file)
-    .then((bitmap) => {
-      const size = { width: bitmap.width, height: bitmap.height };
-      bitmap.close();
-      return size;
-    })
-    .catch(
-      () =>
-        new Promise<{ width: number; height: number }>((resolve) => {
-          const url = URL.createObjectURL(file);
-          const probe = new window.Image();
-          probe.onload = () => {
-            resolve({ width: probe.naturalWidth, height: probe.naturalHeight });
-            URL.revokeObjectURL(url);
-          };
-          probe.onerror = () => {
-            resolve({ width: 0, height: 0 });
-            URL.revokeObjectURL(url);
-          };
-          probe.src = url;
-        }),
-    );
 }

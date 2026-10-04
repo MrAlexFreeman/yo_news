@@ -31,6 +31,11 @@ import { TitleField } from "@/app/admin/articles/components/title-field";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
 import { parseMediaField, serializeMedia, type MediaItem } from "@/lib/article-media";
 import {
+  DZEN_MIN_CARD_WIDTH,
+  NARROW_COVER_WARNING,
+  readImageDimensions,
+} from "@/lib/image-dimensions";
+import {
   SEO_DESCRIPTION_MAX_LENGTH,
   SEO_DESCRIPTION_SOFT_LIMIT,
   SEO_TITLE_MAX_LENGTH,
@@ -157,6 +162,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [videoUrl, setVideoUrl] = useState(initial?.videoUrl ?? "");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  /** Non-blocking note about the cover, e.g. it is narrower than Dzen wants. */
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [categoryId, setCategoryId] = useState(initial?.categoryId ?? "");
   const [status, setStatus] = useState<ArticleStatus>(
@@ -294,6 +301,7 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     setIsExclusive(snapshot.isExclusive);
     setIs18plus(snapshot.is18plus);
     setUploadError(null);
+    setUploadWarning(null);
     setPreviewOpen(false);
   }
 
@@ -306,6 +314,13 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
 
     setUploading(true);
     setUploadError(null);
+    setUploadWarning(null);
+
+    // Measured before the upload, not after: Dzen's card needs a wide image, and
+    // a warning the editor only sees once the bytes are already on disk is a
+    // worse moment to learn it than before they left the machine.
+    const dimensions = await readImageDimensions(file);
+    const tooNarrow = dimensions.width > 0 && dimensions.width < DZEN_MIN_CARD_WIDTH;
 
     try {
       const body = new FormData();
@@ -322,6 +337,15 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
       }
 
       setCoverImage(payload.url);
+      // Advisory, never blocking: the editor may be syndicating elsewhere today
+      // and widening the photo for Dzen before tomorrow's repost.
+      setUploadWarning(
+        tooNarrow
+          ? NARROW_COVER_WARNING
+          : dimensions.width > 0
+            ? `Обложка ${dimensions.width}×${dimensions.height}.`
+            : null,
+      );
     } catch (error) {
       setUploadError(
         error instanceof Error ? error.message : "Не удалось загрузить файл.",
@@ -363,6 +387,7 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
       setVideoUrl("");
       setPublishedAt(moscowNow());
       setUploadError(null);
+      setUploadWarning(null);
       setPreviewOpen(false);
       return;
     }
@@ -611,6 +636,9 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                     value={coverImage}
                     onChange={(event) => {
                       setCoverImage(event.target.value);
+                      // A pasted URL replaces whatever file was uploaded, so the
+                      // old file's measurement no longer describes this cover.
+                      setUploadWarning(null);
                     }}
                     placeholder="Загрузите файл или укажите ссылку"
                     className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
@@ -642,6 +670,23 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                 {uploadError ? (
                   <p role="alert" className="text-sm text-red-600">
                     {uploadError}
+                  </p>
+                ) : null}
+
+                {/* role="status", not "alert": the cover uploaded fine and the
+                    piece is publishable, so this is information rather than a
+                    problem to interrupt on. */}
+                {uploadWarning ? (
+                  <p
+                    role="status"
+                    className={cn(
+                      "text-xs",
+                      uploadWarning === NARROW_COVER_WARNING
+                        ? "text-amber-700"
+                        : "text-neutral-400",
+                    )}
+                  >
+                    {uploadWarning}
                   </p>
                 ) : null}
 
