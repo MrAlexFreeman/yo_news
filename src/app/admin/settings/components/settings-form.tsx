@@ -1,10 +1,23 @@
 "use client";
 
-import { Check, ChevronRight, ExternalLink, Eye, EyeOff, Loader2, Plug, Save, X } from "lucide-react";
-import { useState } from "react";
+import { Check, ChevronRight, ExternalLink, Eye, EyeOff, Loader2, Plug, RefreshCw, Save, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
 import { mergeSettings, type SettingView, type SettingsViewState } from "@/lib/settings-keys";
 import { cn } from "@/lib/utils";
+
+type ProviderBalance = {
+  isSet: boolean;
+  balance: string | null;
+  error: string | null;
+};
+
+type Balances = { deepseek: ProviderBalance; deepinfra: ProviderBalance };
+
+const NO_BALANCES: Balances = {
+  deepseek: { isSet: false, balance: null, error: null },
+  deepinfra: { isSet: false, balance: null, error: null },
+};
 
 /** Matches the server-side shape from src/lib/settings.ts. */
 type Provider = "deepseek" | "deepinfra" | "vk";
@@ -91,6 +104,36 @@ export function SettingsForm({ initial }: SettingsFormProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [tests, setTests] = useState<Record<string, TestState>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [balances, setBalances] = useState<Balances>(NO_BALANCES);
+  const [loadingBalances, setLoadingBalances] = useState(false);
+
+  /**
+   * Reads both remaining-credit figures.
+   *
+   * `showSpinner` is passed rather than always set, because the mount call must not
+   * flip a loading flag synchronously inside the effect — the badge would flash the
+   * spinner on every form open for a request that resolves in a few hundred
+   * milliseconds.
+   *
+   * Re-run after every successful save, because the point of the badge is to confirm
+   * that the key just pasted works and has money on it. Failure is silent: a balance
+   * that will not load must not look like a failed save.
+   */
+  const loadBalances = useCallback(async (showSpinner: boolean) => {
+    if (showSpinner) setLoadingBalances(true);
+    try {
+      const response = await fetch("/api/admin/balances");
+      if (response.ok) setBalances((await response.json()) as Balances);
+    } catch {
+      // Keep the previous figures rather than blanking them.
+    } finally {
+      if (showSpinner) setLoadingBalances(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadBalances(false);
+  }, [loadBalances]);
 
   async function save() {
     const payload: Record<string, string> = {};
@@ -138,6 +181,8 @@ export function SettingsForm({ initial }: SettingsFormProps) {
       // Drop the typed values so the inputs go back to showing a mask rather than
       // a live key sitting in the DOM.
       setValues({});
+      // The key just changed, so the old balance no longer describes it.
+      void loadBalances(true);
     } catch (error) {
       setFormError(
         error instanceof Error ? error.message : "Не удалось сохранить настройки.",
@@ -179,6 +224,7 @@ export function SettingsForm({ initial }: SettingsFormProps) {
       setViews((current) => mergeSettings(current, result.settings));
       setValues((current) => ({ ...current, [name]: "" }));
       setTests((current) => ({ ...current, [name]: null }));
+      void loadBalances(true);
     } finally {
       setSaving(false);
     }
@@ -234,6 +280,8 @@ export function SettingsForm({ initial }: SettingsFormProps) {
         {FIELDS.map((field) => {
           const current = views[field.name];
           const typed = values[field.name] ?? "";
+          const balanceOf = (provider: Provider) =>
+            provider === "vk" ? undefined : balances[provider];
           const isShown = revealed[field.name] ?? false;
           const testResult = tests[field.provider];
 
@@ -308,6 +356,42 @@ export function SettingsForm({ initial }: SettingsFormProps) {
                     <X className="size-4" aria-hidden />
                     Очистить
                   </button>
+                ) : null}
+
+                {/* The balance sits next to the key rather than in its own panel:
+                    the question it answers is "will this key work", which is asked
+                    in the same breath as "is this key right".
+
+                    VK is left out: it bills by token rather than holding a prepaid
+                    credit, so there is no figure to show and an empty badge would
+                    read as something being wrong. */}
+                {balanceOf(field.provider) ? (
+                  <span className="flex items-center gap-1.5 text-xs text-neutral-500">
+                    {balanceOf(field.provider)?.balance ? (
+                      <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-mono text-neutral-800">
+                        {balanceOf(field.provider)?.balance}
+                      </span>
+                    ) : balanceOf(field.provider)?.error ? (
+                      <span className="max-w-64 text-neutral-400">
+                        {balanceOf(field.provider)?.error}
+                      </span>
+                    ) : (
+                      <span className="text-neutral-400">остаток неизвестен</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void loadBalances(true)}
+                      disabled={loadingBalances}
+                      aria-label={`Обновить остаток: ${field.label}`}
+                      title="Обновить остаток"
+                      className="rounded p-0.5 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-50"
+                    >
+                      <RefreshCw
+                        className={cn("size-3.5", loadingBalances && "animate-spin")}
+                        aria-hidden
+                      />
+                    </button>
+                  </span>
                 ) : null}
               </div>
 

@@ -65,6 +65,18 @@ import {
 } from "../src/lib/dzen-publication";
 import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
 import {
+  formatMoney,
+  notConfigured,
+  parseDeepinfraBalance,
+  parseDeepseekBalance,
+} from "../src/lib/balance-format";
+import {
+  AI_GENERATED_SOURCE,
+  SOURCE_LIMIT,
+  SYSTEM_SOURCES,
+  mergePhotoSources,
+} from "../src/lib/photo-sources";
+import {
   SEARCH_TAKE,
   articlePath,
   buildSearchText,
@@ -1339,6 +1351,171 @@ function checkSettingsPrimitives() {
 }
 
 /**
+ * Provider balances.
+ *
+ * The parsers are asserted against the payloads captured from live responses rather
+ * than from documentation, because the shape is the whole fragile part: DeepSeek
+ * returns a *list* of balances keyed by currency, and the USD entry is zero on an
+ * account whose credit is in CNY. Printing the first entry would show "$0.00 USD" on
+ * a funded account, which is worse than showing nothing.
+ */
+function checkBalances() {
+  // Captured live from api.deepseek.com/user/balance.
+  const deepseekPayload = {
+    is_available: true,
+    balance_infos: [
+      { currency: "USD", total_balance: "0.00", granted_balance: "0.00", topped_up_balance: "0.00" },
+      { currency: "CNY", total_balance: "19.66", granted_balance: "0.00", topped_up_balance: "19.66" },
+    ],
+  };
+
+  check(
+    "Баланс: DeepSeek берёт непустую валюту, а не первую",
+    parseDeepseekBalance(deepseekPayload)?.currency === "CNY",
+    JSON.stringify(parseDeepseekBalance(deepseekPayload)),
+  );
+  check(
+    "Баланс: DeepSeek сумма разбирается",
+    parseDeepseekBalance(deepseekPayload)?.amount === 19.66,
+    `${parseDeepseekBalance(deepseekPayload)?.amount}`,
+  );
+  check(
+    "Баланс: DeepSeek форматируется как в ТЗ",
+    formatMoney(19.66, "CNY") === "19.66 CNY",
+    formatMoney(19.66, "CNY"),
+  );
+  check(
+    "Баланс: доллары со знаком, как в ТЗ",
+    formatMoney(4.85, "USD") === "$4.85 USD",
+    formatMoney(4.85, "USD"),
+  );
+  check(
+    "Баланс: всегда две цифры после запятой",
+    formatMoney(19.6, "CNY") === "19.60 CNY" && formatMoney(4, "USD") === "$4.00 USD",
+    `${formatMoney(19.6, "CNY")}, ${formatMoney(4, "USD")}`,
+  );
+  check(
+    "Баланс: нулевой остаток всё равно показывается",
+    parseDeepseekBalance({
+      is_available: true,
+      balance_infos: [{ currency: "USD", total_balance: "0.00" }],
+    })?.currency === "USD",
+    "единственная валюта не теряется",
+  );
+  check(
+    "Баланс: недоступный аккаунт — не ошибка парсинга",
+    parseDeepseekBalance({ is_available: false, balance_infos: [] }) === null,
+    "null",
+  );
+  for (const junk of [null, undefined, {}, "текст", 42, { balance_infos: "нет" }]) {
+    check(
+      `Баланс: мусор «${JSON.stringify(junk) ?? "undefined"}» отклонён`,
+      parseDeepseekBalance(junk) === null,
+      "null",
+    );
+  }
+  for (const junk of [null, {}, "текст", 42, { balance_infos: [{ currency: 5 }] }]) {
+    check(
+      `Баланс: битый DeepSeek отвечает «${JSON.stringify(junk) ?? "null"}»`,
+      parseDeepseekBalance(junk) === null,
+      "null",
+    );
+  }
+
+  // DeepInfra publishes no GET balance endpoint: /v1/user/account and
+  // /v1/user/credits answer 404 and /payment/funds is POST-only. The parser stays so
+  // the badge fills in the day they ship one.
+  check(
+    "Баланс: DeepInfra читает total_credits строкой",
+    formatMoney(Number(parseDeepinfraBalance({ total_credits: "4.85" })?.amount), "USD") ===
+      "$4.85 USD",
+    JSON.stringify(parseDeepinfraBalance({ total_credits: "4.85" })),
+  );
+  check(
+    "Баланс: DeepInfra читает число",
+    parseDeepinfraBalance({ balance: 12 })?.amount === 12,
+    JSON.stringify(parseDeepinfraBalance({ balance: 12 })),
+  );
+  check(
+    "Баланс: DeepInfra без валюты считает долларами",
+    parseDeepinfraBalance({ credits: 3 })?.currency === "USD",
+    parseDeepinfraBalance({ credits: 3 })?.currency ?? "нет",
+  );
+  check(
+    "Баланс: DeepInfra без подходящего поля — null",
+    parseDeepinfraBalance({ unrelated: true }) === null,
+    "null",
+  );
+  check(
+    "Баланс: без ключа это не ошибка",
+    notConfigured().isSet === false && notConfigured().error === null,
+    "isSet=false",
+  );
+}
+
+/**
+ * Photo-credit suggestions.
+ *
+ * The merge is the whole contract: the house list has to come first and win a
+ * near-duplicate from the database, or the picker would grow a second
+ * "Сгенерировано нейросетью" in different capitals and the one-click case would be
+ * gone.
+ */
+function checkPhotoSources() {
+  check(
+    "Источники: шесть системных вариантов",
+    SYSTEM_SOURCES.length === 6,
+    SYSTEM_SOURCES.join(" | "),
+  );
+  check(
+    "Источники: нейросеть среди системных",
+    SYSTEM_SOURCES.includes(AI_GENERATED_SOURCE as never),
+    AI_GENERATED_SOURCE,
+  );
+
+  const merged = mergePhotoSources([
+    "Архив редакции", // already in the house list
+    "архив редакции", // same credit, other capitals
+    "Пресс-служба мэрии",
+    "  ",
+    "Фото: читатель / соцсети",
+    "Отдел МВД",
+  ]);
+
+  check(
+    "Источники: системные идут первыми",
+    merged.slice(0, SYSTEM_SOURCES.length).join("|") === SYSTEM_SOURCES.join("|"),
+    merged.slice(0, 3).join(" | "),
+  );
+  check(
+    "Источники: дубликат в другом регистре не добавляется",
+    merged.filter((entry) => entry.toLowerCase() === "архив редакции").length === 1,
+    "одна запись",
+  );
+  check(
+    "Источники: новый источник из базы добавлен",
+    merged.includes("Пресс-служба мэрии") && merged.includes("Отдел МВД"),
+    "хвост списка",
+  );
+  check(
+    "Источники: пустые отброшены",
+    !merged.includes(""),
+    "нет пустых",
+  );
+  check(
+    "Источники: длинный текст обрезан",
+    mergePhotoSources(["я".repeat(SOURCE_LIMIT + 50)])[SYSTEM_SOURCES.length]?.length ===
+      SOURCE_LIMIT,
+    "обрезан до лимита",
+  );
+  check(
+    "Источники: без базы остаётся системный список",
+    mergePhotoSources([]).length === SYSTEM_SOURCES.length,
+    "только системные",
+  );
+}
+
+/**
  * The Dzen experiment rule and the feed markup it produces.
  *
  * The server-side gate is the load-bearing part: the editor's checkbox being
@@ -2104,6 +2281,8 @@ async function main() {
   checkAiCover();
   checkDeepInfraEnvelope();
   checkSettingsPrimitives();
+  checkBalances();
+  checkPhotoSources();
   checkDzenExperiment();
   checkArticleLinks();
   checkArticleSearch();
@@ -2217,6 +2396,77 @@ async function main() {
     method: "POST",
   });
   check("Несуществующая статья → 404", missing.status === 404, `${missing.status}`);
+
+  // --- balances and photo sources -------------------------------------------
+  // Both read editorial data and both sit under /api/admin/, so the gate has to hold
+  // for them exactly as it does for every other admin route.
+  const balancesAnon = await fetch(`${base}/api/admin/balances`);
+  check("Балансы без авторизации → 401", balancesAnon.status === 401, `${balancesAnon.status}`);
+
+  const balancesAuth = await fetch(`${base}/api/admin/balances`, {
+    headers: { authorization: auth },
+  });
+  const balancesBody = (await balancesAuth.json().catch(() => ({}))) as {
+    deepseek?: { isSet?: boolean; balance?: string | null; error?: string | null };
+    deepinfra?: { isSet?: boolean; balance?: string | null; error?: string | null };
+  };
+  check("Балансы с авторизацией → 200", balancesAuth.status === 200, `${balancesAuth.status}`);
+  check(
+    "Балансы: оба провайдера в ответе",
+    Boolean(balancesBody.deepseek) && Boolean(balancesBody.deepinfra),
+    "оба ключа ответа",
+  );
+  check(
+    "Балансы: у провайдера есть только isSet, balance и error",
+    Object.keys(balancesBody.deepseek ?? {}).sort().join(",") === "balance,error,isSet",
+    Object.keys(balancesBody.deepseek ?? {}).join(","),
+  );
+  // `??` does not catch an empty string, so an unset-but-present variable would make
+  // the needle "" — and every string includes "". That turns the leak check green
+  // permanently, which is the worst possible failure for a security assertion.
+  const secretNeedle = (process.env.DEEPSEEK_API_KEY ?? "").trim();
+  check(
+    "Балансы: сырой ключ не утёк в ответ",
+    secretNeedle.length === 0 ||
+      !JSON.stringify(balancesBody).includes(secretNeedle),
+    secretNeedle.length === 0
+      ? "ключа в .env нет — проверка пропущена, ответ содержит только остаток"
+      : "только сумма",
+  );
+
+  const sourcesAnon = await fetch(`${base}/api/admin/photo-sources`);
+  check(
+    "Источники фото без авторизации → 401",
+    sourcesAnon.status === 401,
+    `${sourcesAnon.status}`,
+  );
+
+  const sourcesAuth = await fetch(`${base}/api/admin/photo-sources`, {
+    headers: { authorization: auth },
+  });
+  const sourcesBody = (await sourcesAuth.json().catch(() => ({}))) as { sources?: string[] };
+  check(
+    "Источники фото с авторизацией → 200",
+    sourcesAuth.status === 200,
+    `${sourcesAuth.status}`,
+  );
+  check(
+    "Источники фото: системные варианты впереди",
+    (sourcesBody.sources ?? []).slice(0, SYSTEM_SOURCES.length).join("|") ===
+      SYSTEM_SOURCES.join("|"),
+    (sourcesBody.sources ?? []).slice(0, 3).join(" | "),
+  );
+  check(
+    "Источники фото: нет пустых строк",
+    (sourcesBody.sources ?? []).every((entry) => entry.trim().length > 0),
+    `${(sourcesBody.sources ?? []).length} шт.`,
+  );
+  check(
+    "Источники фото: список без повторов",
+    new Set((sourcesBody.sources ?? []).map((entry) => entry.toLowerCase())).size ===
+      (sourcesBody.sources ?? []).length,
+    "уникальны",
+  );
 
   // --- AI cover endpoint ----------------------------------------------------
   // It spends money per call and writes to UPLOAD_DIR, so the gate matters more

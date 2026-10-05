@@ -15,8 +15,9 @@
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
-import { createArticleAction } from "../src/app/admin/articles/actions";
 import { PrismaClient } from "../src/generated/prisma/client";
+
+import { stubServerOnly } from "./server-only-shim";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL is not set");
@@ -51,6 +52,17 @@ function moscowInput(date: Date): string {
   return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}`;
 }
 
+/**
+ * The action under test.
+ *
+ * Assigned by main() after the `server-only` shim is in place, and read by submit()
+ * which is defined above it. A module-level `let` rather than a parameter so the
+ * helper stays as it was: threading the action through every call would obscure the
+ * thing the file is actually testing.
+ */
+type ArticleAction = (data: FormData) => Promise<unknown>;
+let createArticleAction: ArticleAction;
+
 async function submit(id: string, publishedAt: string, experiment: boolean) {
   const data = new FormData();
   data.set("id", id);
@@ -79,6 +91,14 @@ const flag = async (id: string) =>
     ?.dzenExperiment;
 
 async function main() {
+  // The action is reached through a dynamic import because it pulls in a module
+  // carrying the `server-only` guard, which throws under plain Node. The shim has to
+  // be in place before the module graph is loaded, and a static import would be
+  // hoisted above it. See scripts/server-only-shim.ts.
+  stubServerOnly();
+  const action = await import("../src/app/admin/articles/actions");
+  createArticleAction = action.createArticleAction as ArticleAction;
+
   // Clean up any probe left behind by an interrupted earlier run.
   await prisma.article.deleteMany({ where: { slug: PROBE_SLUG } });
 

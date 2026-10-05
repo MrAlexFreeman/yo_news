@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import {
   useActionState,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -30,8 +31,10 @@ import { TagInput } from "@/app/admin/articles/components/tag-input";
 import { TitleField } from "@/app/admin/articles/components/title-field";
 import { VkVideoDrop } from "@/app/admin/articles/components/vk-video-drop";
 import { AiCoverGenerator } from "@/app/admin/articles/components/ai-cover-generator";
+import { BalanceStrip } from "@/app/admin/articles/components/balance-strip";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
 import { parseMediaField, serializeMedia, type MediaItem } from "@/lib/article-media";
+import { AI_GENERATED_SOURCE } from "@/lib/photo-sources";
 import { canSetDzenExperiment } from "@/lib/dzen-experiment";
 import {
   DZEN_MIN_CARD_WIDTH,
@@ -167,6 +170,7 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [coverImage, setCoverImage] = useState(initial?.coverImage ?? "");
   const [photoAuthor, setPhotoAuthor] = useState(initial?.photoAuthor ?? "");
   const [photoSource, setPhotoSource] = useState(initial?.photoSource ?? "");
+  const [photoSourceOptions, setPhotoSourceOptions] = useState<string[]>([]);
   const [seoTitle, setSeoTitle] = useState(initial?.seoTitle ?? "");
   const [seoDescription, setSeoDescription] = useState(
     initial?.seoDescription ?? "",
@@ -201,6 +205,29 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [dzenExperimentLockedByServer, setDzenExperimentLockedByServer] = useState(
     initial?.dzenExperimentLocked ?? false,
   );
+
+  /**
+   * Loads the credits already in use for the datalist.
+   *
+   * Failure is silent on purpose: the field is a plain text input either way, so a
+   * network error here would leave the editor able to type a credit exactly as before.
+   * Reporting it would put an error on screen for something that costs nothing.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/admin/photo-sources")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: { sources?: string[] } | null) => {
+        if (cancelled || !payload?.sources) return;
+        setPhotoSourceOptions(payload.sources);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /**
    * The same rule the action applies, evaluated against the date currently shown
@@ -747,6 +774,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                   and hands back a URL, so adopting its result is just
                   setCoverImage — no second code path for storing a cover.
                 */}
+                <BalanceStrip className="mb-2" />
+
                 <AiCoverGenerator
                   title={title}
                   lead={lead}
@@ -757,6 +786,12 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                     // from a manual upload does not apply here.
                     setUploadWarning(null);
                     setUploadError(null);
+
+                    // Credit the picture to the model, but only into an empty field.
+                    // A credit already there is a real attribution — a press-service
+                    // photo the editor reused, say — and overwriting it would put a
+                    // false credit in print.
+                    setPhotoSource((current) => current.trim() || AI_GENERATED_SOURCE);
                   }}
                 />
 
@@ -834,6 +869,7 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                     <input
                       id="photoSource"
                       type="text"
+                      list="photoSourceOptions"
                       value={photoSource}
                       onChange={(event) => {
                         setPhotoSource(event.target.value);
@@ -841,6 +877,25 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                       placeholder="Например: Екатеринбург, улица Малышева"
                       className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
                     />
+                    {/*
+                      A datalist rather than a select, on purpose. The credits in use
+                      are suggestions, not a closed vocabulary — an editor routinely
+                      has a source nobody has used yet, and a select would either
+                      refuse it or need an "other" option that is worse than a text
+                      field. This keeps one click for the common sources, prefix
+                      matching from the keyboard, and free text for everything else.
+                    */}
+                    <datalist id="photoSourceOptions">
+                      {photoSourceOptions.map((option) => (
+                        <option key={option} value={option} />
+                      ))}
+                    </datalist>
+                    {photoSourceOptions.length > 0 ? (
+                      <p className="text-xs text-neutral-400">
+                        {photoSourceOptions.length} источников в подсказках. Свой вариант
+                        можно вписать — он попадёт в подсказки со следующей статьёй.
+                      </p>
+                    ) : null}
                   </div>
                 </div>
 
