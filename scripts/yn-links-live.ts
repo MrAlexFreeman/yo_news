@@ -44,12 +44,25 @@ const check = (name: string, ok: boolean, detail: string) => {
   console.log(`${ok ? "OK  " : "FAIL"} ${name} — ${detail}`);
 };
 
-function anchorsInBody(html: string): string[] {
+/**
+ * Anchors of the article body, keyed by their visible text.
+ *
+ * Keyed by text rather than collected as bare tags because the whole point of the
+ * check is to tell apart three links that end up looking alike in the attribute
+ * list: once the sanitiser has applied its default, a link written without a
+ * target is indistinguishable by attributes from one written with target="_blank".
+ */
+function anchorsInBody(html: string): Map<string, string> {
   const start = html.indexOf('class="article-body');
-  if (start === -1) return [];
+  const found = new Map<string, string>();
+  if (start === -1) return found;
+
   const open = html.indexOf(">", start);
   const end = html.indexOf("</div>", open);
-  return [...html.slice(open + 1, end).matchAll(/<a\b[^>]*>/g)].map((m) => m[0]);
+  for (const match of html.slice(open + 1, end).matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)) {
+    found.set(match[2].replace(/<[^>]*>/g, "").trim(), match[0]);
+  }
+  return found;
 }
 
 async function main() {
@@ -70,31 +83,31 @@ async function main() {
   });
 
   try {
-    let anchors: string[] = [];
+    let anchors = new Map<string, string>();
     for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
       const html = await (await fetch(`https://eartnews.ru/news/${SLUG}`)).text();
       anchors = anchorsInBody(html);
-      if (anchors.length > 0) break;
+      if (anchors.size > 0) break;
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
 
-    check("Ссылки появились на странице", anchors.length > 0, `${anchors.length} шт.`);
+    check("Ссылки появились на странице", anchors.size > 0, `${anchors.size} шт.`);
 
-    for (const anchor of anchors) {
+    for (const [label, anchor] of anchors) {
       check(
-        "Стиль ссылки — янтарный, с подчёркиванием и hover",
+        `Стиль ссылки «${label}» — янтарный, с подчёркиванием и hover`,
         anchor.includes('class="text-amber-600 hover:text-amber-700 underline"'),
         anchor.slice(0, 130),
       );
     }
 
-    const blank = anchors.find((a) => a.includes('target="_blank"'));
-    const self = anchors.find((a) => a.includes('target="_self"'));
-    const bare = anchors.find((a) => !a.includes("target="));
+    const blank = anchors.get("внешняя цель");
+    const self = anchors.get("та же вкладка");
+    const bare = anchors.get("без target");
 
     check(
       "Явная новая вкладка сохранена вместе с rel",
-      Boolean(blank?.includes("rel=")),
+      Boolean(blank?.includes('target="_blank"') && blank.includes("rel=")),
       blank?.slice(0, 130) ?? "не найдена",
     );
     check(
@@ -104,7 +117,7 @@ async function main() {
     );
     check(
       "Ссылка без target получила умолчание _blank",
-      Boolean(bare?.includes('target="_blank"')),
+      Boolean(bare?.includes('target="_blank"') && bare.includes("rel=")),
       bare?.slice(0, 130) ?? "не найдена",
     );
   } finally {
