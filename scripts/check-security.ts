@@ -965,17 +965,40 @@ async function checkSettingsApi(base: string, auth: string) {
   );
   check("Неизвестный провайдер → 400", badProvider.status === 400, `${badProvider.status}`);
 
-  const noKey = await postJson(
-    "/api/admin/settings/test",
-    { provider: "deepseek" },
-    { authorization: auth },
+  // "No key" has to mean no key *anywhere*. The app reads AppSetting before
+  // `.env`, so once an editor saves a DeepSeek key this request finds one and does
+  // reach the provider — which is the endpoint working, not a hole. Asserting 400
+  // unconditionally therefore failed on any configured server while quietly making
+  // a live provider call.
+  const hasDeepseekKey = Boolean(
+    (
+      (await (
+        await fetch(`${base}/api/admin/settings`, { headers: { authorization: auth } })
+      )
+        .json()
+        .catch(() => ({}))) as { settings?: Record<string, { isSet?: boolean }> }
+    ).settings?.deepseekApiKey?.isSet,
   );
-  const noKeyBody = (await noKey.json().catch(() => ({}))) as { error?: string };
-  check(
-    "Проверка без ключа не уходит в сеть → 400",
-    noKey.status === 400,
-    `${noKey.status}: ${(noKeyBody.error ?? "").slice(0, 40)}`,
-  );
+
+  if (hasDeepseekKey) {
+    check(
+      "Проверка «без ключа» пропущена — ключ DeepSeek сохранён",
+      true,
+      "иначе запрос ушёл бы в сеть и потратил кредит",
+    );
+  } else {
+    const noKey = await postJson(
+      "/api/admin/settings/test",
+      { provider: "deepseek" },
+      { authorization: auth },
+    );
+    const noKeyBody = (await noKey.json().catch(() => ({}))) as { error?: string };
+    check(
+      "Проверка без ключа не уходит в сеть → 400",
+      noKey.status === 400,
+      `${noKey.status}: ${(noKeyBody.error ?? "").slice(0, 40)}`,
+    );
+  }
 
   const badJsonTest = await fetch(`${base}/api/admin/settings/test`, {
     method: "POST",
@@ -2099,14 +2122,37 @@ async function main() {
     `${aiHintOnly.status}: ${(aiHintOnlyBody.error ?? "").slice(0, 40)}`,
   );
 
-  // The two rejections above must not have consumed the rate-limit slot, or an
-  // editor's typo would block their own retry.
+  // Whether the cover keys exist must be asked of the app, not of `process.env`.
+  //
+  // The app reads the database first and only falls back to `.env`, so an editor who
+  // saved a key in /admin/settings has a working key that is invisible to
+  // `process.env`. This check used to infer it from the environment and concluded
+  // "no keys", then asserted a 503 that a configured server never returns — while
+  // the request it made to prove that had quietly generated a real cover, spending
+  // the newsroom's credit and writing a file to `uploads`.
+  const keysView = (await (
+    await fetch(`${base}/api/admin/settings`, { headers: { authorization: auth } })
+  )
+    .json()
+    .catch(() => ({}))) as {
+    settings?: Record<string, { isSet?: boolean }>;
+  };
   const keysConfigured = Boolean(
-    process.env.DEEPSEEK_API_KEY?.trim() && process.env.DEEPINFRA_API_KEY?.trim(),
+    keysView.settings?.deepseekApiKey?.isSet && keysView.settings?.deepinfraApiKey?.isSet,
   );
 
-  if (keysConfigured) {
-    check("Генератор: ключи настроены", true, "проверка 503 пропущена — ключи есть");
+  // Anything past validation reaches DeepSeek and FLUX. That costs real money and
+  // leaves an image on disk, so it is opt-in, and the skip is reported.
+  const allowProviderCalls = process.env.ALLOW_PROVIDER_CALLS === "1";
+
+  if (keysConfigured && !allowProviderCalls) {
+    check(
+      "Генератор: вызовы провайдеров пропущены — ключи настроены",
+      true,
+      "нужен ALLOW_PROVIDER_CALLS=1; иначе набор рисует обложку за ваш счёт",
+    );
+  } else if (keysConfigured) {
+    check("Генератор: ключи настроены (по данным /api/admin/settings)", true, "рисуем");
   } else {
     // With no keys set the endpoint must answer with a readable 503 that names the
     // missing variable, not a stack trace and not a silent success.
@@ -2146,26 +2192,34 @@ async function main() {
     );
   }
 
-  // Each generation costs money, so back-to-back calls are refused. Asserted last
-  // among the authenticated cases because it depends on the previous one having
-  // just taken a slot. Carries both a story and a hint, which is the shape the
-  // editor UI actually sends.
-  const aiRate = await fetch(`${base}/api/admin/generate-cover`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: auth },
-    body: JSON.stringify({
-      title: "Повторный запрос",
-      lead: "Лид",
-      customPrompt: "Крупный план",
-      style: "illustration",
-    }),
-  });
-  const aiRateBody = (await aiRate.json().catch(() => ({}))) as { error?: string };
-  check(
-    "Генератор: повторный вызов ограничен по частоте",
-    aiRate.status === 429,
-    `${aiRate.status}: ${(aiRateBody.error ?? "").slice(0, 40)}`,
-  );
+  // Each generation costs money, so back-to-back calls are refused. Needs a request
+  // that gets past validation, which with keys present means a real generation —
+  // hence the same opt-in. Asserted last among the authenticated cases because it
+  // depends on the previous one having just taken a slot.
+  if (allowProviderCalls) {
+    const aiRate = await fetch(`${base}/api/admin/generate-cover`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: auth },
+      body: JSON.stringify({
+        title: "Повторный запрос",
+        lead: "Лид",
+        customPrompt: "Крупный план",
+        style: "illustration",
+      }),
+    });
+    const aiRateBody = (await aiRate.json().catch(() => ({}))) as { error?: string };
+    check(
+      "Генератор: повторный вызов ограничен по частоте",
+      aiRate.status === 429,
+      `${aiRate.status}: ${(aiRateBody.error ?? "").slice(0, 40)}`,
+    );
+  } else {
+    check(
+      "Генератор: проверка лимита частоты пропущена",
+      true,
+      "нужен ALLOW_PROVIDER_CALLS=1 — запрос прошёл бы валидацию и дошёл до FLUX",
+    );
+  }
 
   const malformed = await fetch(`${base}/api/articles/short/view`, { method: "POST" });
   check("Некорректный формат id → 400", malformed.status === 400, `${malformed.status}`);
