@@ -63,7 +63,12 @@ import {
   dzenPublicationMethod,
   dzenRating,
 } from "../src/lib/dzen-publication";
-import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
+import {
+  buildVideoEmbed,
+  buildVkPlayerUrl,
+  ensureNoVkAutoplay,
+  isAllowedVideoEmbed,
+} from "../src/lib/video-embed";
 import {
   formatMoney,
   notConfigured,
@@ -2000,6 +2005,111 @@ function checkVideoEmbedParams() {
 }
 
 /**
+ * VK's `no_next`, and the raw-iframe path that bypasses the builder.
+ *
+ * The editors' complaint is behavioural — a finished clip rolls into whatever VK
+ * decides is next — and there is more than one way a VK player reaches a page. The
+ * toolbar builds players through {@link buildVkPlayerUrl}, but an editor can paste a
+ * finished `<iframe src=".../video_ext.php?...">` straight into the body HTML, and
+ * the article normaliser preserves those blocks verbatim. Pinning only the builder
+ * would have left the second path uncovered while looking done.
+ */
+function checkVkNoNext() {
+  const built = buildVkPlayerUrl("-241944021", "678901");
+  check(
+    "VK: no_next=1 в собранном плеере",
+    built.includes("no_next=1"),
+    built,
+  );
+  check(
+    "VK: autoplay=0 в собранном плеере",
+    built.includes("autoplay=0"),
+    built,
+  );
+  check(
+    "VK: порядок параметров и отсутствие мусора",
+    built ===
+      "https://vk.com/video_ext.php?oid=-241944021&id=678901&no_next=1&autoplay=0",
+    built,
+  );
+
+  // A share link that already contradicts the setting must not win.
+  const forced = buildVideoEmbed("https://vk.ru/video-12345_678901?autoplay=1&no_next=0");
+  check(
+    "VK: чужое no_next=0 и autoplay=1 перебиты",
+    Boolean(forced?.includes("no_next=1") && forced.includes("autoplay=0")),
+    forced ?? "плеер не собран",
+  );
+
+  // Idempotence, because the sanitiser runs on every render and the same markup can
+  // be sanitised twice.
+  const once = ensureNoVkAutoplay("https://vk.com/video_ext.php?oid=-1&id=2");
+  check(
+    "VK: повторная нормализация ничего не меняет",
+    ensureNoVkAutoplay(once) === once,
+    once,
+  );
+  check(
+    "VK: параметр не задваивается",
+    (once.match(/no_next/g) ?? []).length === 1 &&
+      (once.match(/autoplay/g) ?? []).length === 1,
+    once,
+  );
+
+  // Only the player endpoint, and only over https on a VK host.
+  for (const input of [
+    "https://www.youtube.com/embed/abc",
+    "https://rutube.ru/play/embed/1",
+    "https://vk.com/video-241944021_678901",
+    "https://evil.example.com/video_ext.php?oid=1",
+    "http://vk.com/video_ext.php?oid=1",
+    "не-урл",
+    "",
+  ]) {
+    check(
+      `VK: не трогаем «${input.slice(0, 40) || "пусто"}»`,
+      ensureNoVkAutoplay(input) === input,
+      "без изменений",
+    );
+  }
+
+  // The bypass path: raw iframe markup pasted into the body.
+  const pasted = sanitizeArticleHtml(
+    '<p>Текст</p><iframe src="https://vk.com/video_ext.php?oid=-241944021&amp;id=678901" allowfullscreen></iframe>',
+  );
+  check(
+    "VK: вставленный вручную iframe тоже закреплён",
+    pasted.includes("no_next=1") && pasted.includes("autoplay=0"),
+    pasted.slice(0, 120),
+  );
+
+  const alreadyPinned = sanitizeArticleHtml(
+    '<iframe src="https://vk.com/video_ext.php?oid=-1&amp;id=2&amp;no_next=1&amp;autoplay=0"></iframe>',
+  );
+  check(
+    "VK: готовый iframe не двоит параметры",
+    (alreadyPinned.match(/no_next/g) ?? []).length === 1,
+    alreadyPinned,
+  );
+
+  const youtube = sanitizeArticleHtml('<iframe src="https://www.youtube.com/embed/abc"></iframe>');
+  check(
+    "VK: чужой плеер не тронут",
+    !youtube.includes("no_next") && youtube.includes("youtube.com/embed/abc"),
+    youtube,
+  );
+
+  // The hook must not have turned into a way to keep a disallowed iframe.
+  check(
+    "VK: чужой iframe по-прежнему вырезается",
+    !sanitizeArticleHtml('<iframe src="https://evil.example.com/x"></iframe>').includes(
+      "evil.example.com",
+    ),
+    "вырезан",
+  );
+}
+
+/**
  * The drop-zone video guard.
  *
  * A press drop of twenty frames can easily carry one clip with it, and uploading
@@ -2440,6 +2550,7 @@ async function main() {
   checkArticleSearch();
   checkLinkDialog();
   checkVideoEmbedParams();
+  checkVkNoNext();
   checkVideoDropGuard();
   checkVkVideo();
   checkSettingsWriteIsOptIn();

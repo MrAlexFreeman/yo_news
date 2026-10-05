@@ -57,18 +57,73 @@ const PROVIDERS: readonly Provider[] = [
       const match = pair.match(/video(-?\d+)_(\d+)/);
       if (!match) return null;
 
-      // autoplay=0 is explicit rather than left to VK's default: a player that
-      // starts moving the moment it scrolls into view is startling on a news
-      // page, and VK's own player URL carries whatever the share sheet happened to
-      // include. Anything the editor pasted in the `autoplay` position is dropped
-      // for the same reason.
-      return (
-        `https://vk.com/video_ext.php?oid=${encodeURIComponent(match[1])}` +
-        `&id=${encodeURIComponent(match[2])}&autoplay=0`
-      );
+      return buildVkPlayerUrl(match[1]!, match[2]!);
     },
   },
 ];
+
+/**
+ * The VK player URL, with playback behaviour pinned.
+ *
+ * Two parameters are set explicitly rather than left to VK's defaults:
+ *
+ *   - `no_next=1` stops the player rolling on to whatever VK decides is next. On a
+ *     news page that is the wrong behaviour outright — a reader who finishes one
+ *     video should get the article's end, not an unrelated clip.
+ *   - `autoplay=0` stops it the moment it scrolls into view.
+ *
+ * Both are forced rather than merely defaulted. VK's own share URL carries whatever
+ * the share sheet happened to include, and an editor pasting a link with
+ * `autoplay=1` in it should not be able to start a video by accident.
+ *
+ * Built through `URLSearchParams` instead of string concatenation so the values are
+ * escaped once and a parameter can never be doubled: `set` replaces, so pasting a
+ * link that already carries `no_next=0` cannot end up with both.
+ */
+export function buildVkPlayerUrl(oid: string, id: string): string {
+  const params = new URLSearchParams({ oid, id });
+  params.set("no_next", "1");
+  params.set("autoplay", "0");
+  return `https://vk.com/video_ext.php?${params.toString()}`;
+}
+
+/**
+ * Adds the no-next and no-autoplay parameters to an already-built VK player URL.
+ *
+ * Exists for the path that bypasses {@link buildVideoEmbed}: an editor can paste a
+ * finished `<iframe src="https://vk.com/video_ext.php?...">` straight into the body
+ * HTML, and that block is preserved verbatim by the article normaliser. Without this
+ * the guarantee would hold only for players we built ourselves, which is not the same
+ * thing as "no video jumps to the next clip".
+ *
+ * Non-VK URLs, unparseable input and anything already carrying both parameters come
+ * back untouched, so calling it twice is a no-op rather than a second `?`.
+ */
+export function ensureNoVkAutoplay(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+
+  if (parsed.protocol !== "https:") return url;
+  if (!(VK_PLAYER_HOSTS as readonly string[]).includes(parsed.hostname)) return url;
+
+  // Only the player endpoint: a VK link that is not an embed has nothing to pin.
+  if (!/\/video_ext\.php$/.test(parsed.pathname)) return url;
+
+  if (parsed.searchParams.get("no_next") === "1" && parsed.searchParams.get("autoplay") === "0") {
+    return url;
+  }
+
+  parsed.searchParams.set("no_next", "1");
+  parsed.searchParams.set("autoplay", "0");
+  return parsed.toString();
+}
+
+/** Hosts that serve the VK player page this normalises. */
+const VK_PLAYER_HOSTS = ["vk.com", "www.vk.com", "vk.ru", "www.vk.ru"] as const;
 
 /** Hosts whose iframes survive sanitising. Mirrors PROVIDERS. */
 export const VIDEO_EMBED_HOSTS = [

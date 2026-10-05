@@ -1,5 +1,7 @@
 import DOMPurify from "isomorphic-dompurify";
 
+import { ensureNoVkAutoplay } from "@/lib/video-embed";
+
 /**
  * The one DOMPurify instance this project uses, with a single attribute hook.
  *
@@ -123,7 +125,16 @@ function applyArticlePolicy(node: unknown) {
     if (!allowed) {
       element.removeAttribute?.("src");
       element.remove?.();
+      return;
     }
+
+    // A kept VK player gets its playback pinned, whatever produced the markup. The
+    // toolbar builds the player through buildVideoEmbed and already sets these, but
+    // an editor can paste a finished <iframe> straight into the body HTML, and the
+    // article normaliser preserves those blocks verbatim. Without this the no-next
+    // guarantee would hold only for players we built ourselves.
+    const pinned = ensureNoVkAutoplay(src.trim());
+    if (pinned !== src.trim()) element.setAttribute?.("src", pinned);
     return;
   }
 
