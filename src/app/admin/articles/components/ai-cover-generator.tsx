@@ -7,6 +7,7 @@ import {
   AiCoverPanel,
   type AiCoverResult,
 } from "@/app/admin/articles/components/ai-cover-panel";
+import { DEFAULT_COVER_STYLE, type CoverStyle } from "@/lib/cover-prompt";
 
 type AiCoverGeneratorProps = {
   /** Headline and body, so "по тексту статьи" works from this tab alone. */
@@ -39,6 +40,7 @@ export function AiCoverGenerator({
   onGenerated,
 }: AiCoverGeneratorProps) {
   const [open, setOpen] = useState(false);
+  const [style, setStyle] = useState<CoverStyle>(DEFAULT_COVER_STYLE);
   const [hint, setHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,9 +56,9 @@ export function AiCoverGenerator({
         // Required, not decorative: the endpoint rejects anything else, which is
         // what stops a cross-origin form from spending the account's credit.
         headers: { "Content-Type": "application/json" },
-        // `prompt` is the hint. Sent whether or not it is filled in: the server
-        // decides what an empty one means, so the two cannot drift apart.
-        body: JSON.stringify({ prompt: hint, title, lead, content }),
+        // `customPrompt` is the hint, sent whether or not it is filled in: the
+        // server decides what an empty one means, so the two cannot drift apart.
+        body: JSON.stringify({ customPrompt: hint, style, title, lead, content }),
       });
       const payload = (await response.json()) as {
         url?: string;
@@ -103,10 +105,15 @@ export function AiCoverGenerator({
 
   return (
     <AiCoverPanel
+      style={style}
       hint={hint}
       busy={busy}
       error={error}
       result={result}
+      onStyleChange={(next) => {
+        setStyle(next);
+        setError(null);
+      }}
       onHintChange={(next) => {
         setHint(next);
         setError(null);

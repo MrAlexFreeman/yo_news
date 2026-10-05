@@ -2,16 +2,22 @@
 
 import { AlertCircle, Loader2, Sparkles, X } from "lucide-react";
 
-import { AI_HINT_LIMIT } from "@/lib/cover-prompt";
+import {
+  AI_HINT_LIMIT,
+  COVER_STYLES,
+  type CoverStyle,
+} from "@/lib/cover-prompt";
 import { cn } from "@/lib/utils";
 
 export type AiCoverResult = { url: string; prompt: string } | null;
 
 type AiCoverPanelProps = {
+  style: CoverStyle;
   hint: string;
   busy: boolean;
   error: string | null;
   result: AiCoverResult;
+  onStyleChange: (style: CoverStyle) => void;
   onHintChange: (hint: string) => void;
   onGenerate: () => void;
   onApply: () => void;
@@ -19,9 +25,9 @@ type AiCoverPanelProps = {
   onClose: () => void;
 };
 
-/** The field's example hint, shown as placeholder text. */
+/** The hint field's example, shown as placeholder text. */
 export const AI_HINT_PLACEHOLDER =
-  "Например: крупный план светофора, снег, сумерки (необязательно, уточняет контекст новости)";
+  "Например: ночная улица, снег, вид сверху (уточняет контекст)";
 
 /**
  * The open state of the AI cover generator.
@@ -31,16 +37,18 @@ export const AI_HINT_PLACEHOLDER =
  * result states, which are the ones that matter — none of them is reachable by
  * mounting the shell and taking a snapshot.
  *
- * One input, not two modes. The panel used to offer "по тексту статьи" against
- * "по своей подсказке", and picking the second sent only the hint, so the story
- * the editor was looking at stopped mattering. The hint now refines whatever the
- * story already says, which is also why it is optional and always enabled.
+ * One input plus a style, not two modes. The panel used to offer "по тексту
+ * статьи" against "по своей подсказке", and picking the second sent only the
+ * hint, so the story the editor was looking at stopped mattering. The hint now
+ * refines whatever the story already says.
  */
 export function AiCoverPanel({
+  style,
   hint,
   busy,
   error,
   result,
+  onStyleChange,
   onHintChange,
   onGenerate,
   onApply,
@@ -62,6 +70,30 @@ export function AiCoverPanel({
         >
           <X className="size-4" aria-hidden />
         </button>
+      </div>
+
+      <div className="space-y-1.5">
+        <label htmlFor="aiCoverStyle" className="text-xs font-medium text-neutral-600">
+          Стиль изображения
+        </label>
+        <select
+          id="aiCoverStyle"
+          value={style}
+          disabled={busy}
+          onChange={(event) => onStyleChange(event.target.value as CoverStyle)}
+          className={cn(
+            "w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2",
+            busy
+              ? "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400"
+              : "border-neutral-300 bg-white text-neutral-800 focus:border-neutral-500 focus:ring-neutral-200",
+          )}
+        >
+          {COVER_STYLES.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="space-y-1.5">
@@ -89,7 +121,7 @@ export function AiCoverPanel({
         />
         <p className="text-xs text-neutral-400">
           {hint.length} из {AI_HINT_LIMIT}. Заголовок и лид новости учитываются всегда,
-          подсказка уточняет кадр. Стиль добавляется автоматически.
+          подсказка уточняет кадр.
         </p>
       </div>
 

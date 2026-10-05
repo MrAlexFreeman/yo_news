@@ -5,8 +5,10 @@ import {
   COVER_HEIGHT,
   COVER_STEPS,
   COVER_WIDTH,
-  DEEPSEEK_SYSTEM_PROMPT,
   applyFluxPostfix,
+  buildDeepseekSystemPrompt,
+  resolveCoverStyle,
+  type CoverStyle,
 } from "@/lib/cover-prompt";
 import { extractImageBytes } from "@/lib/deepinfra-response";
 import { getSetting } from "@/lib/settings";
@@ -18,6 +20,7 @@ import { getSetting } from "@/lib/settings";
  * guard working as intended.
  */
 export { AI_HINT_LIMIT, AI_TITLE_LIMIT } from "@/lib/cover-prompt";
+export type { CoverStyle } from "@/lib/cover-prompt";
 
 /**
  * AI cover generation: DeepSeek turns a Russian story into an English
@@ -93,14 +96,17 @@ async function requireKey(name: "DEEPSEEK_API_KEY" | "DEEPINFRA_API_KEY"): Promi
 }
 
 /**
- * Builds the English image prompt from the story and the editor's guidance.
+ * Builds the English image prompt from the story, the editor's hint and the style.
  *
  * All of title, lead and hint go to DeepSeek together rather than one standing in
- * for another. The old design had two mutually exclusive modes: without a hint the
- * model saw only the story, and with a hint it saw only the hint and the story was
- * discarded. That made a hint a replacement rather than a refinement, so an editor
- * who wrote "крупный план светофора" got a traffic light and no longer got the
- * news it belonged to.
+ * for another. The original design had two mutually exclusive modes: without a hint
+ * the model saw only the story, and with a hint it saw only the hint and the story
+ * was discarded. That made a hint a replacement rather than a refinement, so an
+ * editor who wrote "крупный план светофора" got a traffic light and no longer got
+ * the news it belonged to.
+ *
+ * The style is resolved through the allowlist before it reaches the system prompt,
+ * so a crafted value cannot become an instruction of its own.
  *
  * The lead and title carry the news; the body is included but trimmed, because a
  * 4000-character article produces a prompt that names six unrelated scenes and
@@ -111,6 +117,7 @@ export async function buildPhotoPrompt(source: {
   lead?: string;
   content?: string;
   hint?: string;
+  style?: string;
 }): Promise<string> {
   const title = (source.title ?? "").trim().slice(0, MAX_TITLE_LENGTH);
   const lead = (source.lead ?? "").trim();
@@ -118,6 +125,7 @@ export async function buildPhotoPrompt(source: {
     .trim()
     .slice(0, SOURCE_CHAR_LIMIT);
   const hint = (source.hint ?? "").trim();
+  const style: CoverStyle = resolveCoverStyle(source.style);
 
   if (!title && !lead && !content && !hint) {
     throw new AiCoverError(
@@ -133,8 +141,9 @@ export async function buildPhotoPrompt(source: {
     lead && `Summary: ${lead}`,
     content && `Body:\n${content}`,
     hint &&
-      `Editor's guidance (treat as the key visual focus, while keeping the ` +
-      `overall context of the story above): ${hint}`,
+      `Editor's hint (treat as the visual focus, while keeping the overall ` +
+      `context of the story above): ${hint}`,
+    `Chosen style: ${style}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -151,15 +160,14 @@ export async function buildPhotoPrompt(source: {
       temperature: 0.4,
       max_tokens: 120,
       messages: [
-        { role: "system", content: DEEPSEEK_SYSTEM_PROMPT },
+        { role: "system", content: buildDeepseekSystemPrompt(style) },
         {
           role: "user",
           content:
-            "Turn this news story into one concise English prompt for a " +
-            "reporter's photograph. Describe a single real scene that shows " +
-            "the subject, and nothing that would be hard to photograph or that " +
-            "would need invented detail. Maximum 40 words. Output only the " +
-            "prompt.\n\n" +
+            "Turn this news story into one concise English prompt for an " +
+            "editorial cover in the chosen style. Describe a single scene that " +
+            "shows the subject, and nothing that would need invented detail. " +
+            "Maximum 40 words. Output only the prompt.\n\n" +
             material,
         },
       ],

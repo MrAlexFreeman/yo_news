@@ -5,13 +5,13 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 
 import {
-  AI_HINT_LIMIT,
   AiCoverError,
   MAX_TITLE_LENGTH,
   buildPhotoPrompt,
   describePrompt,
   renderCover,
 } from "@/lib/ai-cover";
+import { pickHint, resolveCoverStyle } from "@/lib/cover-prompt";
 import { UPLOAD_DIR } from "@/lib/upload-dir";
 
 export const runtime = "nodejs";
@@ -45,7 +45,10 @@ let lastRequestAt = 0;
  * refines the story, so there is nothing left to choose between.
  */
 type RequestBody = {
+  customPrompt?: unknown;
+  /** Accepted only so a tab open across a deploy keeps its hint. */
   prompt?: unknown;
+  style?: unknown;
   title?: unknown;
   lead?: unknown;
   content?: unknown;
@@ -90,14 +93,23 @@ export async function POST(request: Request) {
   const title = asString(body.title, MAX_TITLE_LENGTH);
   const lead = asString(body.lead, 1000);
   const content = asString(body.content, 8000);
-  const hint = asString(body.prompt, AI_HINT_LIMIT);
+  // Accepts both the current `customPrompt` and the pre-style-picker `prompt`, so
+  // a tab open across a deploy does not silently lose its hint.
+  const hint = pickHint(body.customPrompt, body.prompt);
+
+  // Resolved, not validated with a 400: the field post-dates the client, so a tab
+  // that sends nothing must still work, and an unrecognised value falls back to
+  // photography rather than failing a button over a cosmetic preference. The
+  // allowlist is enforced inside resolveCoverStyle, which is also what keeps a
+  // crafted value out of the DeepSeek system prompt.
+  const style = resolveCoverStyle(body.style);
 
   // Cheap validation first, rate limit second. A rejected request must not burn
   // the editor's window: someone who mistypes a hint and immediately retries
   // would otherwise be told to wait because of their own typo.
   //
-  // A hint on its own is no longer enough: it is a refinement, and with no story
-  // to refine there is nothing for DeepSeek to anchor it to.
+  // A hint on its own is not enough: it is a refinement, and with no story to
+  // refine there is nothing for DeepSeek to anchor it to.
   if (!title && !lead && !content) {
     return NextResponse.json(
       { error: "Нечего описать: добавьте заголовок, лид или текст материала." },
@@ -117,18 +129,19 @@ export async function POST(request: Request) {
   lastRequestAt = now;
 
   try {
-    // Title, lead, body and the editor's hint all go to DeepSeek in one message:
-    // the hint is the visual focus, the story is the context it has to stay inside.
-    const draft = await buildPhotoPrompt({ title, lead, content, hint });
+    // Title, lead, body, the editor's hint and the chosen style all go to DeepSeek
+    // in one message: the hint is the visual focus, the story is the context it has
+    // to stay inside, and the style decides how it is rendered.
+    const draft = await buildPhotoPrompt({ title, lead, content, hint, style });
 
     // renderCover appends the style postfix, so `sent` is what FLUX actually saw.
     const { bytes, prompt: sent } = await renderCover(draft);
     const filename = await store(bytes);
 
-    console.log(`[ai-cover] ${filename} ← ${describePrompt(sent)}`);
+    console.log(`[ai-cover] ${filename} ← [${style}] ${describePrompt(sent)}`);
 
     return NextResponse.json(
-      { url: `/uploads/${filename}`, prompt: describePrompt(sent) },
+      { url: `/uploads/${filename}`, prompt: describePrompt(sent), style },
       { status: 201 },
     );
   } catch (error) {

@@ -22,6 +22,7 @@ import { ArticleGallery } from "../src/components/article-gallery";
 import { SubscribeBlock } from "../src/components/subscribe-block";
 import { ArticleVideo } from "../src/components/article-video";
 import { MAX_MEDIA_ITEMS, type MediaItem } from "../src/lib/article-media";
+import { COVER_STYLES, DEFAULT_COVER_STYLE } from "../src/lib/cover-prompt";
 import {
   DZEN_MIN_CARD_WIDTH,
   NARROW_COVER_WARNING,
@@ -89,10 +90,12 @@ const dialogEmptyHtml = render(LinkDialog as never, {
 // --- AI cover generator -----------------------------------------------------
 const aiProps = { title: "Заголовок", lead: "Лид", content: "<p>Текст</p>", onGenerated: noop };
 const panelDefaults = {
+  style: DEFAULT_COVER_STYLE,
   hint: "",
   busy: false,
   error: null,
   result: null,
+  onStyleChange: noop,
   onHintChange: noop,
   onGenerate: noop,
   onApply: noop,
@@ -425,15 +428,55 @@ check(
 );
 check(
   "Генератор: плейсхолдер подсказки из ТЗ",
-  aiAutoHtml.includes(
-    "Например: крупный план светофора, снег, сумерки (необязательно, уточняет контекст новости)",
-  ),
+  aiAutoHtml.includes("Например: ночная улица, снег, вид сверху (уточняет контекст)"),
   "плейсхолдер на месте",
 );
 check(
   "Генератор: счётчик длины подсказки",
   aiCustomHtml.includes("из 600"),
   "0 из 600",
+);
+
+// --- style picker -----------------------------------------------------------
+check(
+  "Стиль: выпадающий список на месте",
+  /<select[^>]*id="aiCoverStyle"/.test(aiAutoHtml),
+  "select с меткой",
+);
+check(
+  "Стиль: метка «Стиль изображения» связана с полем",
+  /<label for="aiCoverStyle"[^>]*>[\s\S]{0,80}?Стиль изображения/.test(aiAutoHtml),
+  "label/for ведёт к select",
+);
+
+for (const style of COVER_STYLES) {
+  check(
+    `Стиль: вариант «${style.label}» в списке`,
+    aiAutoHtml.includes(`value="${style.value}"`) && aiAutoHtml.includes(style.label),
+    style.value,
+  );
+}
+
+check(
+  "Стиль: по умолчанию выбран реалистичный",
+  aiAutoHtml.includes(`<option value="realistic" selected="">Реалистичность`),
+  "selected на realistic",
+);
+check(
+  "Стиль: ровно четыре варианта",
+  (aiAutoHtml.match(/<option /g) ?? []).length === COVER_STYLES.length,
+  `${(aiAutoHtml.match(/<option /g) ?? []).length} вариантов`,
+);
+check(
+  "Стиль: поле блокируется на время запроса",
+  /<select[^>]*id="aiCoverStyle"[^>]*disabled/.test(aiBusyHtml) ||
+    /<select[^>]*disabled[^>]*id="aiCoverStyle"/.test(aiBusyHtml),
+  "disabled при busy",
+);
+check(
+  "Стиль: список идёт над полем подсказки",
+  aiAutoHtml.indexOf('id="aiCoverStyle"') < aiAutoHtml.indexOf('id="aiCoverHint"'),
+  "сначала стиль, потом подсказка",
 );
 check(
   "Генератор: сказано, что заголовок и лид учитываются всегда",
