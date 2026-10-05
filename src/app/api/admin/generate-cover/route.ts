@@ -8,7 +8,6 @@ import {
   AI_HINT_LIMIT,
   AiCoverError,
   MAX_TITLE_LENGTH,
-  PHOTO_STYLE_SUFFIX,
   buildPhotoPrompt,
   describePrompt,
   renderCover,
@@ -40,9 +39,12 @@ let lastRequestAt = 0;
 /**
  * A single JSON envelope rather than per-field errors: the editor submits a
  * combination of fields and the actionable message depends on which is missing.
+ *
+ * There is no `mode`. The endpoint used to accept either a story or a hint, and
+ * the hint silently replaced the story; now both are always sent and the hint
+ * refines the story, so there is nothing left to choose between.
  */
 type RequestBody = {
-  mode?: unknown;
   prompt?: unknown;
   title?: unknown;
   lead?: unknown;
@@ -85,7 +87,6 @@ export async function POST(request: Request) {
     );
   }
 
-  const mode = body.mode === "custom" ? "custom" : "auto";
   const title = asString(body.title, MAX_TITLE_LENGTH);
   const lead = asString(body.lead, 1000);
   const content = asString(body.content, 8000);
@@ -94,14 +95,10 @@ export async function POST(request: Request) {
   // Cheap validation first, rate limit second. A rejected request must not burn
   // the editor's window: someone who mistypes a hint and immediately retries
   // would otherwise be told to wait because of their own typo.
-  if (mode === "custom" && !hint) {
-    return NextResponse.json(
-      { error: "Введите подсказку, по которой строить обложку." },
-      { status: 400 },
-    );
-  }
-
-  if (mode === "auto" && !title && !lead && !content) {
+  //
+  // A hint on its own is no longer enough: it is a refinement, and with no story
+  // to refine there is nothing for DeepSeek to anchor it to.
+  if (!title && !lead && !content) {
     return NextResponse.json(
       { error: "Нечего описать: добавьте заголовок, лид или текст материала." },
       { status: 400 },
@@ -119,23 +116,19 @@ export async function POST(request: Request) {
   }
   lastRequestAt = now;
 
-  let prompt: string;
   try {
-    if (mode === "custom") {
-      // The style brief is appended server-side so the editor cannot drop it and
-      // Dzen then refuses the image for having rendered text on it.
-      prompt = `${hint.replace(/[\r\n]+/g, " ").trim()}, ${PHOTO_STYLE_SUFFIX}`;
-    } else {
-      prompt = await buildPhotoPrompt({ title, lead, content });
-    }
+    // Title, lead, body and the editor's hint all go to DeepSeek in one message:
+    // the hint is the visual focus, the story is the context it has to stay inside.
+    const draft = await buildPhotoPrompt({ title, lead, content, hint });
 
-    const bytes = await renderCover(prompt);
+    // renderCover appends the style postfix, so `sent` is what FLUX actually saw.
+    const { bytes, prompt: sent } = await renderCover(draft);
     const filename = await store(bytes);
 
-    console.log(`[ai-cover] ${filename} ← ${describePrompt(prompt)}`);
+    console.log(`[ai-cover] ${filename} ← ${describePrompt(sent)}`);
 
     return NextResponse.json(
-      { url: `/uploads/${filename}`, prompt: describePrompt(prompt) },
+      { url: `/uploads/${filename}`, prompt: describePrompt(sent) },
       { status: 201 },
     );
   } catch (error) {

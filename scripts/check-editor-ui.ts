@@ -89,12 +89,10 @@ const dialogEmptyHtml = render(LinkDialog as never, {
 // --- AI cover generator -----------------------------------------------------
 const aiProps = { title: "Заголовок", lead: "Лид", content: "<p>Текст</p>", onGenerated: noop };
 const panelDefaults = {
-  mode: "auto" as const,
   hint: "",
   busy: false,
   error: null,
   result: null,
-  onModeChange: noop,
   onHintChange: noop,
   onGenerate: noop,
   onApply: noop,
@@ -106,7 +104,6 @@ const aiClosedHtml = render(AiCoverGenerator as never, aiProps);
 const aiAutoHtml = render(AiCoverPanel as never, panelDefaults);
 const aiCustomHtml = render(AiCoverPanel as never, {
   ...panelDefaults,
-  mode: "custom",
   hint: "Ночная улица после ливня",
 });
 const aiBusyHtml = render(AiCoverPanel as never, { ...panelDefaults, busy: true });
@@ -402,25 +399,36 @@ check(
 // --- AI cover generator -----------------------------------------------------
 check(
   "Генератор: свёрнут в одну кнопку",
-  aiClosedHtml.includes("Сгенерировать ИИ-обложку") && !aiClosedHtml.includes("aiCoverHint"),
+  aiClosedHtml.includes("Сгенерировать обложку") && !aiClosedHtml.includes("aiCoverHint"),
   "кнопка без панели",
 );
 
+// The two-mode picker is gone on purpose: choosing "по своей подсказке" used to
+// send only the hint, so the story stopped mattering. Nothing may bring it back.
 check(
-  "Генератор: обе радиокнопки на месте",
-  aiAutoHtml.includes("По тексту статьи") && aiAutoHtml.includes("По своей подсказке"),
-  "два варианта",
+  "Генератор: переключатель режима убран",
+  !aiAutoHtml.includes("По тексту статьи") &&
+    !aiAutoHtml.includes("По своей подсказке") &&
+    !aiAutoHtml.includes('type="radio"'),
+  "одно поле вместо двух режимов",
 );
 check(
-  "Генератор: в режиме «по тексту» подсказка неактивна",
-  /<textarea[^>]*id="aiCoverHint"[^>]*disabled/.test(aiAutoHtml),
-  "disabled",
-);
-check(
-  "Генератор: в режиме «по своей подсказке» поле активно",
-  /<textarea[^>]*id="aiCoverHint"/.test(aiCustomHtml) &&
-    !/id="aiCoverHint"[^>]*disabled/.test(aiCustomHtml),
+  "Генератор: подсказка активна без переключения",
+  /<textarea[^>]*id="aiCoverHint"/.test(aiAutoHtml) &&
+    !/id="aiCoverHint"[^>]*disabled/.test(aiAutoHtml),
   "enabled",
+);
+check(
+  "Генератор: подсказка блокируется только на время запроса",
+  /<textarea[^>]*id="aiCoverHint"[^>]*disabled/.test(aiBusyHtml),
+  "disabled при busy",
+);
+check(
+  "Генератор: плейсхолдер подсказки из ТЗ",
+  aiAutoHtml.includes(
+    "Например: крупный план светофора, снег, сумерки (необязательно, уточняет контекст новости)",
+  ),
+  "плейсхолдер на месте",
 );
 check(
   "Генератор: счётчик длины подсказки",
@@ -428,9 +436,14 @@ check(
   "0 из 600",
 );
 check(
-  "Генератор: в режиме auto сказано, что составит DeepSeek",
-  aiAutoHtml.includes("составит DeepSeek"),
-  "подсказка объяснена",
+  "Генератор: сказано, что заголовок и лид учитываются всегда",
+  aiAutoHtml.includes("Заголовок и лид новости учитываются всегда"),
+  "роль подсказки объяснена",
+);
+check(
+  "Генератор: кнопка «Сгенерировать обложку»",
+  aiAutoHtml.includes("Сгенерировать обложку") && !aiBusyHtml.includes("Сгенерировать обложку"),
+  "подпись и состояние загрузки",
 );
 check(
   "Генератор: при загрузке кнопка заблокирована и показывает спиннер",

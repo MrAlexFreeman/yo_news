@@ -5,7 +5,8 @@ import {
   COVER_HEIGHT,
   COVER_STEPS,
   COVER_WIDTH,
-  PHOTO_STYLE_SUFFIX,
+  DEEPSEEK_SYSTEM_PROMPT,
+  applyFluxPostfix,
 } from "@/lib/cover-prompt";
 import { extractImageBytes } from "@/lib/deepinfra-response";
 import { getSetting } from "@/lib/settings";
@@ -16,7 +17,7 @@ import { getSetting } from "@/lib/settings";
  * module: `server-only` throws outside a React Server Component, which is the
  * guard working as intended.
  */
-export { AI_HINT_LIMIT, AI_TITLE_LIMIT, PHOTO_STYLE_SUFFIX } from "@/lib/cover-prompt";
+export { AI_HINT_LIMIT, AI_TITLE_LIMIT } from "@/lib/cover-prompt";
 
 /**
  * AI cover generation: DeepSeek turns a Russian story into an English
@@ -92,24 +93,33 @@ async function requireKey(name: "DEEPSEEK_API_KEY" | "DEEPINFRA_API_KEY"): Promi
 }
 
 /**
- * Builds the English image prompt from the story.
+ * Builds the English image prompt from the story and the editor's guidance.
+ *
+ * All of title, lead and hint go to DeepSeek together rather than one standing in
+ * for another. The old design had two mutually exclusive modes: without a hint the
+ * model saw only the story, and with a hint it saw only the hint and the story was
+ * discarded. That made a hint a replacement rather than a refinement, so an editor
+ * who wrote "крупный план светофора" got a traffic light and no longer got the
+ * news it belonged to.
  *
  * The lead and title carry the news; the body is included but trimmed, because a
  * 4000-character article produces a prompt that names six unrelated scenes and
- * generates a collage — the one thing the brief above forbids.
+ * generates a collage — the one thing the system prompt forbids.
  */
 export async function buildPhotoPrompt(source: {
   title?: string;
   lead?: string;
   content?: string;
+  hint?: string;
 }): Promise<string> {
   const title = (source.title ?? "").trim().slice(0, MAX_TITLE_LENGTH);
   const lead = (source.lead ?? "").trim();
   const content = (source.content ?? "")
     .trim()
     .slice(0, SOURCE_CHAR_LIMIT);
+  const hint = (source.hint ?? "").trim();
 
-  if (!title && !lead && !content) {
+  if (!title && !lead && !content && !hint) {
     throw new AiCoverError(
       "Нечего описать: добавьте заголовок, лид или текст материала.",
       "prompt",
@@ -122,6 +132,9 @@ export async function buildPhotoPrompt(source: {
     title && `Headline: ${title}`,
     lead && `Summary: ${lead}`,
     content && `Body:\n${content}`,
+    hint &&
+      `Editor's guidance (treat as the key visual focus, while keeping the ` +
+      `overall context of the story above): ${hint}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -138,21 +151,15 @@ export async function buildPhotoPrompt(source: {
       temperature: 0.4,
       max_tokens: 120,
       messages: [
-        {
-          role: "system",
-          content:
-            "You write prompts for a text-to-image model. You reply with the " +
-            "prompt text only: no preamble, no quotes, no explanation, no " +
-            "alternative versions.",
-        },
+        { role: "system", content: DEEPSEEK_SYSTEM_PROMPT },
         {
           role: "user",
           content:
             "Turn this news story into one concise English prompt for a " +
             "reporter's photograph. Describe a single real scene that shows " +
             "the subject, and nothing that would be hard to photograph or that " +
-            "would need invented detail. Maximum 40 words.\n\n" +
-            `End with exactly this, unmodified: ${PHOTO_STYLE_SUFFIX}\n\n` +
+            "would need invented detail. Maximum 40 words. Output only the " +
+            "prompt.\n\n" +
             material,
         },
       ],
@@ -184,13 +191,21 @@ export async function buildPhotoPrompt(source: {
 }
 
 /**
- * Renders the image and returns its raw bytes.
+ * Renders the image and returns its raw bytes plus the prompt actually sent.
+ *
+ * The style postfix is applied here rather than at the call site because this is
+ * the last point before FLUX: anywhere earlier, a future caller could reasonably
+ * decide it had already handled the style and skip it. The returned prompt is the
+ * post-fixed one so the log line and the editor-facing preview both show what the
+ * image model was really given, postfix included.
  *
  * FLUX-1-schnell answers with base64 PNG. The format is whatever the upstream
  * sends — the caller decides what to store after inspecting the bytes.
  */
-export async function renderCover(prompt: string): Promise<Buffer> {
+export async function renderCover(prompt: string): Promise<{ bytes: Buffer; prompt: string }> {
   const apiKey = await requireKey("DEEPINFRA_API_KEY");
+
+  const finalPrompt = applyFluxPostfix(prompt);
 
   const response = await fetch(DEEPINFRA_URL, {
     method: "POST",
@@ -200,7 +215,7 @@ export async function renderCover(prompt: string): Promise<Buffer> {
     },
     signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
     body: JSON.stringify({
-      prompt,
+      prompt: finalPrompt,
       width: COVER_WIDTH,
       height: COVER_HEIGHT,
       num_inference_steps: COVER_STEPS,
@@ -239,7 +254,7 @@ export async function renderCover(prompt: string): Promise<Buffer> {
     throw new AiCoverError("Изображение от модели слишком большое.", "image");
   }
 
-  return image;
+  return { bytes: image, prompt: finalPrompt };
 }
 
 /** Upstream errors are logged, not shown: they can echo the request key. */

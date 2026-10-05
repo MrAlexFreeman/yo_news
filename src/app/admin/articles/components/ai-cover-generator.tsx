@@ -5,7 +5,6 @@ import { useState } from "react";
 
 import {
   AiCoverPanel,
-  type AiCoverMode,
   type AiCoverResult,
 } from "@/app/admin/articles/components/ai-cover-panel";
 
@@ -23,16 +22,15 @@ type AiCoverGeneratorProps = {
 };
 
 /**
- * "Сгенерировать ИИ-обложку" — collapsed button that opens the generator panel.
+ * "Сгенерировать обложку" — collapsed button that opens the generator panel.
  *
  * Deliberately two-step, generate then adopt. The image lands on the server as
  * soon as it exists, so writing straight into `coverImage` would leave an editor
  * who dislikes the result with a cover they cannot undo: "Отменить" reverts to
  * the last saved state, not to the two minutes before the click.
  *
- * `auto` sends the story to DeepSeek, which writes the English prompt; `custom`
- * skips that call and uses the editor's own words. Either way the newsroom's
- * style brief is appended server-side.
+ * The story and the editor's hint both go to DeepSeek in one call, and the
+ * newsroom's style brief is appended server-side either way.
  */
 export function AiCoverGenerator({
   title,
@@ -41,7 +39,6 @@ export function AiCoverGenerator({
   onGenerated,
 }: AiCoverGeneratorProps) {
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<AiCoverMode>("auto");
   const [hint, setHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +54,9 @@ export function AiCoverGenerator({
         // Required, not decorative: the endpoint rejects anything else, which is
         // what stops a cross-origin form from spending the account's credit.
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, prompt: hint, title, lead, content }),
+        // `prompt` is the hint. Sent whether or not it is filled in: the server
+        // decides what an empty one means, so the two cannot drift apart.
+        body: JSON.stringify({ prompt: hint, title, lead, content }),
       });
       const payload = (await response.json()) as {
         url?: string;
@@ -97,22 +96,17 @@ export function AiCoverGenerator({
         className="flex items-center gap-2 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
       >
         <Sparkles className="size-4" aria-hidden />
-        Сгенерировать ИИ-обложку
+        Сгенерировать обложку
       </button>
     );
   }
 
   return (
     <AiCoverPanel
-      mode={mode}
       hint={hint}
       busy={busy}
       error={error}
       result={result}
-      onModeChange={(next) => {
-        setMode(next);
-        setError(null);
-      }}
       onHintChange={(next) => {
         setHint(next);
         setError(null);

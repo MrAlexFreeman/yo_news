@@ -5,23 +5,23 @@ import { AlertCircle, Loader2, Sparkles, X } from "lucide-react";
 import { AI_HINT_LIMIT } from "@/lib/cover-prompt";
 import { cn } from "@/lib/utils";
 
-export type AiCoverMode = "auto" | "custom";
-
 export type AiCoverResult = { url: string; prompt: string } | null;
 
 type AiCoverPanelProps = {
-  mode: AiCoverMode;
   hint: string;
   busy: boolean;
   error: string | null;
   result: AiCoverResult;
-  onModeChange: (mode: AiCoverMode) => void;
   onHintChange: (hint: string) => void;
   onGenerate: () => void;
   onApply: () => void;
   onDiscard: () => void;
   onClose: () => void;
 };
+
+/** The field's example hint, shown as placeholder text. */
+export const AI_HINT_PLACEHOLDER =
+  "Например: крупный план светофора, снег, сумерки (необязательно, уточняет контекст новости)";
 
 /**
  * The open state of the AI cover generator.
@@ -30,22 +30,23 @@ type AiCoverPanelProps = {
  * it. Splitting them is what lets the test suite reach the busy, error and
  * result states, which are the ones that matter — none of them is reachable by
  * mounting the shell and taking a snapshot.
+ *
+ * One input, not two modes. The panel used to offer "по тексту статьи" against
+ * "по своей подсказке", and picking the second sent only the hint, so the story
+ * the editor was looking at stopped mattering. The hint now refines whatever the
+ * story already says, which is also why it is optional and always enabled.
  */
 export function AiCoverPanel({
-  mode,
   hint,
   busy,
   error,
   result,
-  onModeChange,
   onHintChange,
   onGenerate,
   onApply,
   onDiscard,
   onClose,
 }: AiCoverPanelProps) {
-  const custom = mode === "custom";
-
   return (
     <div className="space-y-3 rounded-md border border-neutral-300 bg-neutral-50 p-3">
       <div className="flex items-center justify-between gap-3">
@@ -63,61 +64,32 @@ export function AiCoverPanel({
         </button>
       </div>
 
-      <fieldset className="space-y-1.5">
-        <legend className="text-xs font-medium text-neutral-600">Источник подсказки</legend>
-        {(
-          [
-            { value: "auto" as const, label: "По тексту статьи" },
-            { value: "custom" as const, label: "По своей подсказке" },
-          ]
-        ).map((option) => (
-          <label
-            key={option.value}
-            className="flex items-center gap-2 text-sm text-neutral-700"
-          >
-            <input
-              type="radio"
-              name="aiCoverMode"
-              value={option.value}
-              checked={mode === option.value}
-              // Disabled while generating so the two modes cannot be swapped
-              // mid-flight and leave the panel describing a different image.
-              disabled={busy}
-              onChange={() => onModeChange(option.value)}
-              className="size-4 accent-neutral-700"
-            />
-            {option.label}
-          </label>
-        ))}
-      </fieldset>
-
       <div className="space-y-1.5">
         <label htmlFor="aiCoverHint" className="text-xs font-medium text-neutral-600">
-          Подсказка на русском
+          Подсказка для обложки
         </label>
         <textarea
           id="aiCoverHint"
           value={hint}
-          // Disabled rather than hidden in auto mode: the editor can see what the
-          // option is and what they would be overriding, instead of the field
-          // appearing from nowhere when they switch.
-          disabled={!custom || busy}
+          // Only ever disabled while a request is in flight: editing the hint
+          // mid-generation would leave the panel describing an image that was made
+          // from something else.
+          disabled={busy}
           rows={2}
           maxLength={AI_HINT_LIMIT}
           onChange={(event) => onHintChange(event.target.value)}
-          placeholder="Например: ночная улица Екатеринбурга после сильного ливня, фонари отражаются в асфальте"
+          placeholder={AI_HINT_PLACEHOLDER}
           className={cn(
             "w-full resize-y rounded-md border px-3 py-2 text-sm outline-none",
             "placeholder:text-neutral-400 focus:ring-2",
-            custom
-              ? "border-neutral-300 bg-white text-neutral-800 focus:border-neutral-500 focus:ring-neutral-200"
-              : "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400",
+            busy
+              ? "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400"
+              : "border-neutral-300 bg-white text-neutral-800 focus:border-neutral-500 focus:ring-neutral-200",
           )}
         />
         <p className="text-xs text-neutral-400">
-          {custom
-            ? `${hint.length} из ${AI_HINT_LIMIT}. Стиль добавляется автоматически.`
-            : "Описание новости составит DeepSeek. Подсказка не используется."}
+          {hint.length} из {AI_HINT_LIMIT}. Заголовок и лид новости учитываются всегда,
+          подсказка уточняет кадр. Стиль добавляется автоматически.
         </p>
       </div>
 
@@ -139,7 +111,7 @@ export function AiCoverPanel({
         ) : (
           <Sparkles className="size-4" aria-hidden />
         )}
-        {busy ? "Генерируем…" : "Сгенерировать"}
+        {busy ? "Генерируем…" : "Сгенерировать обложку"}
       </button>
 
       {busy ? (

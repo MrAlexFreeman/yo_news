@@ -17,7 +17,9 @@ import {
   COVER_HEIGHT,
   COVER_STEPS,
   COVER_WIDTH,
-  PHOTO_STYLE_SUFFIX,
+  DEEPSEEK_SYSTEM_PROMPT,
+  FLUX_POSTFIX,
+  applyFluxPostfix,
 } from "../src/lib/cover-prompt";
 import { detectImageFormat, extractImageBytes } from "../src/lib/deepinfra-response";
 import { looksLikeVideo } from "../src/app/admin/articles/components/media-editor";
@@ -451,11 +453,71 @@ function checkArticleMedia() {
  * image is the difference between "cover generated" and an empty article.
  */
 function checkAiCover() {
+  // The postfix is appended in code, so it has to be right regardless of what a
+  // text model decides to write: Dzen refuses a card whose image carries rendered
+  // text, which is the failure the whole negative half exists to prevent.
   check(
-    "Генератор: стиль добавляется к подсказке",
-    PHOTO_STYLE_SUFFIX.includes("strictly no text") &&
-      PHOTO_STYLE_SUFFIX.includes("16:9 aspect ratio"),
+    "Генератор: постфикс запрещает текст и буквы",
+    FLUX_POSTFIX.includes("strictly no text") &&
+      FLUX_POSTFIX.includes("no letters") &&
+      FLUX_POSTFIX.includes("no watermark") &&
+      FLUX_POSTFIX.includes("no typography"),
     "brief на месте",
+  );
+
+  check(
+    "Генератор: постфикс задаёт качество и композицию",
+    FLUX_POSTFIX.includes("8k") &&
+      FLUX_POSTFIX.includes("sharp focus") &&
+      FLUX_POSTFIX.includes("clean composition") &&
+      FLUX_POSTFIX.includes("editorial photography"),
+    "стиль на месте",
+  );
+
+  // The exact string the spec fixes: FLUX is given this verbatim, and a typo here
+  // would silently change every cover the newsroom generates.
+  check(
+    "Генератор: постфикс совпадает со спецификацией",
+    applyFluxPostfix("scene") ===
+      "scene, editorial photography, 8k, sharp focus, clean composition, strictly no text, no letters, no watermark, no typography",
+    applyFluxPostfix("scene"),
+  );
+
+  // Idempotent, so a prompt that already ends in the postfix is not doubled.
+  const once = applyFluxPostfix("scene");
+  check(
+    "Генератор: постфикс не дублируется",
+    applyFluxPostfix(once) === once,
+    "повторный вызов ничего не меняет",
+  );
+
+  check(
+    "Генератор: постфикс не добавляется к пустому промпту",
+    applyFluxPostfix("   ") === "",
+    "пусто не превращается в запятую",
+  );
+
+  // The system prompt is the newsroom's spec verbatim; paraphrasing it would let
+  // the no-text rules quietly erode.
+  check(
+    "Генератор: системный промпт запрещает текст дважды",
+    DEEPSEEK_SYSTEM_PROMPT.includes("ABSOLUTELY NO TEXT, NO LETTERS, NO WORDS") &&
+      DEEPSEEK_SYSTEM_PROMPT.includes("NO RUSSIAN OR ENGLISH INSCRIPTIONS"),
+    "правило 1 на месте",
+  );
+  check(
+    "Генератор: системный промпт запрещает объекты с текстом",
+    DEEPSEEK_SYSTEM_PROMPT.includes("street signs with text") &&
+      DEEPSEEK_SYSTEM_PROMPT.includes("commercial logos") &&
+      DEEPSEEK_SYSTEM_PROMPT.includes("plain surfaces without inscriptions"),
+    "правило 2 на месте",
+  );
+  check(
+    "Генератор: системный промпт требует чистый выход",
+    DEEPSEEK_SYSTEM_PROMPT.includes(
+      "Output ONLY the raw English prompt string, without quotes, markdown formatting, or preamble.",
+    ),
+    "правило 4 на месте",
   );
 
   check(
@@ -705,7 +767,7 @@ async function checkSettingsApi(base: string, auth: string) {
   // already be visible to a request that never touches .env.
   const canaryBody = await postJson(
     "/api/admin/generate-cover",
-    { mode: "custom", prompt: "проверка сквозного чтения" },
+    { title: "проверка сквозного чтения", prompt: "крупный план" },
     { authorization: auth },
   );
   const canaryText = await canaryBody.text();
@@ -1705,7 +1767,7 @@ async function main() {
   // It spends money per call and writes to UPLOAD_DIR, so the gate matters more
   // here than for any other route. These assertions never reach the providers:
   // every case is refused before a key is read.
-  const aiBody = JSON.stringify({ mode: "auto", title: "Тест" });
+  const aiBody = JSON.stringify({ title: "Тест" });
 
   const aiAnon = await fetch(`${base}/api/admin/generate-cover`, {
     method: "POST",
@@ -1741,7 +1803,7 @@ async function main() {
       "content-type": "application/x-www-form-urlencoded",
       authorization: auth,
     },
-    body: "mode=auto&title=test",
+    body: "title=test&lead=test",
   });
   check(
     "Генератор: не-JSON отклонён (защита от CSRF)",
@@ -1765,7 +1827,7 @@ async function main() {
   const aiEmpty = await fetch(`${base}/api/admin/generate-cover`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: auth },
-    body: JSON.stringify({ mode: "auto" }),
+    body: JSON.stringify({}),
   });
   const aiEmptyBody = (await aiEmpty.json().catch(() => ({}))) as { error?: string };
   check(
@@ -1774,16 +1836,19 @@ async function main() {
     `${aiEmpty.status}: ${(aiEmptyBody.error ?? "").slice(0, 48)}`,
   );
 
-  const aiNoHint = await fetch(`${base}/api/admin/generate-cover`, {
+  // The hint is optional now, but on its own it is not enough — it refines a story
+  // rather than replacing one. This is the exact inversion the old endpoint got
+  // wrong: it demanded a hint and let the news go unused.
+  const aiHintOnly = await fetch(`${base}/api/admin/generate-cover`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: auth },
-    body: JSON.stringify({ mode: "custom" }),
+    body: JSON.stringify({ prompt: "Крупный план светофора" }),
   });
-  const aiNoHintBody = (await aiNoHint.json().catch(() => ({}))) as { error?: string };
+  const aiHintOnlyBody = (await aiHintOnly.json().catch(() => ({}))) as { error?: string };
   check(
-    "Генератор: пустая подсказка отклонена",
-    aiNoHint.status === 400 && (aiNoHintBody.error ?? "").includes("подсказку"),
-    `${aiNoHint.status}: ${(aiNoHintBody.error ?? "").slice(0, 40)}`,
+    "Генератор: подсказка без новости отклонена",
+    aiHintOnly.status === 400 && (aiHintOnlyBody.error ?? "").includes("Нечего описать"),
+    `${aiHintOnly.status}: ${(aiHintOnlyBody.error ?? "").slice(0, 40)}`,
   );
 
   // The two rejections above must not have consumed the rate-limit slot, or an
@@ -1797,10 +1862,14 @@ async function main() {
   } else {
     // With no keys set the endpoint must answer with a readable 503 that names the
     // missing variable, not a stack trace and not a silent success.
+    //
+    // Sent with a title and no hint on purpose: a 400 here would mean the hint had
+    // quietly become mandatory again, so this one request covers both the missing
+    // key and the hint being optional.
     const aiNoKeys = await fetch(`${base}/api/admin/generate-cover`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: auth },
-      body: JSON.stringify({ mode: "custom", prompt: "Проверка наличия ключа" }),
+      body: JSON.stringify({ title: "Проверка наличия ключа" }),
     });
     const aiNoKeysBody = (await aiNoKeys.json().catch(() => ({}))) as { error?: string };
     check(
@@ -1809,15 +1878,25 @@ async function main() {
         /DEEPSEEK_API_KEY|DEEPINFRA_API_KEY/.test(aiNoKeysBody.error ?? ""),
       `${aiNoKeys.status}: ${(aiNoKeysBody.error ?? "").slice(0, 64)}`,
     );
+    check(
+      "Генератор: подсказка не обязательна — дошло до чтения ключа",
+      aiNoKeys.status !== 400,
+      `${aiNoKeys.status} — валидация подсказку не потребовала`,
+    );
   }
 
   // Each generation costs money, so back-to-back calls are refused. Asserted last
   // among the authenticated cases because it depends on the previous one having
-  // just taken a slot.
+  // just taken a slot. Carries both a story and a hint, which is the shape the
+  // editor UI actually sends.
   const aiRate = await fetch(`${base}/api/admin/generate-cover`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: auth },
-    body: JSON.stringify({ mode: "custom", prompt: "Повторный запрос" }),
+    body: JSON.stringify({
+      title: "Повторный запрос",
+      lead: "Лид",
+      prompt: "Крупный план",
+    }),
   });
   const aiRateBody = (await aiRate.json().catch(() => ({}))) as { error?: string };
   check(
