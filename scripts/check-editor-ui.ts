@@ -11,7 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { AiCoverGenerator } from "../src/app/admin/articles/components/ai-cover-generator";
 import { AiCoverPanel } from "../src/app/admin/articles/components/ai-cover-panel";
-import { MediaEditor } from "../src/app/admin/articles/components/media-editor";
+import { MediaEditor, VIDEO_DROP_WARNING } from "../src/app/admin/articles/components/media-editor";
 import { TitleField } from "../src/app/admin/articles/components/title-field";
 import { PublishSidebar } from "../src/app/admin/articles/components/publish-sidebar";
 import { DZEN_EXPERIMENT_LOCKED_HINT } from "../src/lib/dzen-experiment";
@@ -195,6 +195,27 @@ check(
   "на месте",
 );
 
+// The drop-zone video guard. The dialog only exists after a drop, so the initial
+// render proves the wording constant is exported and that nothing leaks into the
+// resting state; the behaviour itself is covered by looksLikeVideo assertions in
+// checks:security.
+check(
+  "Галерея: предупреждение о видео совпадает с текстом редакции",
+  VIDEO_DROP_WARNING ===
+    "Для экономии диска сервера видео добавляется ссылкой (VK Video, Rutube, YouTube) в поле «Ссылка на видео». Загрузите ролик в ВК/Дзен и скопируйте ссылку сюда",
+  VIDEO_DROP_WARNING,
+);
+check(
+  "Галерея: модалка не показана до попытки сбросить видео",
+  !mediaHtml.includes("Видеофайл не загружен") && !mediaHtml.includes('role="alertdialog"'),
+  "чистое состояние",
+);
+check(
+  "Галерея: зона не принимает видео в атрибуте accept",
+  mediaHtml.includes('accept="image/jpeg,image/png,image/gif"'),
+  "только изображения",
+);
+
 check("Подписка: заголовок", subscribeHtml.includes("Подписывайтесь"), "на месте");
 // The button has to point at whatever NEXT_PUBLIC_DZEN_URL says. Next.js inlines
 // NEXT_PUBLIC_* at build time, so a wrong value here is only ever caught by
@@ -230,6 +251,35 @@ check(
 check("Видео: плеер 16:9", videoHtml.includes("aspect-video"), "на месте");
 check("Видео: iframe на ютюб", videoHtml.includes("youtube.com/embed/dQw4w9WgXcQ"), "на месте");
 check("Видео: чужой источник не рендерится", noVideoHtml === "", "пусто");
+
+// The desktop complaint was a player sitting as a small window inside a large
+// black box. The selectors must reach the iframe *inside* the figure that
+// buildVideoEmbed wraps around it, so the broken child selector is asserted
+// against explicitly rather than left as a comment.
+check(
+  "Видео: контейнер 16:9 на всю ширину",
+  videoHtml.includes("aspect-video") && videoHtml.includes("w-full"),
+  "aspect-video + w-full",
+);
+// The arbitrary-variant selectors are asserted without their `[&_` prefix: the ampersand
+// is HTML-escaped to `&amp;` inside the class attribute, so a literal search for
+// "[&_iframe]" would never match. The suffix is what carries the meaning.
+check(
+  "Видео: стили доходят до вложенного iframe",
+  videoHtml.includes("_iframe]:h-full") && videoHtml.includes("_iframe]:w-full"),
+  "потомок, а не прямой ребёнок",
+);
+check(
+  "Видео: обёртка figure растянута",
+  videoHtml.includes("_figure]:h-full"),
+  "figure на всю высоту",
+);
+check(
+  "Видео: селектора по прямому ребёнку для iframe нет",
+  !videoHtml.includes("_>iframe]"),
+  "именно он и оставлял плеер 300×150",
+);
+check("Видео: рамка плеера обнулена", videoHtml.includes("_iframe]:border-0"), "border-0");
 
 check(
   "Галерея: три колонки на широких экранах",

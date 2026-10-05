@@ -1,4 +1,4 @@
-import DOMPurify from "isomorphic-dompurify";
+import { DOMPurify, setFeedBase, withPolicy } from "@/lib/dompurify";
 
 import {
   meetsDzenMinimum,
@@ -143,36 +143,14 @@ export function buildDzenContent(input: DzenContentInput): string {
   const { base } = input;
 
   // Phase 1: narrow the body to the supported subset and make its URLs absolute.
-  const seenUrls = new Set<string>();
-  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-    const element = node as {
-      nodeName?: unknown;
-      getAttribute?: (name: string) => string | null;
-      setAttribute?: (name: string, value: string) => void;
-      remove?: () => void;
-    };
-    const name = String(element.nodeName ?? "").toLowerCase();
-
-    // Video players cannot survive the feed — Dzen expects a link. The dedicated
-    // `videoUrl` below covers the story's own video; an iframe dropped from the
-    // middle of the text would otherwise leave a hole in the prose.
-    if (name === "iframe" || name === "object" || name === "embed") {
-      element.remove?.();
-      return;
-    }
-
-    for (const attribute of ["src", "href"]) {
-      const value = element.getAttribute?.(attribute);
-      if (!value) continue;
-      const absolute = absolutize(value, base);
-      if (attribute === "src") seenUrls.add(absolute.toLowerCase());
-      element.setAttribute?.(attribute, absolute);
-    }
-  });
-
-  let body: string;
-  try {
-    body = DOMPurify.sanitize(input.contentHtml, {
+  //
+  // The attribute hook is shared with the article sanitiser and branches on a
+  // policy flag rather than being installed here — two hooks on one global
+  // DOMPurify instance would unhook each other, and that already cost the public
+  // pages their data-URI and iframe-host guards for a whole request cycle.
+  setFeedBase(base);
+  const body = withPolicy("dzen", () =>
+    DOMPurify.sanitize(input.contentHtml, {
       ALLOWED_TAGS: DZEN_TAGS,
       ALLOWED_ATTR: DZEN_ATTR,
       ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|tel:|\/|#)/i,
@@ -180,11 +158,12 @@ export function buildDzenContent(input: DzenContentInput): string {
       FORBID_ATTR: ["style", "class", "id", "target", "rel", "width", "height"],
       ALLOW_DATA_ATTR: false,
       KEEP_CONTENT: true,
-    });
-  } finally {
-    // The hook mutates DOMPurify's shared state, so it must not outlive this
-    // call or it would start rewriting URLs for the article page too.
-    DOMPurify.removeAllHooks();
+    }),
+  );
+
+  const seenUrls = new Set<string>();
+  for (const match of body.matchAll(/<img[^>]+src="([^"]*)"/gi)) {
+    seenUrls.add(match[1].replace(/&amp;/g, "&").toLowerCase());
   }
 
   const blocks: string[] = [];

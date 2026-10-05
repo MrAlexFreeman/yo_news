@@ -1,6 +1,6 @@
 "use client";
 
-import { GripVertical, ImagePlus, Loader2, Upload, X } from "lucide-react";
+import { GripVertical, ImagePlus, Loader2, Upload, VideoOff, X } from "lucide-react";
 import { useRef, useState } from "react";
 
 import type { MediaItem } from "@/lib/article-media";
@@ -16,6 +16,39 @@ type MediaEditorProps = {
 /** Same ceiling the upload endpoint enforces, per file. */
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const ACCEPT = "image/jpeg,image/png,image/gif";
+
+/**
+ * The drop-zone guard message, worded as editorial asked for.
+ *
+ * Video goes into a link rather than onto the disk, and the reason is stated in
+ * the dialog: a single 4K clip is a few hundred megabytes on a 709 MB VPS whose
+ * swap file is already part of its memory budget.
+ */
+export const VIDEO_DROP_WARNING =
+  "Для экономии диска сервера видео добавляется ссылкой (VK Video, Rutube, YouTube) в поле «Ссылка на видео». Загрузите ролик в ВК/Дзен и скопируйте ссылку сюда";
+
+/** Extensions a press drop plausibly contains when someone grabs a video. */
+const VIDEO_EXTENSIONS = [
+  ".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg", ".3gp",
+];
+
+/** Container-agnostic sniffing, so a dropped file with no extension is still caught. */
+const VIDEO_MIME_PREFIX = "video/";
+
+/**
+ * True for anything that looks like a video rather than a photograph.
+ *
+ * Exported for the test suite: this is the rule that decides whether a press drop
+ * of twenty frames plus one stray clip warns or silently uploads.
+ */
+export function looksLikeVideo(file: Pick<File, "name" | "type">): boolean {
+  if (file.type?.startsWith(VIDEO_MIME_PREFIX)) return true;
+  // Some desktops report an empty type for .mkv and .mov over RDP or from a
+  // network share, so the extension is the second line rather than the first.
+  return VIDEO_EXTENSIONS.some((extension) =>
+    file.name.toLowerCase().endsWith(extension),
+  );
+}
 
 /**
  * Bulk gallery uploader for press-service photo drops.
@@ -34,6 +67,8 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
+  /** Names of the video files refused by the drop zone, or null when no dialog. */
+  const [videoWarning, setVideoWarning] = useState<string[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   function patch(index: number, changes: Partial<MediaItem>) {
@@ -55,7 +90,22 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
   }
 
   async function uploadFiles(files: FileList | File[]) {
-    const queue = [...files].filter((file) => !items.some((i) => i.url === file.name));
+    const dropped = [...files];
+
+    // Checked before anything else: a dropped .mp4 must not start uploading, and
+    // must not be allowed to fail as an unsupported image either. Both outcomes
+    // tell the editor the wrong thing about what the gallery is for.
+    const videos = dropped.filter(looksLikeVideo);
+    if (videos.length > 0) {
+      setVideoWarning(videos.map((file) => file.name));
+      // The images in the same drop still go through — someone grabbing a
+      // selection of twenty frames can easily clip a stray clip with them.
+      const imagesOnly = dropped.filter((file) => !videos.includes(file));
+      if (imagesOnly.length === 0) return;
+      dropped.splice(0, dropped.length, ...imagesOnly);
+    }
+
+    const queue = dropped.filter((file) => !items.some((i) => i.url === file.name));
     if (queue.length === 0) return;
 
     setErrors([]);
@@ -278,6 +328,52 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
         Порядок влияет на RSS-ленту: первое изображение становится превью на
         карточке в Дзене.
       </p>
+
+      {/*
+        A dialog rather than an inline note, because the drop that triggers it
+        happens over a page the editor is still scrolling past, and a message at
+        the bottom of the gallery would be missed entirely. role="alertdialog" with
+        a label gives a screen reader the same interruption a sighted reader gets.
+      */}
+      {videoWarning ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="video-drop-title"
+            className="w-full max-w-md rounded-md border border-neutral-300 bg-white p-4 shadow-lg"
+          >
+            <h3
+              id="video-drop-title"
+              className="flex items-center gap-2 text-sm font-semibold text-neutral-900"
+            >
+              <VideoOff className="size-4 text-amber-600" aria-hidden />
+              Видеофайл не загружен
+            </h3>
+
+            <p className="mt-2 text-sm text-neutral-700">{VIDEO_DROP_WARNING}</p>
+
+            {videoWarning.length > 0 ? (
+              <p className="mt-2 font-mono text-xs break-words text-neutral-500">
+                {videoWarning.slice(0, 4).join(", ")}
+                {videoWarning.length > 4 ? ` и ещё ${videoWarning.length - 4}` : ""}
+              </p>
+            ) : null}
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                // Autofocus so Escape and Enter both dismiss without a click.
+                autoFocus
+                onClick={() => setVideoWarning(null)}
+                className="rounded-md bg-neutral-800 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-900"
+              >
+                Понятно
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

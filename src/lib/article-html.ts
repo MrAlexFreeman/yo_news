@@ -23,6 +23,33 @@ const PROTECTED = /<(pre|code|iframe|textarea)\b[\s\S]*?<\/\1\s*>/gi;
 
 const PLACEHOLDER = (index: number) => `\u0000PROTECTED${index}\u0000`;
 
+/**
+ * `[текст](url)` in Markdown.
+ *
+ * Editors paste and type links far more often than they type tags, and the
+ * toolbar's insert-link button needs text selected first — which is exactly the
+ * step people skip when they want a link on the opening line. Markdown syntax
+ * survives that: it is what they already type into every other editor, and it
+ * reads as a link in the raw textarea instead of as invisible markup.
+ *
+ * Deliberately conservative about the URL: only schemes a reader can follow are
+ * converted, and anything else is left as literal text. Rewriting it here means a
+ * `javascript:` link never reaches the database, rather than depending on the
+ * sanitiser to strip the attribute later.
+ */
+const MARKDOWN_LINK = /\[([^\]\n]+)\]\(\s*([^)\s]+)\s*\)/g;
+
+/** Schemes a link in a news story can legitimately use. */
+const LINKABLE_SCHEME = /^(?:https?:\/\/|mailto:|tel:|\/|#)/i;
+
+export function markdownLinksToHtml(input: string): string {
+  return input.replace(MARKDOWN_LINK, (match, label: string, url: string) => {
+    if (!LINKABLE_SCHEME.test(url)) return match;
+
+    return `<a href="${url.replace(/"/g, "&quot;")}">${label}</a>`;
+  });
+}
+
 export function normalizeArticleHtml(input: string): string {
   if (!input.trim()) return "";
 
@@ -50,8 +77,12 @@ export function normalizeArticleHtml(input: string): string {
       // above every heading. Only a <br /> with markup on both sides qualifies.
       .replace(/>\s*<br \/>\s*</g, "><");
 
+    // Markdown links are converted after the newline handling, so a link spread
+    // across two lines is not silently glued into one word.
+    const withLinks = markdownLinksToHtml(withBreaks);
+
     // Already block markup: leave it alone apart from the newline fix above.
-    return BLOCK_OPENING.test(withBreaks) ? withBreaks : `<p>${withBreaks}</p>`;
+    return BLOCK_OPENING.test(withLinks) ? withLinks : `<p>${withLinks}</p>`;
   });
 
   return rendered.join("\n").replace(

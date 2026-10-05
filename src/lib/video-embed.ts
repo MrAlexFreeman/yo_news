@@ -56,7 +56,16 @@ const PROVIDERS: readonly Provider[] = [
       const pair = fromPath ?? fromQuery ?? "";
       const match = pair.match(/video(-?\d+)_(\d+)/);
       if (!match) return null;
-      return `https://vk.com/video_ext.php?oid=${encodeURIComponent(match[1])}&id=${encodeURIComponent(match[2])}`;
+
+      // autoplay=0 is explicit rather than left to VK's default: a player that
+      // starts moving the moment it scrolls into view is startling on a news
+      // page, and VK's own player URL carries whatever the share sheet happened to
+      // include. Anything the editor pasted in the `autoplay` position is dropped
+      // for the same reason.
+      return (
+        `https://vk.com/video_ext.php?oid=${encodeURIComponent(match[1])}` +
+        `&id=${encodeURIComponent(match[2])}&autoplay=0`
+      );
     },
   },
 ];

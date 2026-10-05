@@ -20,6 +20,7 @@ import {
   PHOTO_STYLE_SUFFIX,
 } from "../src/lib/cover-prompt";
 import { detectImageFormat, extractImageBytes } from "../src/lib/deepinfra-response";
+import { looksLikeVideo } from "../src/app/admin/articles/components/media-editor";
 import {
   ALLOWED_KEYS,
   isAllowedKey,
@@ -966,6 +967,227 @@ function checkDzenExperiment() {
   );
 }
 
+/**
+ * Links in article bodies, and the shared DOMPurify hook.
+ *
+ * The hook matters beyond styling: the article and feed sanitisers share one
+ * global DOMPurify instance, so a per-module `removeAllHooks()` silently disabled
+ * the public page's data-URI and iframe-host guards for every request that
+ * rendered a feed first. Both directions are asserted here — article rules after a
+ * feed build, and feed rules after an article sanitise.
+ */
+function checkArticleLinks() {
+  // Markdown is converted on save, which is what lets a pasted or hand-typed
+  // [текст](url) become a real link without touching the toolbar.
+  const markdown = normalizeArticleHtml(
+    "Подводка со ссылкой: [релиз проекта](https://example.com/news) идёт в эфир.",
+  );
+  check(
+    "Ссылки: Markdown превращается в <a>",
+    markdown.includes('<a href="https://example.com/news">релиз проекта</a>'),
+    markdown.slice(0, 90),
+  );
+
+  const localLink = normalizeArticleHtml("Подробности: [здесь](/news/other).");
+  check(
+    "Ссылки: внутренний путь тоже становится ссылкой",
+    localLink.includes('href="/news/other"'),
+    "относительный путь сохранён",
+  );
+
+  // Scheme check at save time, so a hostile link never reaches the database.
+  const hostile = normalizeArticleHtml("[клик](javascript:alert(1)) и [ок](https://ok.test)");
+  check(
+    "Ссылки: javascript: не превращается в ссылку",
+    !hostile.includes("javascript:alert") || !hostile.includes("<a href=\"javascript:"),
+    hostile.slice(0, 90),
+  );
+
+  check(
+    "Ссылки: не-ссылка остаётся текстом",
+    normalizeArticleHtml("Цена 100 ₽ [не ссылка] конец.").includes("[не ссылка]"),
+    "скобки сохранены",
+  );
+
+  check(
+    "Ссылки: метки не пересекают границу строки",
+    !normalizeArticleHtml("[начало\n(https://example.com)").includes("<a href="),
+    "многострочная метка не склеена",
+  );
+
+  // --- storefront rendering ------------------------------------------------
+  const rendered = sanitizeArticleHtml('<p>Ссылка: <a href="/news/x">материал</a></p>');
+  check(
+    "Ссылки: на витрине есть target=_blank",
+    rendered.includes('target="_blank"'),
+    "открывается в новой вкладке",
+  );
+  check(
+    "Ссылки: на витрине есть rel=noopener noreferrer",
+    rendered.includes('rel="noopener noreferrer"'),
+    "защита opener",
+  );
+  check(
+    "Ссылки: на витрине задан янтарный класс с подчёркиванием",
+    rendered.includes('class="text-amber-600 underline"'),
+    "class применён",
+  );
+
+  // A hand-written class must not survive: a link that looks like body text is
+  // the failure the editors reported.
+  const hostileClass = sanitizeArticleHtml(
+    '<a href="/x" class="prose-body">текст</a>',
+  );
+  check(
+    "Ссылки: чужой class перезаписывается",
+    hostileClass.includes('class="text-amber-600 underline"') &&
+      !hostileClass.includes("prose-body"),
+    hostileClass,
+  );
+
+  // --- hook isolation ------------------------------------------------------
+  // Render a feed first: that is what used to strip the article page's guards.
+  buildDzenContent({
+    title: "Проверка хуков",
+    subtitle: null,
+    base: "https://eartnews.ru",
+    coverImage: null,
+    gallery: [],
+    videoUrl: null,
+    contentHtml: '<p>Обычный текст со <a href="/news/y">ссылкой</a>.</p>',
+  });
+
+  const afterFeed = sanitizeArticleHtml(
+    '<iframe src="https://evil.example.com/x"></iframe><a href="data:text/html;base64,PHNjcmlwdD4=">d</a>',
+  );
+  check(
+    "Хук: iframe на чужой домен отрезан и после сборки фида",
+    !afterFeed.includes("evil.example.com"),
+    "iframe вырезан",
+  );
+  check(
+    "Хук: data: в ссылке отрезан и после сборки фида",
+    !afterFeed.includes("data:text/html"),
+    "data-URI вырезан",
+  );
+  check(
+    "Хук: ссылка после сборки фида всё ещё оформляется",
+    afterFeed.includes('class="text-amber-600 underline"'),
+    "стиль ссылки применён",
+  );
+
+  const stillAllowed = sanitizeArticleHtml(
+    '<iframe src="https://www.youtube.com/embed/abc"></iframe>',
+  );
+  check(
+    "Хук: разрешённый видео-iframe пережил сборку фида",
+    stillAllowed.includes("youtube.com/embed/abc"),
+    "плеер на месте",
+  );
+
+  // And the other direction: an article sanitise must not leave the feed's URL
+  // rewriting switched off.
+  sanitizeArticleHtml('<a href="/news/z">ссылка</a>');
+  const feedAfterArticle = buildDzenContent({
+    title: "Проверка обратного порядка",
+    subtitle: null,
+    base: "https://eartnews.ru",
+    coverImage: null,
+    gallery: [],
+    videoUrl: null,
+    contentHtml: '<p><a href="/news/z">ссылка</a></p>',
+  });
+  check(
+    "Хук: фид после статьи всё ещё делает URL абсолютными",
+    feedAfterArticle.includes('href="https://eartnews.ru/news/z"'),
+    "URL абсолютизирован",
+  );
+  check(
+    "Хук: фид не тащит оформление ссылок сайта",
+    !feedAfterArticle.includes("text-amber-600"),
+    "класс не утёк в фид",
+  );
+}
+
+/** VK Video: the embed URL must pin autoplay off. */
+function checkVideoEmbedParams() {
+  const vk = buildVideoEmbed("https://vk.ru/video-12345_678901");
+  check(
+    "VK Видео: autoplay=0 в ссылке на плеер",
+    Boolean(vk && vk.includes("autoplay=0")),
+    vk?.match(/autoplay=0/) ? "есть" : "нет",
+  );
+
+  // oid is negative for VK's personal communities; asserting a positive value here
+  // would have "fixed" a correct builder.
+  check(
+    "VK Видео: параметры oid и id сохранены",
+    Boolean(vk && vk.includes("oid=-12345") && vk.includes("id=678901")),
+    vk?.match(/oid=[-\d]+&id=\d+/)?.[0] ?? "нет",
+  );
+
+  // A share link that already carries autoplay=1 must not be able to switch it on.
+  const forced = buildVideoEmbed("https://vk.ru/video-12345_678901?autoplay=1&list=xyz");
+  check(
+    "VK Видео: autoplay=1 из ссылки не проходит",
+    Boolean(forced && forced.includes("autoplay=0") && !forced.includes("autoplay=1")),
+    forced ?? "плеер не собран",
+  );
+
+  // A raw video_ext.php URL is a player URL, not a share link: there is no
+  // video<oid>_<id> pair to parse. Documented rather than silently ignored.
+  check(
+    "VK Видео: прямая ссылка на player не разбирается",
+    buildVideoEmbed("https://vk.ru/video_ext.php?oid=1&id=2") === null,
+    "возвращает null, плеер не рендерится",
+  );
+
+  check(
+    "YouTube: autoplay не добавляется лишним параметром",
+    buildVideoEmbed("https://youtu.be/dQw4w9WgXcQ")?.includes("autoplay=0") === false,
+    "без autoplay",
+  );
+}
+
+/**
+ * The drop-zone video guard.
+ *
+ * A press drop of twenty frames can easily carry one clip with it, and uploading
+ * a 4K file to a 709 MB VPS is exactly what the newsroom asked to avoid. The rule
+ * has to hold on the extension too, because desktops report an empty type for
+ * .mkv and .mov from a network share.
+ */
+function checkVideoDropGuard() {
+  const named = (name: string, type = "") => ({ name, type });
+
+  for (const video of ["clip.mp4", "roll.MOV", "raw.m4v", "stream.webm", "old.avi", "tv.mkv"]) {
+    check(`Дропзона: ${video} распознан как видео`, looksLikeVideo(named(video)), "да");
+  }
+
+  check(
+    "Дропзона: видео по mime-типу без расширения",
+    looksLikeVideo(named("blob", "video/mp4")),
+    "да",
+  );
+
+  check(
+    "Дропзона: имя с видео-расширением и пустым типом",
+    looksLikeVideo(named("interview.mp4", "")),
+    "да, по расширению",
+  );
+
+  for (const image of ["frame.jpg", "shot.png", "anim.gif", "photo.jpeg"]) {
+    check(`Дропзона: ${image} — это изображение`, !looksLikeVideo(named(image)), "нет");
+  }
+
+  // A file whose name merely contains a video extension must not trip the guard.
+  check(
+    "Дропзона: mp4 внутри имени не считается",
+    !looksLikeVideo(named("smmp4.jpg", "image/jpeg")),
+    "нет",
+  );
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
@@ -975,6 +1197,9 @@ async function main() {
   checkDeepInfraEnvelope();
   checkSettingsPrimitives();
   checkDzenExperiment();
+  checkArticleLinks();
+  checkVideoEmbedParams();
+  checkVideoDropGuard();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 
