@@ -724,80 +724,115 @@ function checkAiCover() {
       COVER_STYLES.every((s) => prompt.includes(s.directive)),
       "справочник целиком",
     );
-    // The lesson is what makes the composition rules land: DeepSeek has to be told
-    // why "no signs" is not achievable as an instruction to the image model.
+    // The role is what stopped the over-abstraction. Two earlier versions asked for the
+    // mood instead of the institution and then for a metaphor from a fixed library;
+    // the second produced pine crowns and a tyre print for a quarry story — an
+    // atmospheric detail with no news in it, which the editors reported as generic
+    // nature close-ups.
+    check(
+      `Промпт: «${style}» — роль главного фоторедактора`,
+      prompt.includes(
+        "You are a chief photo editor for a major news wire (like Reuters or AP).",
+      ),
+      "роль задана",
+    );
+    check(
+      `Промпт: «${style}» — требуется конкретный сюжетный кадр`,
+      prompt.includes(
+        "Your goal is to describe a CONCRETE, STORY-DRIVEN editorial photograph matching the news topic.",
+      ),
+      "сюжетность вместо настроения",
+    );
+    check(
+      `Промпт: «${style}» — запрет абстрактных натюрмортов`,
+      prompt.includes(
+        "Do NOT generate generic nature close-ups (like just tree needles or dirt) unless the news is strictly about biology.",
+      ),
+      "прямой запрет",
+    );
+    check(
+      `Промпт: «${style}» — предметный фокус`,
+      prompt.includes(
+        "Instead, identify the CORE TANGIBLE OBJECT or ACTION of the news story",
+      ) && prompt.includes("equipment, tools, barrier gates, vehicles, hands"),
+      "объект или действие",
+    );
+
+    // The lesson explains why the bans exist, which is why they get obeyed.
     check(
       `Промпт: «${style}» — урок про FLUX на месте`,
       prompt.includes(
-        "IMPORTANT LESSON: FLUX cannot render text and tries to write gibberish on any sign, board, plaque, or storefront.",
+        "IMPORTANT LESSON: FLUX cannot render text. It tries to write gibberish on any sign, board, plaque or storefront",
       ),
       "объяснение причины",
     );
+
+    // The four techniques are the whole mechanism: concrete subject, nothing to
+    // letter. Losing one puts the covers back at risk.
+    for (const [name, fragment] of [
+      ["со спины или силуэт", "Back view or anonymous silhouette"],
+      ["без брендов и наклеек", "plain unbranded, devoid of logos, plain solid color, no decals"],
+      ["физические маркеры", "Physical markers of the situation instead of a written notice"],
+      ["фокус на действии", "Action and detail focus"],
+    ] as const) {
+      check(`Промпт: «${style}» — приём «${name}»`, prompt.includes(fragment), fragment);
+    }
     check(
-      `Промпт: «${style}» — запрет вывесок на месте`,
-      prompt.includes(
-        "1. DO NOT include any signs, nameplates, road signs, building signs, store signs, notices, papers, badges, or screens.",
-      ) &&
-        prompt.includes(
-          "2. DO NOT frame scenes around building facades with storefronts.",
-        ),
-      "правила 1 и 2",
+      `Промпт: «${style}» — в приёмах есть конкретные предметы`,
+      prompt.includes("A lowered striped barrier gate") &&
+        prompt.includes("a gavel resting on a table") &&
+        prompt.includes("raindrops on a rear-view mirror"),
+      "шлагбаум, молоток, капли",
     );
-    // The positive half. This is what actually changes the picture: an out-of-focus
-    // background has nothing legible on it to put letters.
     check(
-      `Промпт: «${style}» — приём размытия задан`,
+      `Промпт: «${style}» — в приёмах запрещены лица и бейджи`,
+      prompt.includes("No faces, no name tags, no badges."),
+      "анонимность",
+    );
+
+    // The bans that produced the clean covers must survive the rewrite: they are the
+    // measured fix, not decoration.
+    check(
+      `Промпт: «${style}» — запрет вывесок и надписей`,
       prompt.includes(
-        'shallow depth of field, f/1.8 aperture, blurry out-of-focus background, bokeh',
+        "NEVER include: signs, nameplates, road signs, building signs, store signs, notices, papers, badges, screens",
+      ) && prompt.includes(
+        "any word that asks FLUX to render characters (text, lettering, words, labels, typography)",
       ),
-      "правило 3",
+      "список запрещённого",
     );
-    check(
-      `Промпт: «${style}» — настроение вместо учреждения`,
-      prompt.includes(
-        "4. Focus on capturing the MOOD and METAPHOR of the news rather than literal institutions.",
-      ) && prompt.includes("gavel close-up or empty wooden bench"),
-      "правило 4 с примерами",
-    );
-    // The measured failure: a shopping-centre story still produced gibberish on shop
-    // fronts even with a clean prompt, because the scene itself invites lettering.
-    // So the scenes are named, not just the objects.
     check(
       `Промпт: «${style}» — запрещены торговые сцены`,
-      prompt.includes("FORBIDDEN SCENES") &&
-        prompt.includes("mall, shopping center, retail, store, supermarket") &&
-        prompt.includes("market stall, gas station, construction barrier, police tape, road barrier"),
+      prompt.includes(
+        "in a mall, shopping center, retail store, supermarket, shop window, market stall or gas station",
+      ),
       "список сцен",
     );
     check(
       `Промпт: «${style}» — запрещены слова предупреждений`,
-      prompt.includes("Any warning vocabulary at all: warning, caution, danger, stop, alert."),
+      prompt.includes("NEVER use warning vocabulary: warning, caution, danger, stop, alert."),
       "список предупреждений",
     );
+
     check(
-      `Промпт: «${style}» — ракурс зафиксирован`,
+      `Промпт: «${style}» — подсказка редактора главнее`,
       prompt.includes(
-        "NEVER frame a wide angle of human environments. Prefer macro photography, extreme close-ups of objects, ground-level shots, silhouette angles, or natural landscapes without man-made boards.",
+        "When a hint is supplied it overrides your default choice of subject and framing.",
       ),
-      "принудительный ракурс",
+      "hint важнее умолчания",
     );
-    // The metaphor library is what turns a forbidden scene into a photographable
-    // one; without it the rules only leave the model with nothing to say.
-    for (const theme of [
-      "Retail, prices, trade",
-      "Danger, forest, quarry, environment",
-      "Incidents, utilities, transport",
-      "Power, courts, decisions",
-    ]) {
-      check(
-        `Промпт: «${style}» — метафора «${theme}»`,
-        prompt.includes(`- ${theme}:`),
-        "библиотека метафор",
-      );
-    }
+    check(
+      `Промпт: «${style}» — формат вывода 30-40 слов`,
+      prompt.includes(
+        "One concise English prompt of 30-40 words naming the main tangible object, its surroundings, the lighting and the camera angle.",
+      ),
+      "длина и состав",
+    );
     check(
       `Промпт: «${style}» — только голая строка`,
-      prompt.includes("5. Output ONLY the English prompt string, without any preamble or quotes."),
+      prompt.includes(
+        "Output ONLY the English prompt string, without any preamble or quotes.",
+      ),
       "формат вывода задан",
     );
   }

@@ -227,9 +227,17 @@ export function styleDirective(value: unknown): string {
  * sentence handed to FLUX would be a request. What reaches FLUX is positive
  * description plus {@link sanitizeFluxPrompt}.
  *
- * The composition rules do the real work. Telling the model to frame a court as
- * "a courthouse" is what produces a building with a plaque; telling it to use a
- * gavel in close-up, or an empty bench, produces an image with nothing to write on.
+ * The composition rules do the real work, and they have been wrong twice. The first
+ * version asked for the *mood* rather than the institution, which is how a court
+ * story turned into an empty room nobody could place. The second replaced that with a
+ * library of metaphors, which fixed the lettering but overshot: a quarry story came
+ * back as pine crowns and a tyre print in mud, an atmospheric detail with no news in
+ * it. The editors called that out, and rightly — it was our abstraction, not theirs.
+ *
+ * What works is the middle: name the actual object the story is about, then strip it
+ * of everything FLUX would letter. A lowered barrier gate says "the road is closed"
+ * without a board; a guard shot from behind says "a guard is on duty" without a
+ * name tag. Concrete and anonymous at the same time.
  *
  * Lives here rather than in ai-cover.ts so the test suite can assert on it: that
  * module is `server-only` and cannot be imported by a plain tsx script.
@@ -238,36 +246,31 @@ export function buildDeepseekSystemPrompt(value: unknown): string {
   const style = resolveCoverStyle(value);
 
   return [
-    "You generate prompts for the FLUX image model.",
-    "IMPORTANT LESSON: FLUX cannot render text and tries to write gibberish on any sign, board, plaque, or storefront.",
+    "You are a chief photo editor for a major news wire (like Reuters or AP).",
+    "Your goal is to describe a CONCRETE, STORY-DRIVEN editorial photograph matching the news topic.",
+    "Do NOT generate generic nature close-ups (like just tree needles or dirt) unless the news is strictly about biology.",
+    "Instead, identify the CORE TANGIBLE OBJECT or ACTION of the news story (e.g., equipment, tools, barrier gates, vehicles, hands, infrastructures, interior items).",
+    "",
+    "IMPORTANT LESSON: FLUX cannot render text. It tries to write gibberish on any sign, board, plaque or storefront, so those subjects are off limits.",
     "",
     "STYLE DIRECTIVES:",
     ...COVER_STYLES.map((entry) => `- ${entry.value}: "${entry.directive}".`),
     `Use the "${style}" style, and no other.`,
     "",
-    "MANDATORY COMPOSITION RULES:",
-    "1. DO NOT include any signs, nameplates, road signs, building signs, store signs, notices, papers, badges, or screens.",
-    "2. DO NOT frame scenes around building facades with storefronts.",
-    "3. ALWAYS use cinematic photography techniques to prevent sharp background details:",
-    '   - "shallow depth of field, f/1.8 aperture, blurry out-of-focus background, bokeh"',
-    "   - Focus on close-up details, objects, hands, vehicles from angles where plates are hidden, nature, silhouettes, or atmospheric environment.",
-    "4. Focus on capturing the MOOD and METAPHOR of the news rather than literal institutions. (e.g., for court: gavel close-up or empty wooden bench; for city hall: architectural columns without plaques; for traffic: blurred headlights in rain).",
+    "SAFE STORYTELLING TECHNIQUES. Keep the narrative concrete while leaving nothing for FLUX to letter:",
+    '1. Back view or anonymous silhouette. People — guards, drivers, inspectors, workers — are described from behind or as a backlit silhouette against the light. No faces, no name tags, no badges.',
+    '2. Unbranded and plain. Any machinery, vehicle, barrier gate, meter or instrument must be described as "plain unbranded, devoid of logos, plain solid color, no decals".',
+    "3. Physical markers of the situation instead of a written notice. A lowered striped barrier gate reads as a closed road; a traffic cone on wet asphalt reads as a hazard; a warning beacon reads as an emergency.",
+    "4. Action and detail focus. Hands counting banknotes; a wheel spinning in snow; a gavel resting on a table; raindrops on a rear-view mirror; a car's open bonnet.",
     "",
-    "FORBIDDEN SCENES. Never describe these, even when the news is about them:",
-    "   - mall, shopping center, retail, store, supermarket, shop window, storefront, market stall, gas station, construction barrier, police tape, road barrier.",
-    "   - Any warning vocabulary at all: warning, caution, danger, stop, alert.",
-    "These subjects pull lettering into the frame no matter how the rest of the prompt is written, so they are excluded from the composition entirely.",
+    "NEVER include: signs, nameplates, road signs, building signs, store signs, notices, papers, badges, screens, or any word that asks FLUX to render characters (text, lettering, words, labels, typography).",
+    "NEVER frame a scene around a building facade with storefronts, or in a mall, shopping center, retail store, supermarket, shop window, market stall or gas station. Those subjects pull lettering into the frame whatever else the prompt says.",
+    "NEVER use warning vocabulary: warning, caution, danger, stop, alert.",
     "",
-    "NEVER frame a wide angle of human environments. Prefer macro photography, extreme close-ups of objects, ground-level shots, silhouette angles, or natural landscapes without man-made boards.",
+    "EDITOR'S HINT. When a hint is supplied it overrides your default choice of subject and framing. Use it, and let it narrow the shot.",
     "",
-    "METAPHOR LIBRARY. When the news belongs to one of these themes, describe the listed image instead of the literal event:",
-    "   - Retail, prices, trade: a shopping trolley seen close-up; a shelf of unlabelled vegetables and fruit; a shopper's hands holding coins or a paper bag.",
-    "   - Danger, forest, quarry, environment: pine crowns against an overcast sky; a tyre tread mark in mud; a sandy quarry slope; thick fog between trees.",
-    "   - Incidents, utilities, transport: wet asphalt reflecting street lamps; the silhouette of utility machinery at dusk; a bend in an empty snow-covered road; steam rising from ice.",
-    "   - Power, courts, decisions: classical architectural columns in bokeh; a wooden council table; an empty chamber in soft light.",
-    "Pick one metaphor and stay close to it. Do not name the news event itself in the prompt.",
-    "",
-    "5. Output ONLY the English prompt string, without any preamble or quotes.",
+    "OUTPUT FORMAT. One concise English prompt of 30-40 words naming the main tangible object, its surroundings, the lighting and the camera angle.",
+    "Output ONLY the English prompt string, without any preamble or quotes.",
   ].join("\n");
 }
 
