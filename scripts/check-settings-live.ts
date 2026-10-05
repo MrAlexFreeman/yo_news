@@ -1,14 +1,4 @@
 /**
- * Proves the headline claim: a key saved through /api/admin/settings is used by
- * the cover generator on the very next request, with no pm2 restart and no .env
- * change.
- *
- * The evidence is the provider's own answer. A fake key stored in the database
- * makes DeepInfra reject it with 401 — which can only happen if the route read
- * that key out of AppSetting. A missing key produces 503 "Не задан" instead, so
- * the two outcomes are unambiguous.
- */
-/**
  * Live proof that a key saved in /admin/settings reaches the cover generator on
  * the next request, with no pm2 restart.
  *
@@ -17,9 +7,22 @@
  * are resolved. It stores a deliberately fake key, so no money is spent — the
  * provider answers 401 and that is the evidence.
  *
- * Run with: npm run settings:check
+ * DESTRUCTIVE, and refuses to run unless told otherwise. Storing the fake key
+ * overwrites the real DEEPINFRA_API_KEY and the cleanup at the end clears it, so
+ * running this against production deletes the newsroom's key for good: the script
+ * has no way to put the old value back, because keys are write-only by design.
+ *
+ * Run with: ALLOW_SETTINGS_WRITE=1 npm run settings:check
  */
 const BASE = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
+
+if (process.env.ALLOW_SETTINGS_WRITE !== "1") {
+  console.log(
+    "Пропущен: набор затирает реальный DEEPINFRA_API_KEY.\n" +
+      "Запускать только на одноразовой базе: ALLOW_SETTINGS_WRITE=1 npm run settings:check",
+  );
+  process.exit(0);
+}
 
 /** Past the endpoint's 5 s per-process window. */
 const COOLDOWN_MS = 6000;
@@ -53,9 +56,11 @@ async function main() {
 
   console.log("1. Ключа нет ни в базе, ни в .env");
   await sleep(COOLDOWN_MS);
+  // `title` is what validation requires; `mode` and `prompt` were removed when the
+  // hint became an optional refinement named customPrompt.
   const before = await post("/api/admin/generate-cover", {
-    mode: "custom",
-    prompt: "проверка сквозного чтения ключа",
+    title: "проверка сквозного чтения ключа",
+    customPrompt: "крупный план",
   });
   console.log(
     `   ${before.status} — ${before.body.error?.slice(0, 80) ?? "?"}\n   ожидается 503 «Не задан»\n`,
@@ -70,8 +75,8 @@ async function main() {
   console.log("3. Сразу же генерируем — перезапуска нет, .env не менялся");
   await sleep(COOLDOWN_MS);
   const after = await post("/api/admin/generate-cover", {
-    mode: "custom",
-    prompt: "проверка сквозного чтения ключа",
+    title: "проверка сквозного чтения ключа",
+    customPrompt: "крупный план",
   });
   console.log(`   ${after.status} — ${after.body.error?.slice(0, 110) ?? "?"}`);
 

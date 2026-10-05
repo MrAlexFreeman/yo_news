@@ -73,3 +73,27 @@ export function toView(resolved: { value: string; source: SettingSource }): Sett
     source: resolved.source,
   };
 }
+
+/** The state the settings page renders from, keyed by request field name. */
+export type SettingsViewState = Record<string, SettingView>;
+
+/**
+ * Folds a save or clear response back into what the page shows.
+ *
+ * The POST route answers with the state of *every* setting after the write, because
+ * only the server knows whether a cleared key fell back to `.env` or to nothing.
+ * The page has to adopt that answer: rendering from the server-rendered props alone
+ * left the form showing the state from before the save, so pasting a first key and
+ * pressing Save produced a green "settings saved" next to a field that still read
+ * "key not set" — which reads to an editor as the key having vanished.
+ *
+ * A missing key in the incoming state is kept rather than dropped, so a partial
+ * answer cannot blank a field the server did not mention.
+ */
+export function mergeSettings(
+  current: SettingsViewState,
+  incoming: SettingsViewState | undefined,
+): SettingsViewState {
+  if (!incoming) return current;
+  return { ...current, ...incoming };
+}

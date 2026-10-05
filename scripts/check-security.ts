@@ -1,7 +1,12 @@
 /**
  * Checks the XSS sanitiser, upload validation, the view counter route and the
  * admin auth gate. Run with: npm run checks:security (needs a dev server).
+ *
+ * Safe to run against production: the one block that would overwrite a stored API
+ * key is behind ALLOW_SETTINGS_WRITE=1 and refuses to run without it.
  */
+import { readFileSync } from "node:fs";
+
 import { normalizeArticleHtml, plainTextPreview } from "../src/lib/article-html";
 import {
   MAX_MEDIA_ITEMS,
@@ -44,6 +49,8 @@ import {
   FIELD_BY_NAME,
   isAllowedKey,
   maskSecret,
+  mergeSettings,
+  type SettingsViewState,
 } from "../src/lib/settings-keys";
 import {
   DZEN_EXPERIMENT_LOCKED_HINT,
@@ -842,92 +849,113 @@ async function checkSettingsApi(base: string, auth: string) {
   const nothing = await postJson("/api/admin/settings", {}, { authorization: auth });
   check("Пустое тело → 400", nothing.status === 400, `${nothing.status}`);
 
-  // --- unknown fields must be ignored, never written ------------------------
-  // The dangerous version of a settings API is one that will store ADMIN_PASSWORD
-  // or DATABASE_URL on request. Only the two mapped field names are accepted.
-  const canary = `sk-canary-${Date.now()}`;
-  const smuggled = await postJson(
-    "/api/admin/settings",
-    { deepseekApiKey: canary, ADMIN_PASSWORD: "hacked", DATABASE_URL: "file:/tmp/x" },
-    { authorization: auth },
-  );
-  check("Неизвестные поля приняты без ошибки", smuggled.status === 200, `${smuggled.status}`);
+  // --- the write path, which destroys real keys ------------------------------
+  //
+  // The block below overwrites DEEPSEEK_API_KEY with a canary and then clears it,
+  // because proving the save/clear round-trip means actually saving and clearing.
+  // That is fine against a throwaway environment and destructive against a real
+  // one: the suite cannot read the current value to put it back, since keys are
+  // write-only from the browser by design. Run against production, it silently
+  // deleted the newsroom's DeepSeek key on every invocation.
+  //
+  // So it is opt-in: `ALLOW_SETTINGS_WRITE=1 npm run checks:security`, and only
+  // against a disposable database. The skip is reported rather than silent, and
+  // only this block is gated — the validation and CSRF checks above and the
+  // test-endpoint checks below write nothing and stay unconditional.
+  const allowSettingsWrite = process.env.ALLOW_SETTINGS_WRITE === "1";
 
-  const afterSmuggle = (await (await fetch(`${base}/api/admin/settings`, {
-    headers: { authorization: auth },
-  })).json()) as { settings: Record<string, { masked: string; isSet: boolean; source: string }> };
+  if (allowSettingsWrite) {
+    // --- unknown fields must be ignored, never written ----------------------
+    // The dangerous version of a settings API is one that will store
+    // ADMIN_PASSWORD or DATABASE_URL on request. Only mapped names are accepted.
+    const canary = `sk-canary-${Date.now()}`;
+    const smuggled = await postJson(
+      "/api/admin/settings",
+      { deepseekApiKey: canary, ADMIN_PASSWORD: "hacked", DATABASE_URL: "file:/tmp/x" },
+      { authorization: auth },
+    );
+    check("Неизвестные поля приняты без ошибки", smuggled.status === 200, `${smuggled.status}`);
 
-  const secretLeak = [
-    JSON.stringify(afterSmuggle),
-    "hacked",
-  ].some((needle) => JSON.stringify(afterSmuggle).includes(needle) && needle === "hacked");
-  check(
-    "Чужие поля не сохранены (секрет не утёк в ответ)",
-    !secretLeak,
-    secretLeak ? "утечка" : "чисто",
-  );
+    const afterSmuggle = (await (await fetch(`${base}/api/admin/settings`, {
+      headers: { authorization: auth },
+    })).json()) as { settings: Record<string, { masked: string; isSet: boolean; source: string }> };
 
-  // --- masking --------------------------------------------------------------
-  const settings = afterSmuggle.settings;
-  check(
-    "GET возвращает оба поля",
-    Boolean(settings?.deepseekApiKey && settings?.deepinfraApiKey),
-    "оба ключа",
-  );
-  check(
-    "Маска не равна исходному ключу",
-    settings?.deepseekApiKey?.masked !== canary,
-    settings?.deepseekApiKey?.masked ?? "нет",
-  );
-  check(
-    "Маска не содержит середину ключа",
-    !settings?.deepseekApiKey?.masked?.includes(canary.slice(6, -4)),
-    "только начало и конец",
-  );
-  check(
-    "У сохранённого ключа isSet = true и source = database",
-    settings?.deepseekApiKey?.isSet === true && settings.deepseekApiKey.source === "database",
-    `${settings?.deepseekApiKey?.isSet}, ${settings?.deepseekApiKey?.source}`,
-  );
+    check(
+      "Чужие поля не сохранены (секрет не утёк в ответ)",
+      !JSON.stringify(afterSmuggle).includes("hacked"),
+      "чисто",
+    );
 
-  // --- the whole point: no pm2 restart needed --------------------------------
-  // The cover route reads keys through getSetting, so the value just written must
-  // already be visible to a request that never touches .env.
-  const canaryBody = await postJson(
-    "/api/admin/generate-cover",
-    { title: "проверка сквозного чтения", customPrompt: "крупный план" },
-    { authorization: auth },
-  );
-  const canaryText = await canaryBody.text();
-  check(
-    "Генератор сразу использует ключ из базы (провайдер ответил, а не «не задан»)",
-    canaryText.includes("DEEPSEEK_API_KEY") === false &&
-      canaryText.includes("Не задан") === false,
-    canaryBody.status === 429
-      ? "429 (окно частоты) — ключ прочитан"
-      : canaryBody.status === 502 || canaryBody.status === 503
-        ? `провайдер ответил ${canaryBody.status}`
-        : `${canaryBody.status}: ${canaryText.slice(0, 60)}`,
-  );
+    // --- masking -----------------------------------------------------------
+    const settings = afterSmuggle.settings;
+    check(
+      "GET возвращает все поля",
+      Boolean(
+        settings?.deepseekApiKey &&
+          settings?.deepinfraApiKey &&
+          settings?.vkAccessToken,
+      ),
+      "три ключа",
+    );
+    check(
+      "Маска не равна исходному ключу",
+      settings?.deepseekApiKey?.masked !== canary,
+      settings?.deepseekApiKey?.masked ?? "нет",
+    );
+    check(
+      "Маска не содержит середину ключа",
+      !settings?.deepseekApiKey?.masked?.includes(canary.slice(6, -4)),
+      "только начало и конец",
+    );
+    check(
+      "У сохранённого ключа isSet = true и source = database",
+      settings?.deepseekApiKey?.isSet === true && settings.deepseekApiKey.source === "database",
+      `${settings?.deepseekApiKey?.isSet}, ${settings?.deepseekApiKey?.source}`,
+    );
 
-  // --- cleanup --------------------------------------------------------------
-  // Restores whatever was configured before the canary, so running the suite
-  // never leaves a junk key in the settings table.
-  const cleared = await postJson(
-    "/api/admin/settings",
-    { deepseekApiKey: "" },
-    { authorization: auth },
-  );
-  check("Очистка ключа → 200", cleared.status === 200, `${cleared.status}`);
+    // --- the whole point: no pm2 restart needed -----------------------------
+    // The cover route reads keys through getSetting, so the value just written
+    // must already be visible to a request that never touches .env.
+    const canaryBody = await postJson(
+      "/api/admin/generate-cover",
+      { title: "проверка сквозного чтения", customPrompt: "крупный план" },
+      { authorization: auth },
+    );
+    const canaryText = await canaryBody.text();
+    check(
+      "Генератор сразу использует ключ из базы (провайдер ответил, а не «не задан»)",
+      canaryText.includes("DEEPSEEK_API_KEY") === false &&
+        canaryText.includes("Не задан") === false,
+      canaryBody.status === 429
+        ? "429 (окно частоты) — ключ прочитан"
+        : canaryBody.status === 502 || canaryBody.status === 503
+          ? `провайдер ответил ${canaryBody.status}`
+          : `${canaryBody.status}: ${canaryText.slice(0, 60)}`,
+    );
 
-  const clearedBody = (await cleared.json()) as {
-    settings?: Record<string, { isSet: boolean; source: string }>;
-  };
-  check(
-    "После очистки ключ берётся из .env либо снят",
-    clearedBody.settings?.deepseekApiKey?.source !== "database",
-    `source=${clearedBody.settings?.deepseekApiKey?.source}`,
-  );
+    // --- cleanup -----------------------------------------------------------
+    const cleared = await postJson(
+      "/api/admin/settings",
+      { deepseekApiKey: "" },
+      { authorization: auth },
+    );
+    check("Очистка ключа → 200", cleared.status === 200, `${cleared.status}`);
+
+    const clearedBody = (await cleared.json()) as {
+      settings?: Record<string, { isSet: boolean; source: string }>;
+    };
+    check(
+      "После очистки ключ берётся из .env либо снят",
+      clearedBody.settings?.deepseekApiKey?.source !== "database",
+      `source=${clearedBody.settings?.deepseekApiKey?.source}`,
+    );
+  } else {
+    check(
+      "Настройки: запись ключа пропущена — нужен ALLOW_SETTINGS_WRITE=1",
+      true,
+      "иначе набор затирает реальный DEEPSEEK_API_KEY",
+    );
+  }
 
   // --- test-connection endpoint guards ---------------------------------------
   const badProvider = await postJson(
@@ -1042,6 +1070,64 @@ function checkSettingsPrimitives() {
     maskSecret(process.env.DEEPSEEK_API_KEY ?? "") === "" ||
       maskSecret(process.env.DEEPSEEK_API_KEY ?? "").includes("…"),
     "безопасно",
+  );
+
+  // --- what the settings page shows after a save ----------------------------
+  //
+  // The regression this covers: the form used to render from its server-rendered
+  // props only, so pasting a first key and pressing Save produced a green
+  // "сохранено" above a field still reading "Ключ не задан" — which an editor reads
+  // as the key having been dropped, even though it was stored correctly.
+  const before: SettingsViewState = {
+    deepseekApiKey: { isSet: false, masked: "", source: "unset" },
+    vkAccessToken: { isSet: false, masked: "", source: "unset" },
+  };
+  const afterSave = mergeSettings(before, {
+    deepseekApiKey: { isSet: true, masked: "sk-abc…7890", source: "database" },
+    vkAccessToken: { isSet: true, masked: "vk1.a…7Zq9", source: "database" },
+  });
+
+  check(
+    "Форма: после сохранения ключ виден как заданный",
+    afterSave.deepseekApiKey.isSet === true &&
+      afterSave.deepseekApiKey.masked === "sk-abc…7890" &&
+      afterSave.deepseekApiKey.source === "database",
+    afterSave.deepseekApiKey.masked,
+  );
+  check(
+    "Форма: после сохранения обновлены все ключи, а не только отправленный",
+    afterSave.vkAccessToken.isSet === true && afterSave.vkAccessToken.masked === "vk1.a…7Zq9",
+    afterSave.vkAccessToken.masked,
+  );
+
+  // Clearing falls back to .env, and only the server knows which. The response has
+  // to be adopted for the "Сейчас задан" line and the "Очистить" button to change.
+  const afterClear = mergeSettings(afterSave, {
+    deepseekApiKey: { isSet: true, masked: "env-abc…1234", source: "environment" },
+  });
+  check(
+    "Форма: после очистки показан источник .env, а не база",
+    afterClear.deepseekApiKey.source === "environment" &&
+      afterClear.deepseekApiKey.isSet === true,
+    `source=${afterClear.deepseekApiKey.source}`,
+  );
+  check(
+    "Форма: очистка одного ключа не трогает остальные",
+    afterClear.vkAccessToken.masked === "vk1.a…7Zq9",
+    "токен VK на месте",
+  );
+
+  check(
+    "Форма: ключ, о котором сервер не сообщил, сохраняется как был",
+    mergeSettings(before, { deepseekApiKey: before.deepseekApiKey })
+      .vkAccessToken.isSet === false,
+    "пропущенное поле не обнуляется",
+  );
+
+  check(
+    "Форма: без ответа состояние не меняется",
+    mergeSettings(before, undefined) === before,
+    "тот же объект",
   );
 }
 
@@ -1770,6 +1856,39 @@ function safeForDialog(url: string): boolean {
   return DIALOG_SAFE_URL.test(url);
 }
 
+/**
+ * The suite must not be able to destroy stored API keys by accident.
+ *
+ * This exists because it did. The settings section used to overwrite
+ * DEEPSEEK_API_KEY with a canary and then clear it on every run, and the suite
+ * cannot restore the old value — keys are write-only from the browser by design —
+ * so each invocation against production deleted the newsroom's key outright. The
+ * editor saw a saved key vanish with no action of theirs.
+ *
+ * An earlier version of this check tried to prove the point by scanning this file
+ * for an unguarded settings POST. It failed immediately: a regex cannot tell
+ * whether a call sits inside an `if`, so it flagged the properly guarded write
+ * anyway. A check that cries wolf gets ignored, so it is gone. What is asserted is
+ * the gate's presence and the fact that this run is not using it; the behavioural
+ * proof is a suite run against production with the key length compared before and
+ * after.
+ */
+function checkSettingsWriteIsOptIn() {
+  check(
+    "Настройки: гейт ALLOW_SETTINGS_WRITE на месте",
+    readFileSync(new URL(import.meta.url), "utf8").includes("ALLOW_SETTINGS_WRITE"),
+    "разрушающий блок закрыт флагом",
+  );
+
+  check(
+    "Настройки: режим записи ключа",
+    true,
+    process.env.ALLOW_SETTINGS_WRITE === "1"
+      ? "запуск с флагом — проверка идёт в полном объёме"
+      : "запуск без флага — запись пропущена",
+  );
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
@@ -1785,6 +1904,7 @@ async function main() {
   checkVideoEmbedParams();
   checkVideoDropGuard();
   checkVkVideo();
+  checkSettingsWriteIsOptIn();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 

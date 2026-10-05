@@ -3,15 +3,10 @@
 import { Check, ChevronRight, ExternalLink, Eye, EyeOff, Loader2, Plug, Save, X } from "lucide-react";
 import { useState } from "react";
 
+import { mergeSettings, type SettingView, type SettingsViewState } from "@/lib/settings-keys";
 import { cn } from "@/lib/utils";
 
 /** Matches the server-side shape from src/lib/settings.ts. */
-type SettingView = {
-  isSet: boolean;
-  masked: string;
-  source: "database" | "environment" | "unset";
-};
-
 type Provider = "deepseek" | "deepinfra" | "vk";
 
 type Field = {
@@ -79,8 +74,15 @@ type SettingsFormProps = {
  * empty submission leaves that key alone. Clearing a key is an explicit action —
  * the button next to the field — because an editor who wants to keep a working
  * key must not be able to lose it by pressing Save with an empty box.
+ *
+ * What the page displays lives in `views` state, seeded from the server-rendered
+ * props and then replaced by the state the POST response carries. It used to render
+ * from the props alone, which froze the display at its pre-save value: pasting a
+ * first key and saving left "Ключ не задан" on screen under a green "сохранено",
+ * and an editor reasonably read that as the key being dropped.
  */
 export function SettingsForm({ initial }: SettingsFormProps) {
+  const [views, setViews] = useState<SettingsViewState>(initial);
   const [values, setValues] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
@@ -129,6 +131,10 @@ export function SettingsForm({ initial }: SettingsFormProps) {
       setSaved(
         "Настройки сохранены. Генератор обложек использует их сразу — перезапуск не нужен.",
       );
+      // Adopt the state the server re-read after the write. This is the only place
+      // that knows whether a key landed in the database or fell back to `.env`, and
+      // without it the page keeps showing the pre-save masks and "не задан".
+      setViews((current) => mergeSettings(current, result.settings));
       // Drop the typed values so the inputs go back to showing a mask rather than
       // a live key sitting in the DOM.
       setValues({});
@@ -155,7 +161,11 @@ export function SettingsForm({ initial }: SettingsFormProps) {
         // then falls back to .env if a key is configured there.
         body: JSON.stringify({ [name]: "" }),
       });
-      const result = (await response.json()) as { ok?: boolean; error?: string };
+      const result = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        settings?: SettingsViewState;
+      };
 
       if (!response.ok || !result.ok) {
         setFormError(result.error ?? "Не удалось очистить ключ.");
@@ -163,6 +173,10 @@ export function SettingsForm({ initial }: SettingsFormProps) {
       }
 
       setSaved("Ключ удалён из базы. Если он есть в .env, используется он.");
+      // Same reason as after a save: the fallback to `.env` is only knowable from
+      // the response, so the "Сейчас задан" line and the "Очистить" button have to
+      // follow it rather than keep describing the key that was just removed.
+      setViews((current) => mergeSettings(current, result.settings));
       setValues((current) => ({ ...current, [name]: "" }));
       setTests((current) => ({ ...current, [name]: null }));
     } finally {
@@ -218,7 +232,7 @@ export function SettingsForm({ initial }: SettingsFormProps) {
         </div>
 
         {FIELDS.map((field) => {
-          const current = initial[field.name];
+          const current = views[field.name];
           const typed = values[field.name] ?? "";
           const isShown = revealed[field.name] ?? false;
           const testResult = tests[field.provider];
