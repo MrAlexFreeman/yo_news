@@ -17,7 +17,23 @@ if (!url) throw new Error("DATABASE_URL is not set");
 
 const prisma = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url }) });
 
-const SLUG = "proverka-pravila-eksperimenta-dzen";
+/**
+ * The article borrowed for the check.
+ *
+ * Taken from the database rather than hard-coded: the slug of an earlier probe
+ * article no longer exists on production, and pinning a name here would make the
+ * check fail for a reason that has nothing to do with links. Any published article
+ * will do, since its text is restored byte for byte afterwards.
+ */
+async function pickArticle(): Promise<{ slug: string; contentHtml: string }> {
+  const candidate = await prisma.article.findFirst({
+    where: { status: "published" },
+    orderBy: { publishedAt: "desc" },
+    select: { slug: true, contentHtml: true },
+  });
+  if (!candidate) throw new Error("no published article to borrow");
+  return candidate;
+}
 /** The page is ISR with a 5-minute window, so a direct DB write needs no revalidate. */
 const POLL_ATTEMPTS = 45;
 const POLL_MS = 15_000;
@@ -37,11 +53,10 @@ function anchorsInBody(html: string): string[] {
 }
 
 async function main() {
-  const original = await prisma.article.findUnique({
-    where: { slug: SLUG },
-    select: { contentHtml: true },
-  });
-  if (!original) throw new Error(`probe article ${SLUG} not found`);
+  const borrowed = await pickArticle();
+  const SLUG = borrowed.slug;
+  const original = { contentHtml: borrowed.contentHtml };
+  console.log(`проверяем на статье: ${SLUG}`);
 
   const probe =
     `${original.contentHtml}\n` +
