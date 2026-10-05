@@ -7,6 +7,7 @@ import { Prisma } from "@/generated/prisma/client";
 import type { SaveArticleResult } from "@/app/admin/articles/types";
 import { normalizeArticleHtml } from "@/lib/article-html";
 import { isArticleStatus } from "@/lib/article-status";
+import { buildSearchText } from "@/lib/article-search";
 import { parseMediaField } from "@/lib/article-media";
 import {
   DZEN_EXPERIMENT_LOCKED_HINT,
@@ -268,6 +269,9 @@ export async function createArticleAction(
     is18plus: checkbox(formData, "is18plus"),
     videoUrl,
     media: mediaColumn(str(formData, "media")),
+    // Maintained on every write, not backfilled once: the editor's search box is the
+    // only reader, and a stale index would quietly return the wrong story.
+    searchText: buildSearchText(title, str(formData, "lead")),
     dzenExperiment,
     dzenDirect: checkbox(formData, "dzenDirect"),
     status,

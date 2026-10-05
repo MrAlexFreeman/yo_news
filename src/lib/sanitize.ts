@@ -39,6 +39,21 @@ const ALLOWED_ATTR = [
 const ALLOWED_URI_REGEXP = /^(?:https?:|mailto:|tel:|\/|#)/i;
 
 /**
+ * Attributes whose values are not URIs, so the regex above must not judge them.
+ *
+ * Measured, not guessed: DOMPurify applies `ALLOWED_URI_REGEXP` to the value of
+ * *every* allowed attribute, not only to href/src. Without this, `target="_self"`
+ * fails the regex and is stripped, and since the shared hook then sees a link with
+ * no target it applies its own `_blank` default — which silently overrode the
+ * editor's "open in the same tab" choice in the link dialog.
+ *
+ * `target` and `rel` hold a browsing-context name and a link-type list. Neither is
+ * a URL, so neither can smuggle `javascript:`; href still goes through the regex,
+ * which is what actually blocks a scripted link.
+ */
+const URI_SAFE_ATTR = ["target", "rel"];
+
+/**
  * Strips `<script>`, inline `on*` handlers, data-URI URLs, iframes pointing
  * anywhere but an approved video host, and normalises every link, before the
  * markup reaches `dangerouslySetInnerHTML`.
@@ -56,6 +71,7 @@ export function sanitizeArticleHtml(dirty: string): string {
       ALLOWED_TAGS,
       ALLOWED_ATTR,
       ALLOWED_URI_REGEXP,
+      ADD_URI_SAFE_ATTR: URI_SAFE_ATTR,
       FORBID_TAGS: ["script", "style", "object", "embed", "form", "input"],
       // `formaction` can re-introduce a script URL on a stripped <form>; srcset is
       // excluded because the editor does not emit it.

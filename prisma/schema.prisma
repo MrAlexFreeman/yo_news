@@ -66,6 +66,14 @@ model Article {
   // Publish straight into Dzen instead of holding the item for review. Only has an
   // effect together with dzenExperiment, which is the stronger claim.
   dzenDirect     Boolean @default(false)
+  // Lowercased "title lead" copy, used only by the editor's article search.
+  //
+  // Measured, not assumed: SQLite's LIKE and even LOWER() are ASCII-only, so
+  // `contains: "транспорт"` finds nothing in a title stored as "Транспорт" — and
+  // COLLATE NOCASE behaves the same, the reason Tag carries nameKey. Same solution
+  // here: fold the case in JS, where toLowerCase() handles Cyrillic, and search
+  // the folded column.
+  searchText     String?
   tags        ArticleTag[]
 
   @@index([status, publishedAt])

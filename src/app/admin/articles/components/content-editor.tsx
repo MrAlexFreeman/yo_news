@@ -17,8 +17,13 @@ import {
   Underline,
   Video,
 } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
+import {
+  LinkDialog,
+  buildLinkMarkup,
+  type LinkRequest,
+} from "@/app/admin/articles/components/link-dialog";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { cn } from "@/lib/utils";
 
@@ -67,9 +72,9 @@ const GROUPS: ToolbarAction[][] = [
   ],
   [
     {
-      // Asks for the target instead of dropping a literal "https://" stub the
-      // editor had to hunt for and replace.
-      label: "Ссылка",
+      // Opens the link dialog: label, URL, "new tab", and the article search.
+      // Ctrl+K / Cmd+K does the same from anywhere in the editor.
+      label: "Ссылка (Ctrl+K)",
       icon: LinkIcon,
       kind: "link",
       target: "a",
@@ -160,6 +165,62 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
   const id = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [toolbarError, setToolbarError] = useState<string | null>(null);
+  // Where the textarea selection was when the link dialog opened, so the inserted
+  // markup replaces that text and the caret lands after it.
+  const [linkState, setLinkState] = useState<{
+    selectionStart: number;
+    selectionEnd: number;
+    selected: string;
+  } | null>(null);
+
+  const openLinkDialog = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    setToolbarError(null);
+    setLinkState({
+      selectionStart: textarea.selectionStart,
+      selectionEnd: textarea.selectionEnd,
+      selected: value.slice(textarea.selectionStart, textarea.selectionEnd),
+    });
+  }, [value]);
+
+  /**
+   * Ctrl+K / Cmd+K opens the link dialog, as in every other editor.
+   *
+   * Bound on the window rather than the textarea so the shortcut works wherever
+   * the caret is inside the editor, and suppressed while a dialog is open so Ctrl+K
+   * does not stack a second one.
+   */
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      if (linkState) return;
+      openLinkDialog();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [linkState, openLinkDialog]);
+
+  function applyLink(request: LinkRequest) {
+    const textarea = textareaRef.current;
+    const state = linkState;
+    setLinkState(null);
+    if (!textarea || !state) return;
+
+    const markup = buildLinkMarkup(request);
+    const before = value.slice(0, state.selectionStart);
+    const after = value.slice(state.selectionEnd);
+
+    onChange(`${before}${markup}${after}`);
+
+    const caret = state.selectionStart + markup.length;
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(caret, caret);
+    });
+  }
 
   function applyAction(action: ToolbarAction) {
     const textarea = textareaRef.current;
@@ -176,23 +237,11 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
     let caret: number;
 
     if (action.kind === "link") {
-      // The URL is asked for rather than templated in, so the result is a real
-      // link instead of a stub the editor has to find and repair by hand.
-      const href = window.prompt(
-        "Адрес ссылки (https://… или /uploads/…):",
-        "https://",
-      );
-      if (href === null) return;
-
-      const trimmed = href.trim();
-      if (!trimmed) {
-        setToolbarError("Пустой адрес ссылки — вставка отменена.");
-        return;
-      }
-
-      const label = selected || action.placeholder || "ссылка";
-      inserted = `<a href="${trimmed.replace(/"/g, "&quot;")}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-      caret = selectionStart + inserted.length;
+      // Handled by the dialog rather than inline: it needs two fields, a checkbox
+      // and the article search, none of which fit in a window.prompt. The selection
+      // is captured here and re-applied by applyLink.
+      openLinkDialog();
+      return;
     } else if (action.kind === "video") {
       const url = window.prompt(
         "Ссылка на видео (YouTube, Rutube или VK Видео):",
@@ -323,8 +372,17 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
 
       <p className="text-xs text-neutral-400">
         Абзацы разделяются пустой строкой, перенос строки внутри абзаца
-        превращается в разрыв. «Ссылка» и «Видео» спросят адрес.
+        превращается в разрыв. «Ссылка» (или Ctrl+K) открывает окно с поиском
+        по опубликованным новостям, «Видео» спросит адрес ролика.
       </p>
+
+      {linkState ? (
+        <LinkDialog
+          initialLabel={linkState.selected}
+          onApply={applyLink}
+          onClose={() => setLinkState(null)}
+        />
+      ) : null}
 
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
     </div>

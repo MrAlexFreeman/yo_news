@@ -48,6 +48,16 @@ import {
   dzenRating,
 } from "../src/lib/dzen-publication";
 import { buildVideoEmbed, isAllowedVideoEmbed } from "../src/lib/video-embed";
+import {
+  SEARCH_TAKE,
+  articlePath,
+  buildSearchText,
+  buildSearchWhere,
+  isSearchable,
+  normaliseQuery,
+} from "../src/lib/article-search";
+import { buildLinkMarkup } from "../src/app/admin/articles/components/link-dialog";
+import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
@@ -1058,7 +1068,7 @@ function checkArticleLinks() {
   );
   check(
     "Ссылки: на витрине задан янтарный класс с подчёркиванием",
-    rendered.includes('class="text-amber-600 underline"'),
+    rendered.includes(`class="${ARTICLE_LINK_CLASS}"`),
     "class применён",
   );
 
@@ -1069,7 +1079,7 @@ function checkArticleLinks() {
   );
   check(
     "Ссылки: чужой class перезаписывается",
-    hostileClass.includes('class="text-amber-600 underline"') &&
+    hostileClass.includes(`class="${ARTICLE_LINK_CLASS}"`) &&
       !hostileClass.includes("prose-body"),
     hostileClass,
   );
@@ -1101,7 +1111,7 @@ function checkArticleLinks() {
   );
   check(
     "Хук: ссылка после сборки фида всё ещё оформляется",
-    afterFeed.includes('class="text-amber-600 underline"'),
+    afterFeed.includes(`class="${ARTICLE_LINK_CLASS}"`),
     "стиль ссылки применён",
   );
 
@@ -1381,6 +1391,195 @@ function checkVkVideo() {
   }
 }
 
+/**
+ * The editor's article search.
+ *
+ * The case-folding is the whole point and it was measured, not assumed: SQLite's
+ * LIKE and LOWER() are ASCII-only, so a Russian query in lower case matches
+ * nothing in a title stored with a capital first letter unless both sides are
+ * folded in JS. The shadow column is what makes the box work at all.
+ */
+function checkArticleSearch() {
+  check(
+    "Поиск: регистр сворачивается в JS",
+    buildSearchText("Транспортная реформа") === "транспортная реформа",
+    buildSearchText("Транспортная реформа"),
+  );
+
+  check(
+    "Поиск: заголовок и лид в одной строке",
+    buildSearchText("Заголовок", "Лид материала") === "заголовок лид материала",
+    JSON.stringify(buildSearchText("Заголовок", "Лид материала")),
+  );
+
+  check(
+    "Поиск: пустой лид не оставляет лишнего пробела",
+    buildSearchText("Заголовок", null) === "заголовок" &&
+      buildSearchText("Заголовок", "   ") === "заголовок",
+    "без хвостовых пробелов",
+  );
+
+  // The Cyrillic case that the shadow column exists for.
+  check(
+    "Поиск: строчная «транспорт» находит «Транспорт»",
+    buildSearchText("Транспортную сеть").includes("транспорт"),
+    "совпадение есть",
+  );
+
+  const where = buildSearchWhere("Транспорт");
+  check(
+    "Поиск: запрос приводится к нижнему регистру",
+    (where.searchText as { contains: string }).contains === "транспорт",
+    (where.searchText as { contains: string }).contains,
+  );
+
+  // 'PUBLISHED' as written in the brief would match nothing: the column holds a
+  // lower-case string constrained by the ArticleStatus union.
+  check(
+    "Поиск: статус в нижнем регистре",
+    where.status === "published",
+    String(where.status),
+  );
+
+  check("Поиск: минимум два символа", isSearchable("аб") && !isSearchable("а"), "2 против 1");
+  check("Поиск: запрос обрезан", normaliseQuery("x".repeat(300)).length === 100, "100");
+  check("Поиск: пустой запрос", normaliseQuery(null) === "" && !isSearchable(""), "отклонён");
+  check(
+    "Поиск: путь из slug",
+    articlePath(" moya-novost ") === "/news/moya-novost",
+    articlePath(" moya-novost "),
+  );
+
+  // A slug carrying a slash must not escape its segment and 404 the editor.
+  check(
+    "Поиск: slash в slug не ломает путь",
+    articlePath("a/b") === "/news/a%2Fb",
+    articlePath("a/b"),
+  );
+
+  check(
+    "Поиск: не больше десяти строк",
+    SEARCH_TAKE === 10,
+    `${SEARCH_TAKE}`,
+  );
+}
+
+/** The link dialog's markup, and the storefront contract it has to satisfy. */
+function checkLinkDialog() {
+  const blank = buildLinkMarkup({
+    label: "релиз проекта",
+    url: "/news/abc",
+    blank: true,
+  });
+  check(
+    "Ссылка: разметка с target=_blank и rel",
+    blank === '<a href="/news/abc" target="_blank" rel="noopener noreferrer">релиз проекта</a>',
+    blank,
+  );
+
+  // "_self" rather than omitting target: the site applies _blank to a link that
+  // states no preference, so omitting it would make the checkbox a decoration.
+  const same = buildLinkMarkup({ label: "текст", url: "https://e.test", blank: false });
+  check(
+    "Ссылка: «новая вкладка» выключена — явный _self",
+    same.includes('target="_self"') && !same.includes("rel="),
+    same,
+  );
+
+  check(
+    "Ссылка: кавычки в адресе экранируются",
+    buildLinkMarkup({ label: "a", url: '/x"onmouseover="1', blank: true }).includes(
+      "&quot;",
+    ),
+    "экранировано",
+  );
+
+  // The storefront result of each form.
+  const renderedBlank = sanitizeArticleHtml(blank);
+  check(
+    "Ссылка: на витрине новая вкладка сохранена",
+    renderedBlank.includes('target="_blank"') &&
+      renderedBlank.includes('rel="noopener noreferrer"'),
+    "сохранена",
+  );
+
+  const renderedSelf = sanitizeArticleHtml(same);
+  check(
+    "Ссылка: на витрине _self не перебивается по умолчанию",
+    renderedSelf.includes('target="_self"') && !renderedSelf.includes('target="_blank"'),
+    "уважен выбор редактора",
+  );
+
+  check(
+    "Ссылка: янтарный класс с подчёркиванием и hover",
+    renderedBlank.includes(
+      'class="text-amber-600 hover:text-amber-700 underline"',
+    ),
+    ARTICLE_LINK_CLASS,
+  );
+
+  // A link with no stated target still gets the site's default.
+  const bare = sanitizeArticleHtml('<a href="/news/x">текст</a>');
+  check(
+    "Ссылка: без target подставляется умолчание _blank",
+    bare.includes('target="_blank"'),
+    "по умолчанию",
+  );
+
+  // The regression this configuration exists to prevent. DOMPurify judges the value
+  // of every allowed attribute against ALLOWED_URI_REGEXP, so without
+  // ADD_URI_SAFE_ATTR a hand-written target="_self" is stripped before the hook
+  // runs — and the hook then puts _blank back, turning the dialog's checkbox into
+  // a decoration that silently does the opposite of what the editor picked.
+  for (const target of ["_self", "_blank"]) {
+    const explicit = sanitizeArticleHtml(`<a href="/news/x" target="${target}">текст</a>`);
+    check(
+      `Ссылка: явный target=${target} переживает санитайзер`,
+      explicit.includes(`target="${target}"`),
+      explicit,
+    );
+  }
+
+  const relKept = sanitizeArticleHtml(
+    '<a href="/news/x" target="_blank" rel="noopener noreferrer">текст</a>',
+  );
+  check(
+    "Ссылка: rel не вырезается как не-URL",
+    relKept.includes('rel="noopener noreferrer"'),
+    relKept,
+  );
+
+  // Widening what may survive must not widen what may execute.
+  check(
+    "Ссылка: javascript: в href по-прежнему режется",
+    !sanitizeArticleHtml('<a href="javascript:alert(1)" target="_blank">x</a>').includes(
+      "javascript:",
+    ),
+    "вырезан",
+  );
+  check(
+    "Ссылка: data: в href по-прежнему режется",
+    !sanitizeArticleHtml('<a href="data:text/html,x" target="_blank">x</a>').includes(
+      "data:text/html",
+    ),
+    "вырезан",
+  );
+
+  // The dialog's own scheme check, mirrored in the sanitiser.
+  for (const url of ["/news/abc", "https://e.test", "mailto:a@b.c", "#anchor", "tel:+7000"]) {
+    check(`Ссылка: адрес ${url} принимается`, safeForDialog(url), "да");
+  }
+  for (const url of ["javascript:alert(1)", "data:text/html,x", "vbscript:x", " ftp://x", "просто"]) {
+    check(`Ссылка: адрес ${url} отклоняется`, !safeForDialog(url), "нет");
+  }
+}
+
+/** Mirrors the dialog's own check so the two cannot drift apart unnoticed. */
+const DIALOG_SAFE_URL = /^(?:https?:\/\/|\/|#|mailto:|tel:)/i;
+function safeForDialog(url: string): boolean {
+  return DIALOG_SAFE_URL.test(url);
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
@@ -1391,6 +1590,8 @@ async function main() {
   checkSettingsPrimitives();
   checkDzenExperiment();
   checkArticleLinks();
+  checkArticleSearch();
+  checkLinkDialog();
   checkVideoEmbedParams();
   checkVideoDropGuard();
   checkVkVideo();

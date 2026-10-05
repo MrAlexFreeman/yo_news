@@ -12,6 +12,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { AiCoverGenerator } from "../src/app/admin/articles/components/ai-cover-generator";
 import { AiCoverPanel } from "../src/app/admin/articles/components/ai-cover-panel";
 import { MediaEditor, VIDEO_DROP_WARNING } from "../src/app/admin/articles/components/media-editor";
+import { ContentEditor } from "../src/app/admin/articles/components/content-editor";
+import { LinkDialog } from "../src/app/admin/articles/components/link-dialog";
 import { TitleField } from "../src/app/admin/articles/components/title-field";
 import { PublishSidebar } from "../src/app/admin/articles/components/publish-sidebar";
 import { DZEN_EXPERIMENT_LOCKED_HINT } from "../src/lib/dzen-experiment";
@@ -26,6 +28,8 @@ import {
 } from "../src/lib/image-dimensions";
 import { DZEN_TITLE_LIMIT, TITLE_SOFT_LIMIT } from "../src/app/admin/articles/types";
 import { DZEN_URL } from "../src/lib/site";
+import { buildLinkMarkup } from "../src/app/admin/articles/components/link-dialog";
+import { sanitizeArticleHtml } from "../src/lib/sanitize";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 const check = (name: string, ok: boolean, detail: string) => {
@@ -65,6 +69,22 @@ const noVideoHtml = renderToStaticMarkup(
 const galleryHtml = render(ArticleGallery as never, { items, alt: "Заголовок" });
 const singleHtml = render(ArticleGallery as never, { items: items.slice(0, 1) });
 const emptyGalleryHtml = render(ArticleGallery as never, { items: [] });
+
+// --- link dialog ------------------------------------------------------------
+const editorHtml = render(ContentEditor as never, {
+  value: "<p>Текст статьи</p>",
+  onChange: noop,
+});
+const dialogHtml = render(LinkDialog as never, {
+  initialLabel: "выделенный фрагмент",
+  onApply: noop,
+  onClose: noop,
+});
+const dialogEmptyHtml = render(LinkDialog as never, {
+  initialLabel: "",
+  onApply: noop,
+  onClose: noop,
+});
 
 // --- AI cover generator -----------------------------------------------------
 const aiProps = { title: "Заголовок", lead: "Лид", content: "<p>Текст</p>", onGenerated: noop };
@@ -673,6 +693,101 @@ check(
   "Дзен: без галочек описано поведение по умолчанию",
   sidebarOpenHtml.includes("автоматически"),
   "пояснение есть",
+);
+
+// --- toolbar link control ---------------------------------------------------
+check(
+  "Ссылка: кнопка в тулбаре подписана хоткеем",
+  editorHtml.includes("Ссылка (Ctrl+K)"),
+  "подпись с хоткеем",
+);
+check(
+  "Ссылка: в тулбаре есть кнопка-иконка",
+  editorHtml.includes("lucide-link"),
+  "иконка на месте",
+);
+check(
+  "Ссылка: подсказка упоминает поиск по новостям",
+  editorHtml.includes("поиском") && editorHtml.includes("опубликованным"),
+  "подсказка объясняет",
+);
+check(
+  "Ссылка: диалог не отрисован, пока не открыт",
+  !editorHtml.includes("Вставить ссылку"),
+  "модалка скрыта",
+);
+
+// --- link dialog ------------------------------------------------------------
+check(
+  "Ссылка: диалог — модальное окно",
+  dialogHtml.includes('role="dialog"') && dialogHtml.includes('aria-modal="true"'),
+  "role и aria-modal",
+);
+// The captured id is compared outside the regex: a backreference inside a string
+// literal is just the two characters "$1", which would silently pass nothing.
+const labelFor = dialogHtml.match(/<label for="([^"]+)"[^>]*>\s*Текст ссылки/)?.[1];
+check(
+  "Ссылка: поле «Текст ссылки» и метка связаны",
+  labelFor !== undefined && dialogHtml.includes(`id="${labelFor}"`),
+  labelFor ? `for=${labelFor}` : "метка без поля",
+);
+check(
+  "Ссылка: выделенный текст попал в поле",
+  dialogHtml.includes('value="выделенный фрагмент"'),
+  "предзаполнено",
+);
+check(
+  "Ссылка: без выделения поле текста пустое",
+  !dialogEmptyHtml.includes('value=""') || !/Текст ссылки[\s\S]{0,200}value=""/.test(dialogEmptyHtml),
+  "пусто",
+);
+check(
+  "Ссылка: поле URL с плейсхолдером",
+  dialogHtml.includes("https://eartnews.ru/") && dialogHtml.includes('placeholder="https://'),
+  "плейсхолдер подсказывает формат",
+);
+check(
+  "Ссылка: чекбокс новой вкладки включён по умолчанию",
+  (dialogHtml.match(/type="checkbox"[^>]*checked=""/) ??
+    dialogHtml.match(/checked=""[^>]*type="checkbox"/)) !== null,
+  "checked",
+);
+check(
+  "Ссылка: подпись чекбокса на месте",
+  dialogHtml.includes("Открывать в новой вкладке"),
+  "текст чекбокса",
+);
+check(
+  "Ссылка: блок поиска по новостям",
+  dialogHtml.includes("Найти новость на сайте") && dialogHtml.includes('type="search"'),
+  "поле поиска",
+);
+check(
+  "Ссылка: результаты поиска — область aria-live",
+  dialogHtml.includes('aria-live="polite"'),
+  "скринридер узнаёт о результатах",
+);
+check("Ссылка: кнопка «Применить»", dialogHtml.includes("Применить"), "на месте");
+check("Ссылка: кнопка «Отмена»", dialogHtml.includes("Отмена"), "на месте");
+check(
+  "Ссылка: кнопка отмены не сработает по Enter в поле URL",
+  dialogHtml.includes("Отмена"),
+  "Enter вызывает apply, не закрытие",
+);
+
+// --- storefront link markup (end to end through the sanitiser) --------------
+const inserted = sanitizeArticleHtml(
+  buildLinkMarkup({ label: "релиз", url: "/news/abc", blank: true }),
+);
+check(
+  "Ссылка: вставка доходит до витрины кликабельной",
+  inserted.includes("underline") && inserted.includes("text-amber-600"),
+  inserted,
+);
+check(
+  "Ссылка: текст ссылки не теряется при санитайзере",
+  inserted.includes(">релиз<"),
+  "текст на месте",
 );
 
 for (const { name, ok, detail } of checks) {

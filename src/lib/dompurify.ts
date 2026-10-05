@@ -80,10 +80,10 @@ function absolutize(url: string, base: string): string {
  *
  * Forced rather than allowed through: the public page renders bodies inside a
  * `prose` container whose own link colour is easy to miss, and an editor pasting
- * a link needs it to look like a link without knowing that. `target="_blank"` is
- * what the editorial toolbar has always written, and `rel` is not optional there.
+ * a link needs it to look like a link without knowing that. Replaced wholesale, so
+ * a `class` pasted by hand cannot stack on top and leave it looking like body text.
  */
-export const ARTICLE_LINK_CLASS = "text-amber-600 underline";
+export const ARTICLE_LINK_CLASS = "text-amber-600 hover:text-amber-700 underline";
 
 /**
  * Article-page rules.
@@ -95,11 +95,17 @@ function applyArticlePolicy(node: unknown) {
   const element = node as Node;
 
   if (tagOf(node) === "a") {
-    // Replaced wholesale, so a `class` pasted by hand cannot stack on top and
-    // leave the link looking like ordinary text again.
     element.setAttribute?.("class", ARTICLE_LINK_CLASS);
-    element.setAttribute?.("target", "_blank");
-    element.setAttribute?.("rel", "noopener noreferrer");
+
+    // The target is a default, not an override. The link dialog has an "open in a
+    // new tab" checkbox and expresses "same tab" as target="_self" precisely so
+    // this default does not undo it — forcing _blank unconditionally would make
+    // the checkbox a decoration. `rel` travels with the target we set ourselves;
+    // an author's own rel is left alone.
+    if (!element.getAttribute?.("target")) {
+      element.setAttribute?.("target", "_blank");
+      element.setAttribute?.("rel", "noopener noreferrer");
+    }
     return;
   }
 
