@@ -3,47 +3,127 @@
  *
  * Deliberately free of credentials and of `server-only`, so the editorial test
  * suite can assert on them. What is here is content and an allowlist, not
- * configuration — and the server enforces both the style allowlist and the no-text
- * rules, so neither an editor nor a stale client can talk the image model into
- * rendering lettering on a card that Dzen will then refuse.
+ * configuration — and the server enforces the style allowlist and strips
+ * lettering-triggering words, so neither an editor nor a stale client can talk the
+ * image model into drawing a caption on a card that Dzen will then refuse.
  */
 
 /**
  * Appended by us to every prompt immediately before it goes to FLUX.
  *
- * Applied in code rather than asked of DeepSeek. An earlier version ended with
- * "End with exactly this, unmodified" in the user message, which relies on a text
- * model obeying an instruction about its own output — and when it does not, the
- * no-text rule silently disappears and Dzen later rejects the card. A suffix this
- * module appends cannot be forgotten by a model, dropped by a rewrite of the
- * prompt, or lost when the editor's own words are used.
+ * Positive descriptors only, and that is the whole point of the rewrite. The
+ * previous version ended with "strictly no text, no letters, no watermark, no
+ * typography" — and FLUX has no mechanism for negation. A diffusion model matches
+ * the tokens it is given; naming a thing it should not draw is a reliable way to
+ * get it drawn. Every version of this suffix that listed forbidden objects made the
+ * problem worse, and the editors saw exactly that: gibberish lettering on shop
+ * signs and plaques in covers that were otherwise fine.
  *
- * Style-neutral on purpose. The previous version opened with "editorial
- * photography", which fought the three non-photographic styles: asking for an oil
- * painting and then appending "editorial photography, 8k" gave FLUX two
- * conflicting instructions and the picture came out halfway between them. The look
- * now comes solely from the chosen style directive.
+ * So nothing here is a prohibition. The no-text guarantee is carried by two other
+ * means, neither of which puts a forbidden noun in front of FLUX:
  *
- * The negative half is the load-bearing part: text-to-image models reliably put
- * captions, watermarks and logos into generated images, and Dzen rejects an image
- * with rendered text on it. `16:9` is stated here because FLUX is given explicit
- * pixel dimensions anyway, but repeating the ratio in the prompt keeps the framing
- * right if a model crops.
+ *   1. the DeepSeek system prompt, which tells the *text* model to avoid such
+ *      subjects and to compose around them — negations are fine there, because
+ *      DeepSeek reads instructions rather than matching tokens;
+ *   2. {@link sanitizeFluxPrompt}, which removes the trigger nouns from the final
+ *      English prompt in code.
+ *
+ * What is left in the suffix is what actually helps: a shallow depth of field so
+ * the background is out of focus and has nothing legible to carry, bokeh instead of
+ * detail, and a clean frame.
  */
 export const FLUX_POSTFIX =
-  "clean composition, strictly no text, no letters, no watermark, no typography, 16:9 aspect ratio";
+  "shallow depth of field, heavily blurred background, soft cinematic bokeh, minimalist clean composition, 35mm photograph, 16:9";
 
 /**
  * Appends {@link FLUX_POSTFIX}, unless it is already the tail.
  *
- * Idempotent because DeepSeek sometimes ends its answer with wording close enough
- * to the postfix to be worth not repeating, and a doubled suffix is noise in the
- * prompt the editor is shown.
+ * Idempotent so a repeated call cannot stack the suffix twice in the prompt the
+ * editor is shown.
  */
 export function applyFluxPostfix(prompt: string): string {
   const trimmed = prompt.trim();
   if (!trimmed) return trimmed;
   return trimmed.endsWith(FLUX_POSTFIX) ? trimmed : `${trimmed}, ${FLUX_POSTFIX}`;
+}
+
+/**
+ * Subjects that reliably come back covered in fake lettering.
+ *
+ * Split by what they replace with, because the substitution has to keep the
+ * sentence readable: FLUX reads the prompt as a description, and "a facade in the
+ * background" describes something, whereas deleting the noun outright leaves "a  in
+ * the background" and reads as noise.
+ */
+const FACADE_TRIGGERS =
+  /\b(?:signs?|signage|billboards?|banners?|posters?|placards?|plaques?|notices?|nameplates?|storefronts?|shopfronts?)\b/gi;
+
+/**
+ * Two-word forms matched before their single-word parts, so the qualifier does not
+ * survive its head noun: without this, "road sign" became "road facade" and the
+ * leftover word still points FLUX at a road.
+ */
+const ROAD_SIGN_TRIGGERS = /\b(?:road signs?|street signs?|traffic signs?)\b/gi;
+
+/** Written-on objects: the substitute says "plain", which is the whole point. */
+const SURFACE_TRIGGERS =
+  /\b(?:badges?|labels?|licence plates?|license plates?)\b/gi;
+
+/** Documents and displays, which become a featureless surface. */
+const BLANK_TRIGGERS =
+  /\b(?:newspapers?|documents?|sheets? of paper|papers?|screens?)\b/gi;
+
+/**
+ * Bare references to lettering, not to a physical object.
+ *
+ * An addition to the newsroom's list, and the reason the list alone is not enough:
+ * swapping "sign" for "facade" turns "a sign reading SALE" into "a facade reading
+ * SALE", still a request for writing. Stripping the word that asks for characters
+ * closes that path. Word boundaries keep "texture", "textile" and "context" intact.
+ */
+const WORDING_TRIGGERS =
+  /\b(?:text|texts|letters?|lettering|words?|wording|typography|inscriptions?|captions?|glyphs?)\b/gi;
+
+/**
+ * Runs of capital letters: the attempt at lettering itself.
+ *
+ * Also an addition, and it closes the gap the substitution leaves. Removing the noun
+ * does not remove what the model wrote on it — "sign reading SALE" survives as
+ * "facade reading SALE", and SALE is a request for three characters rendered in
+ * concrete. Image prompts are otherwise lower case, so an all-caps run carries no
+ * descriptive information and only tells FLUX to draw a word.
+ *
+ * The verb left dangling afterwards ("a facade reading") is not tidied up on
+ * purpose: FLUX matches tokens rather than parsing grammar, and removing it would
+ * also eat legitimate verbs like "POLICE" used as a noun.
+ */
+const CAPS_LETTERING = /\b[A-Z]{2,}\b/g;
+
+/**
+ * Removes the words that make FLUX draw lettering, from the final prompt.
+ *
+ * Run on the assembled prompt — postfix included — rather than on the text model's
+ * output alone, so what FLUX receives is provably free of the triggers and the
+ * guarantee does not depend on the postfix happening to be clean.
+ *
+ * The replacement is neutral vocabulary, not deletion, for the reason above: a
+ * prompt that still describes a scene beats one with holes in its grammar.
+ */
+export function sanitizeFluxPrompt(prompt: string): string {
+  return prompt
+    .replace(ROAD_SIGN_TRIGGERS, "facade")
+    .replace(FACADE_TRIGGERS, "facade")
+    .replace(SURFACE_TRIGGERS, "plain surface")
+    .replace(BLANK_TRIGGERS, "blank surface")
+    .replace(WORDING_TRIGGERS, "")
+    .replace(CAPS_LETTERING, "")
+    // Tidy what the substitutions leave behind: doubled spaces, a space before a
+    // comma or a full stop, and an empty pair of commas.
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/,\s*,/g, ",")
+    .replace(/\(\s*\)/g, "")
+    .trim();
 }
 
 /** The four looks a cover may be generated in. */
@@ -124,14 +204,19 @@ export function styleDirective(value: unknown): string {
 /**
  * The system prompt for DeepSeek, for one chosen style.
  *
- * A function rather than a constant because the style directive has to be named
- * explicitly. Relying on DeepSeek to infer the look from the story is what made the
- * old prompt drift: it asked for "photorealistic" in the preamble and then appended
- * a suffix, and nothing tied the two together.
+ * Rewritten around a measured failure: covers kept coming back with fake lettering
+ * on shop signs, plaques and notices. The cause was asking for it twice — once here
+ * and once in the suffix appended to FLUX — because diffusion models have no notion
+ * of negation, so every forbidden noun was also a subject to draw.
  *
- * Deliberately blunt about text, and blunt twice over — here and in the postfix we
- * append — because a news story invites exactly the signage, headlines and document
- * text that Dzen refuses on the finished card.
+ * The negative rules therefore live *here* and nowhere else. DeepSeek reads
+ * instructions, so "do not include signs" costs nothing when written to it; the same
+ * sentence handed to FLUX would be a request. What reaches FLUX is positive
+ * description plus {@link sanitizeFluxPrompt}.
+ *
+ * The composition rules do the real work. Telling the model to frame a court as
+ * "a courthouse" is what produces a building with a plaque; telling it to use a
+ * gavel in close-up, or an empty bench, produces an image with nothing to write on.
  *
  * Lives here rather than in ai-cover.ts so the test suite can assert on it: that
  * module is `server-only` and cannot be imported by a plain tsx script.
@@ -140,21 +225,21 @@ export function buildDeepseekSystemPrompt(value: unknown): string {
   const style = resolveCoverStyle(value);
 
   return [
-    "You are an expert prompt engineer for the FLUX image generation model.",
-    "Your task is to generate a single detailed English prompt for an editorial cover based on the news title, lead, optional editor hint, and the chosen visual STYLE.",
+    "You generate prompts for the FLUX image model.",
+    "IMPORTANT LESSON: FLUX cannot render text and tries to write gibberish on any sign, board, plaque, or storefront.",
     "",
     "STYLE DIRECTIVES:",
-    ...COVER_STYLES.map(
-      (entry) => `- ${entry.value}: "${entry.directive}".`,
-    ),
+    ...COVER_STYLES.map((entry) => `- ${entry.value}: "${entry.directive}".`),
+    `Use the "${style}" style, and no other.`,
     "",
-    `The chosen STYLE is "${style}". Write the prompt in that style, and no other.`,
-    "",
-    "CRITICAL NEGATIVE RULES (STRICT):",
-    "- ABSOLUTELY NO TEXT, NO LETTERS, NO WORDS, NO WATERMARKS, NO RUSSIAN OR ENGLISH CHARACTERS, NO LABELS, NO TYPOGRAPHY.",
-    "- Avoid signage, newspapers, screens, road sign text, banners, and logos.",
-    "- Combine the news context with the editor's hint (if provided, treat hint as the visual focus).",
-    "- Return ONLY the raw English prompt string, without quotes or markdown formatting.",
+    "MANDATORY COMPOSITION RULES:",
+    "1. DO NOT include any signs, nameplates, road signs, building signs, store signs, notices, papers, badges, or screens.",
+    "2. DO NOT frame scenes around building facades with storefronts.",
+    "3. ALWAYS use cinematic photography techniques to prevent sharp background details:",
+    '   - "shallow depth of field, f/1.8 aperture, blurry out-of-focus background, bokeh"',
+    "   - Focus on close-up details, objects, hands, vehicles from angles where plates are hidden, nature, silhouettes, or atmospheric environment.",
+    "4. Focus on capturing the MOOD and METAPHOR of the news rather than literal institutions. (e.g., for court: gavel close-up or empty wooden bench; for city hall: architectural columns without plaques; for traffic: blurred headlights in rain).",
+    "5. Output ONLY the English prompt string, without any preamble or quotes.",
   ].join("\n");
 }
 

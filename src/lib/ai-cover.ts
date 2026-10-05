@@ -7,6 +7,7 @@ import {
   COVER_WIDTH,
   applyFluxPostfix,
   buildDeepseekSystemPrompt,
+  sanitizeFluxPrompt,
   resolveCoverStyle,
   type CoverStyle,
 } from "@/lib/cover-prompt";
@@ -201,19 +202,22 @@ export async function buildPhotoPrompt(source: {
 /**
  * Renders the image and returns its raw bytes plus the prompt actually sent.
  *
- * The style postfix is applied here rather than at the call site because this is
- * the last point before FLUX: anywhere earlier, a future caller could reasonably
- * decide it had already handled the style and skip it. The returned prompt is the
- * post-fixed one so the log line and the editor-facing preview both show what the
- * image model was really given, postfix included.
+ * Both transformations happen here, in this order, because this is the last point
+ * before FLUX. The suffix is appended first and the lettering triggers are stripped
+ * second, so the guarantee cannot be quietly voided by editing the suffix into
+ * something that trips the filter. Doing it here rather than at the call site means
+ * a future caller cannot reasonably decide it had already handled either step.
  *
- * FLUX-1-schnell answers with base64 PNG. The format is whatever the upstream
- * sends — the caller decides what to store after inspecting the bytes.
+ * The returned prompt is the sanitised one, so the log line and the editor-facing
+ * preview both show what the image model was really given.
+ *
+ * FLUX-1-schnell answers with base64 PNG. The format is whatever the upstream sends
+ * — the caller decides what to store after inspecting the bytes.
  */
 export async function renderCover(prompt: string): Promise<{ bytes: Buffer; prompt: string }> {
   const apiKey = await requireKey("DEEPINFRA_API_KEY");
 
-  const finalPrompt = applyFluxPostfix(prompt);
+  const finalPrompt = sanitizeFluxPrompt(applyFluxPostfix(prompt));
 
   const response = await fetch(DEEPINFRA_URL, {
     method: "POST",

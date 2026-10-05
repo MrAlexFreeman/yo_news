@@ -30,6 +30,7 @@ import {
   isCoverStyle,
   pickHint,
   resolveCoverStyle,
+  sanitizeFluxPrompt,
   styleDirective,
 } from "../src/lib/cover-prompt";
 import { detectImageFormat, extractImageBytes } from "../src/lib/deepinfra-response";
@@ -466,16 +467,24 @@ function checkArticleMedia() {
  * image is the difference between "cover generated" and an empty article.
  */
 function checkAiCover() {
-  // The postfix is appended in code, so it has to be right regardless of what a
-  // text model decides to write: Dzen refuses a card whose image carries rendered
-  // text, which is the failure the whole negative half exists to prevent.
+  /**
+   * The suffix must contain no forbidden noun at all.
+   *
+   * This is the assertion that replaced an older one which required the suffix to
+   * *say* "strictly no text". FLUX has no mechanism for negation: a diffusion model
+   * matches the tokens it is handed, so naming a thing it should not draw is a
+   * reliable way to get it drawn — and the covers came back with gibberish on shop
+   * signs, which is exactly what the old suffix asked for. So the rule inverted:
+   * the suffix must be free of those words, and the ban lives in the DeepSeek
+   * prompt and in sanitizeFluxPrompt instead.
+   */
+  const FORBIDDEN_IN_SUFFIX =
+    /\b(?:no|without|avoid|never)\b[^,]*(?:text|texts|letters?|lettering|words?|wording|typography|inscriptions?|captions?|signs?|signage|billboards?|banners?|posters?|placards?|plaques?|storefronts?|shopfronts?|badges?|labels?|newspapers?|documents?|screens?|watermark|logos?)\b/i;
+
   check(
-    "Генератор: постфикс запрещает текст и буквы",
-    FLUX_POSTFIX.includes("strictly no text") &&
-      FLUX_POSTFIX.includes("no letters") &&
-      FLUX_POSTFIX.includes("no watermark") &&
-      FLUX_POSTFIX.includes("no typography"),
-    "brief на месте",
+    "Генератор: постфикс не содержит запретов",
+    !FORBIDDEN_IN_SUFFIX.test(FLUX_POSTFIX),
+    FORBIDDEN_IN_SUFFIX.test(FLUX_POSTFIX) ? "найден запрет" : "только позитивные описания",
   );
 
   // The exact string the spec fixes: FLUX is given this verbatim, and a typo here
@@ -483,26 +492,24 @@ function checkAiCover() {
   check(
     "Генератор: постфикс совпадает со спецификацией",
     applyFluxPostfix("scene") ===
-      "scene, clean composition, strictly no text, no letters, no watermark, no typography, 16:9 aspect ratio",
+      "scene, shallow depth of field, heavily blurred background, soft cinematic bokeh, minimalist clean composition, 35mm photograph, 16:9",
     applyFluxPostfix("scene"),
   );
 
-  // The postfix must stay style-neutral. It used to open with "editorial
-  // photography", which contradicted the illustration, sketch and painting styles:
-  // FLUX was told to paint in oils and, in the same breath, to shoot on film.
+  // Depth of field is the load-bearing half now: an out-of-focus background has
+  // nothing legible to carry lettering, which is a positive way to get the result
+  // the old negation was reaching for.
   check(
-    "Генератор: постфикс не навязывает стиль",
-    !FLUX_POSTFIX.includes("editorial photography") &&
-      !FLUX_POSTFIX.includes("8k") &&
-      !FLUX_POSTFIX.includes("photograph") &&
-      !FLUX_POSTFIX.includes("oil") &&
-      !FLUX_POSTFIX.includes("sketch"),
-    "стиль приходит только из директивы",
+    "Генератор: постфикс размывает фон",
+    FLUX_POSTFIX.includes("shallow depth of field") &&
+      FLUX_POSTFIX.includes("heavily blurred background") &&
+      FLUX_POSTFIX.includes("bokeh"),
+    "глубина резкости и боке",
   );
 
   check(
     "Генератор: постфикс сохраняет кадр 16:9",
-    FLUX_POSTFIX.includes("16:9 aspect ratio"),
+    FLUX_POSTFIX.includes("16:9"),
     "соотношение задано",
   );
 
@@ -518,6 +525,81 @@ function checkAiCover() {
     "Генератор: постфикс не добавляется к пустому промпту",
     applyFluxPostfix("   ") === "",
     "пусто не превращается в запятую",
+  );
+
+  // --- sanitising what FLUX is handed ---------------------------------------
+  //
+  // Covers came back with fake lettering, so this asserts on the sentences that
+  // used to produce it, and just as importantly on the ones that must survive: a
+  // filter that eats "documentary" or "texture" would quietly damage every good
+  // prompt while still passing a check that only looked for the bad words.
+  const mustStrip: [string, string[]][] = [
+    ["A shop sign reading SALE hangs above a busy street", ["sign", "SALE"]],
+    ["newsstand with newspapers and a poster on the wall", ["poster", "newspaper"]],
+    ["road sign at the intersection, blurred headlights", ["sign"]],
+    ["an office with a nameplate and a badge on the desk", ["nameplate", "badge"]],
+    ["phone screen showing a map", ["screen"]],
+    ["a licence plate in sharp focus", ["licence plate"]],
+    ["woman's hand holding a document", ["document"]],
+    ["notices pasted on the wall", ["notices"]],
+    ["a wooden plaque in the hall", ["plaque"]],
+    ["banner across the street", ["banner"]],
+    ["storefront shutters closed at dawn", ["storefront"]],
+    ["shopfront at night", ["shopfront"]],
+    ["a placard on the gate", ["placard"]],
+    ["billboard above the highway", ["billboard"]],
+    ["street signage reflected in the puddle", ["signage"]],
+    ["a label on the jar", ["label"]],
+    ["gibberish lettering on the wall", ["lettering"]],
+    ["typography in the corner", ["typography"]],
+  ];
+
+  for (const [input, gone] of mustStrip) {
+    const out = sanitizeFluxPrompt(input);
+    const leaked = gone.filter(
+      (word) => new RegExp(`\\b${word}\\b`, "i").test(out),
+    );
+    check(
+      `Генератор: «${input}» — триггеры вырезаны`,
+      leaked.length === 0,
+      leaked.length === 0 ? out : `осталось: ${leaked.join(", ")}`,
+    );
+  }
+
+  const mustSurvive = [
+    "close-up of a wooden gavel, shallow depth of field",
+    "documentary news photography of an empty courtroom",
+    "textured canvas, context of the report, textile factory at dusk",
+    "wooden boardwalk leading to the sea",
+    "empty wooden bench, soft bokeh background",
+    "witness taking notes in a dim hearing room",
+    "silhouettes of pedestrians under an overcast sky",
+  ];
+
+  for (const input of mustSurvive) {
+    check(
+      `Генератор: «${input.slice(0, 28)}…» — не пострадал`,
+      sanitizeFluxPrompt(input) === input,
+      sanitizeFluxPrompt(input),
+    );
+  }
+
+  // Grammar left behind by a substitution is tidied up: a doubled space, a space
+  // before a comma, or an empty bracket would all read as noise to the model.
+  check(
+    "Генератор: после замены не остаётся мусорных пробелов",
+    !sanitizeFluxPrompt("a  sign ,  in  the   street").includes("  ") &&
+      !/\s,/.test(sanitizeFluxPrompt("a sign , in the street")),
+    sanitizeFluxPrompt("a sign , in the street"),
+  );
+
+  // The whole pipeline, in the order renderCover uses it: suffix first, then the
+  // filter, so the suffix is covered too.
+  const assembled = sanitizeFluxPrompt(applyFluxPostfix("a sign reading OPEN"));
+  check(
+    "Генератор: постфикс проходит через фильтр, а не мимо него",
+    !/\bsign\b/i.test(assembled) && !assembled.includes("OPEN"),
+    assembled,
   );
 
   // --- the style allowlist --------------------------------------------------
@@ -581,7 +663,8 @@ function checkAiCover() {
     const prompt = buildDeepseekSystemPrompt(style);
     check(
       `Промпт: стиль «${style}» назван и разрешён`,
-      prompt.includes(`The chosen STYLE is "${style}".`) && prompt.includes(styleDirective(style)),
+      prompt.includes(`Use the "${style}" style, and no other.`) &&
+        prompt.includes(styleDirective(style)),
       "директива вставлена",
     );
     check(
@@ -589,21 +672,44 @@ function checkAiCover() {
       COVER_STYLES.every((s) => prompt.includes(s.directive)),
       "справочник целиком",
     );
+    // The lesson is what makes the composition rules land: DeepSeek has to be told
+    // why "no signs" is not achievable as an instruction to the image model.
     check(
-      `Промпт: «${style}» — запрет текста на месте`,
+      `Промпт: «${style}» — урок про FLUX на месте`,
       prompt.includes(
-        "ABSOLUTELY NO TEXT, NO LETTERS, NO WORDS, NO WATERMARKS, NO RUSSIAN OR ENGLISH CHARACTERS, NO LABELS, NO TYPOGRAPHY.",
-      ) && prompt.includes("Avoid signage, newspapers, screens, road sign text, banners, and logos."),
-      "негативные правила на месте",
+        "IMPORTANT LESSON: FLUX cannot render text and tries to write gibberish on any sign, board, plaque, or storefront.",
+      ),
+      "объяснение причины",
     );
     check(
-      `Промпт: «${style}» — подсказка как визуальный фокус`,
-      prompt.includes("treat hint as the visual focus"),
-      "указано",
+      `Промпт: «${style}» — запрет вывесок на месте`,
+      prompt.includes(
+        "1. DO NOT include any signs, nameplates, road signs, building signs, store signs, notices, papers, badges, or screens.",
+      ) &&
+        prompt.includes(
+          "2. DO NOT frame scenes around building facades with storefronts.",
+        ),
+      "правила 1 и 2",
+    );
+    // The positive half. This is what actually changes the picture: an out-of-focus
+    // background has nothing legible on it to put letters.
+    check(
+      `Промпт: «${style}» — приём размытия задан`,
+      prompt.includes(
+        'shallow depth of field, f/1.8 aperture, blurry out-of-focus background, bokeh',
+      ),
+      "правило 3",
+    );
+    check(
+      `Промпт: «${style}» — настроение вместо учреждения`,
+      prompt.includes(
+        "4. Focus on capturing the MOOD and METAPHOR of the news rather than literal institutions.",
+      ) && prompt.includes("gavel close-up or empty wooden bench"),
+      "правило 4 с примерами",
     );
     check(
       `Промпт: «${style}» — только голая строка`,
-      prompt.includes("Return ONLY the raw English prompt string, without quotes or markdown formatting."),
+      prompt.includes("5. Output ONLY the English prompt string, without any preamble or quotes."),
       "формат вывода задан",
     );
   }
@@ -613,7 +719,9 @@ function checkAiCover() {
   check(
     "Промпт: чужой стиль не попадает в текст",
     !hostilePrompt.includes("НОВОСТИ") && !hostilePrompt.includes("ignore all previous"),
-    hostilePrompt.includes('The chosen STYLE is "realistic".') ? "подставлен realistic" : "подстановка сломана",
+    hostilePrompt.includes('Use the "realistic" style, and no other.')
+      ? "подставлен realistic"
+      : "подстановка сломана",
   );
 
   // --- the hint field, including the pre-style-picker alias ----------------
