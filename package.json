@@ -23,8 +23,9 @@
     "checks:security": "tsx --env-file=.env scripts/check-security.ts",
     "settings:check": "tsx --env-file=.env scripts/check-settings-live.ts",
     "dzen:check": "tsx --env-file=.env scripts/check-dzen-rule-live.ts",
+    "multipart:check": "tsx scripts/check-multipart.ts",
     "ui:check": "tsx --env-file=.env scripts/check-editor-ui.ts",
-    "check": "npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run ui:check",
+    "check": "npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run ui:check && npm run multipart:check",
     "postinstall": "prisma generate"
   },
   "dependencies": {

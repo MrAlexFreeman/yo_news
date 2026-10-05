@@ -19,40 +19,71 @@ export const runtime = "nodejs";
 
 const TIMEOUT_MS = 15_000;
 
-type Provider = "deepseek" | "deepinfra";
+type Provider = "deepseek" | "deepinfra" | "vk";
 
 /**
- * Key → { env name, free validation endpoint }.
+ * Key → { setting, free validation endpoint }.
  *
  * `user/balance` for DeepSeek returns account credit and fails with 401 for a bad
  * key. `v1/models` is DeepInfra's OpenAI-compatible listing, which authenticates
- * the token and lists no billable work.
+ * the token and lists no billable work. `users.get` with `fields=screen_name`
+ * is VK's cheapest authenticated call — it returns the token holder's name and
+ * costs nothing.
+ *
+ * All three report success through a 2xx rather than through a body shape, so a
+ * provider changing its payload cannot turn a working key into a red field.
  */
-const ENDPOINTS: Record<Provider, { setting: "DEEPSEEK_API_KEY" | "DEEPINFRA_API_KEY"; url: string }> = {
+const ENDPOINTS: Record<
+  Provider,
+  { setting: "DEEPSEEK_API_KEY" | "DEEPINFRA_API_KEY" | "VK_ACCESS_TOKEN"; url: (token: string) => string }
+> = {
   deepseek: {
     setting: "DEEPSEEK_API_KEY",
-    url: "https://api.deepseek.com/user/balance",
+    url: () => "https://api.deepseek.com/user/balance",
   },
   deepinfra: {
     setting: "DEEPINFRA_API_KEY",
-    url: "https://api.deepinfra.com/v1/models",
+    url: () => "https://api.deepinfra.com/v1/models",
   },
+  vk: {
+    setting: "VK_ACCESS_TOKEN",
+    url: (token) =>
+      `https://api.vk.com/method/users.get?fields=screen_name&v=5.199&access_token=${encodeURIComponent(token)}`,
+  },
+};
+
+const SUCCESS_MESSAGE: Record<Provider, string> = {
+  deepseek: "Ключ принят, DeepSeek отвечает.",
+  deepinfra: "Ключ принят, DeepInfra отвечает.",
+  vk: "Токен принят, ВК отвечает.",
 };
 
 function isJsonRequest(request: Request): boolean {
   return request.headers.get("content-type")?.split(";")[0].trim() === "application/json";
 }
 
+/**
+ * VK answers 200 even for a rejected token, with an `error` object in the body.
+ * A status-only check would therefore report a dead token as working, which is
+ * the one outcome this button exists to prevent.
+ */
+async function vkErrorInBody(response: Response): Promise<string | null> {
+  if (!response.headers.get("content-type")?.includes("json")) return null;
+
+  const payload = (await response.json().catch(() => null)) as
+    | { error?: { error_code?: number; error_msg?: string } }
+    | null;
+
+  if (!payload?.error) return null;
+  return `ВК отклонил токен: ${payload.error.error_msg ?? "неизвестная ошибка"} (${
+    payload.error.error_code ?? "?"
+  })`;
+}
+
 /** Turns a status into an outcome the form can render as a sentence. */
 function interpret(provider: Provider, status: number): { ok: boolean; message: string } {
   if (status === 200) {
-    return {
-      ok: true,
-      message:
-        provider === "deepseek"
-          ? "Ключ принят, DeepSeek отвечает."
-          : "Ключ принят, DeepInfra отвечает.",
-    };
+    return { ok: true, message: SUCCESS_MESSAGE[provider] };
   }
   if (status === 401 || status === 403) {
     return { ok: false, message: "Ключ отклонён провайдером — проверьте его целиком." };
@@ -82,9 +113,9 @@ export async function POST(request: Request) {
   }
 
   const provider = body.provider as Provider;
-  if (provider !== "deepseek" && provider !== "deepinfra") {
+  if (provider !== "deepseek" && provider !== "deepinfra" && provider !== "vk") {
     return NextResponse.json(
-      { error: "Неизвестный провайдер: ожидается deepseek или deepinfra." },
+      { error: "Неизвестный провайдер: ожидается deepseek, deepinfra или vk." },
       { status: 400 },
     );
   }
@@ -104,12 +135,28 @@ export async function POST(request: Request) {
   const { url } = ENDPOINTS[provider];
 
   try {
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    // VK carries the token in the query string, so it must not also be sent as a
+    // bearer header it does not read.
+    const response =
+      provider === "vk"
+        ? await fetch(url(key), { signal: AbortSignal.timeout(TIMEOUT_MS) })
+        : await fetch(url(key), {
+            headers: { Authorization: `Bearer ${key}` },
+            signal: AbortSignal.timeout(TIMEOUT_MS),
+          });
 
     const outcome = interpret(provider, response.status);
+
+    if (provider === "vk" && outcome.ok) {
+      const bodyError = await vkErrorInBody(response);
+      if (bodyError) {
+        return NextResponse.json(
+          { ok: false, message: bodyError, status: 200 },
+          { status: 200 },
+        );
+      }
+    }
+
     return NextResponse.json({ ...outcome, status: response.status }, { status: 200 });
   } catch (error) {
     // A timeout or DNS failure means the key is not what is wrong; saying so is

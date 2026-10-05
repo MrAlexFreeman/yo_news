@@ -14,8 +14,17 @@
  * settings endpoint that accepted an arbitrary `key` would expose every secret
  * the process holds. Adding a setting means adding it here too, which is the
  * reviewable step.
+ *
+ * `VK_ACCESS_TOKEN` joined the list when VK video upload landed. It shares the
+ * read path with the wall reposter, so an editor changing it here affects both —
+ * which is the point, and the reason the reposter reads through `getSetting`
+ * rather than `process.env` (see lib/vk-publisher.ts).
  */
-export const ALLOWED_KEYS = ["DEEPSEEK_API_KEY", "DEEPINFRA_API_KEY"] as const;
+export const ALLOWED_KEYS = [
+  "DEEPSEEK_API_KEY",
+  "DEEPINFRA_API_KEY",
+  "VK_ACCESS_TOKEN",
+] as const;
 
 export type SettingKey = (typeof ALLOWED_KEYS)[number];
 
@@ -26,6 +35,7 @@ export type SettingSource = "database" | "environment" | "unset";
 export const FIELD_BY_NAME: Record<string, SettingKey> = {
   deepseekApiKey: "DEEPSEEK_API_KEY",
   deepinfraApiKey: "DEEPINFRA_API_KEY",
+  vkAccessToken: "VK_ACCESS_TOKEN",
 };
 
 export function isAllowedKey(key: string): key is SettingKey {

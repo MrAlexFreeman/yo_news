@@ -22,7 +22,18 @@ import {
 import { detectImageFormat, extractImageBytes } from "../src/lib/deepinfra-response";
 import { looksLikeVideo } from "../src/app/admin/articles/components/media-editor";
 import {
+  VkVideoError,
+  assertVkUploadUrl,
+  buildEditFields,
+  buildUploadName,
+  extractUploadUrl,
+  extractVideoIds,
+  parseVideoIdsFromUrl,
+  publicVideoUrl,
+} from "../src/lib/vk-video-format";
+import {
   ALLOWED_KEYS,
+  FIELD_BY_NAME,
   isAllowedKey,
   maskSecret,
 } from "../src/lib/settings-keys";
@@ -782,11 +793,29 @@ function checkSettingsPrimitives() {
   );
 
   check(
-    "Настройки: allowlist непустой и без посторонних ключей",
-    ALLOWED_KEYS.length === 2 &&
+    "Настройки: allowlist содержит три ключа",
+    ALLOWED_KEYS.length === 3 &&
       isAllowedKey("DEEPSEEK_API_KEY") &&
-      isAllowedKey("DEEPINFRA_API_KEY"),
+      isAllowedKey("DEEPINFRA_API_KEY") &&
+      isAllowedKey("VK_ACCESS_TOKEN"),
     ALLOWED_KEYS.join(", "),
+  );
+
+  // The field name is the whole authorisation surface of the settings POST, so
+  // an unmapped one means the UI saves nothing and reports success.
+  check(
+    "Настройки: поле vkAccessToken отображается в VK_ACCESS_TOKEN",
+    FIELD_BY_NAME.vkAccessToken === "VK_ACCESS_TOKEN" &&
+      isAllowedKey(FIELD_BY_NAME.vkAccessToken),
+    "проводка на месте",
+  );
+
+  check(
+    "Настройки: у каждого разрешённого ключа есть имя поля",
+    ALLOWED_KEYS.every((key) =>
+      Object.values(FIELD_BY_NAME).includes(key),
+    ),
+    `${Object.keys(FIELD_BY_NAME).length} полей на ${ALLOWED_KEYS.length} ключей`,
   );
 
   // The critical negative: ADMIN_PASSWORD and DATABASE_URL must not be
@@ -795,7 +824,7 @@ function checkSettingsPrimitives() {
     "ADMIN_PASSWORD",
     "ADMIN_USER",
     "DATABASE_URL",
-    "VK_ACCESS_TOKEN",
+    "VK_COMMUNITY_ID",
     "NEXT_PUBLIC_SITE_URL",
     "UPLOAD_DIR",
   ]) {
@@ -1188,6 +1217,170 @@ function checkVideoDropGuard() {
   );
 }
 
+/**
+ * VK video upload: the parts that decide whether the server would send an
+ * editor's file somewhere it must not, plus the name and description applied at
+ * publish time.
+ */
+function checkVkVideo() {
+  // The upload address comes back from the API and is where the bytes go. It is
+  // the SSRF boundary: without this check anyone able to influence the response
+  // could make the server stream an uploaded video to an arbitrary address.
+  const good = [
+    "https://vk.com/upload.php?act=do_add&mid=1",
+    "https://www.vk.com/upload.php",
+    "https://api.vk.com/upload.php",
+    "https://sun9.com/upload.php",
+    "https://userapi.com/upload.php",
+  ];
+  for (const url of good) {
+    let ok = false;
+    try {
+      ok = assertVkUploadUrl(url).hostname.length > 0;
+    } catch {
+      ok = false;
+    }
+    check(`ВК: свой host принят — ${new URL(url).hostname}`, ok, "разрешён");
+  }
+
+  const hostile = [
+    "http://vk.com/upload.php",           // http, not https
+    "https://evil.example.com/upload.php", // off-platform
+    "https://vk.com.evil.example.com/x",  // suffix trick
+    "https://evilvk.com/x",
+    "https://169.254.169.254/latest/meta-data/", // cloud metadata
+    "https://localhost:8080/x",
+    "file:///etc/passwd",
+    "https://127.0.0.1/x",
+  ];
+  for (const url of hostile) {
+    let rejected = false;
+    try {
+      assertVkUploadUrl(url);
+    } catch (error) {
+      rejected = error instanceof VkVideoError;
+    }
+    check(`ВК: адрес отклонён — ${url}`, rejected, "отклонён");
+  }
+
+  for (const bad of [null, undefined, "", 42, {}]) {
+    let rejected = false;
+    try {
+      assertVkUploadUrl(bad);
+    } catch (error) {
+      rejected = error instanceof VkVideoError;
+    }
+    check(`ВК: не-строка отклонена (${JSON.stringify(bad ?? null)})`, rejected, "отклонено");
+  }
+
+  // --- response shape tolerance --------------------------------------------
+  check(
+    "ВК: upload_url на верхнем уровне",
+    extractUploadUrl({ upload_url: "https://vk.com/u.php" }) === "https://vk.com/u.php",
+    "найден",
+  );
+  check(
+    "ВК: upload_url вложен в video",
+    extractUploadUrl({ video: { upload_url: "https://vk.com/u.php" } }) ===
+      "https://vk.com/u.php",
+    "найден",
+  );
+  for (const bad of [{ upload_url: "" }, { video: {} }, {}, null, 1, "text"]) {
+    check(
+      `ВК: upload_url не выдумывается (${JSON.stringify(bad)})`,
+      extractUploadUrl(bad) === null,
+      "null",
+    );
+  }
+
+  check(
+    "ВК: ids читаются из video",
+    JSON.stringify(
+      extractVideoIds({ video: { video_id: 678901, owner_id: -241944021 } }),
+    ) === JSON.stringify({ videoId: "678901", ownerId: "-241944021" }),
+    "прочитаны",
+  );
+  check(
+    "ВК: ids читаются с верхнего уровня",
+    JSON.stringify(extractVideoIds({ video_id: 1, owner_id: -2 })) ===
+      JSON.stringify({ videoId: "1", ownerId: "-2" }),
+    "прочитаны",
+  );
+  check("ВК: без ids возвращается null", extractVideoIds({}) === null, "null");
+
+  check(
+    "ВК: публичная ссылка сообщества",
+    publicVideoUrl("-241944021", "678901") === "https://vk.com/video-241944021_678901",
+    publicVideoUrl("-241944021", "678901"),
+  );
+  check(
+    "ВК: положительный owner_id получает минус",
+    publicVideoUrl("241944021", "678901") === "https://vk.com/video-241944021_678901",
+    "минус добавлен",
+  );
+
+  // --- rename on publish ---------------------------------------------------
+  check(
+    "ВК: имя при загрузке содержит метку и время",
+    /^Видео к новости \d+$/.test(buildUploadName(1700000000000)),
+    buildUploadName(1700000000000),
+  );
+
+  const fields = buildEditFields({
+    title: "  Заголовок материала  ",
+    lead: "  Лид материала.  ",
+    articleUrl: "https://eartnews.ru/news/abc",
+  });
+  check("ВК: имя обрезано по пробелам", fields.name === "Заголовок материала", fields.name);
+
+  const long = buildEditFields({
+    title: "я".repeat(300),
+    lead: null,
+    articleUrl: "https://eartnews.ru/news/abc",
+  });
+  check("ВК: имя не длиннее 128 символов", long.name.length === 128, `${long.name.length}`);
+
+  check(
+    "ВК: описание = лид + ссылка",
+    fields.desc === "Лид материала.\n\nhttps://eartnews.ru/news/abc",
+    JSON.stringify(fields.desc),
+  );
+  check(
+    "ВК: без лида в описании только ссылка",
+    long.desc === "https://eartnews.ru/news/abc",
+    JSON.stringify(long.desc),
+  );
+
+  for (const url of [
+    "https://vk.com/video-241944021_678901",
+    "https://vk.ru/video-241944021_678901",
+    "https://vkvideo.ru/video-241944021_678901",
+    "https://www.vk.com/clip-241944021_678901",
+  ]) {
+    const ids = parseVideoIdsFromUrl(url);
+    check(
+      `ВК: id разобраны из ${new URL(url).host}${new URL(url).pathname.slice(0, 14)}`,
+      ids?.videoId === "678901" && ids?.ownerId === "-241944021",
+      "разобраны",
+    );
+  }
+
+  for (const url of [
+    "https://youtu.be/dQw4w9WgXcQ",
+    "https://rutube.ru/video/abc",
+    "https://evil.com/video-1_2",
+    "не ссылка",
+    null,
+    "",
+  ]) {
+    check(
+      `ВК: чужое видео игнорируется (${String(url).slice(0, 24)})`,
+      parseVideoIdsFromUrl(String(url ?? "")) === null,
+      "null",
+    );
+  }
+}
+
 async function main() {
   checkSanitizer();
   checkArticleHtml();
@@ -1200,6 +1393,7 @@ async function main() {
   checkArticleLinks();
   checkVideoEmbedParams();
   checkVideoDropGuard();
+  checkVkVideo();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 

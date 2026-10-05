@@ -103,6 +103,7 @@ const aiResultHtml = render(AiCoverPanel as never, {
 const settingsDefaults = {
   deepseekApiKey: { isSet: false, masked: "", source: "unset" as const },
   deepinfraApiKey: { isSet: false, masked: "", source: "unset" as const },
+  vkAccessToken: { isSet: false, masked: "", source: "unset" as const },
 };
 
 const settingsEmptyHtml = render(SettingsForm as never, { initial: settingsDefaults });
@@ -110,6 +111,7 @@ const settingsFilledHtml = render(SettingsForm as never, {
   initial: {
     deepseekApiKey: { isSet: true, masked: "sk-abc…7890", source: "database" },
     deepinfraApiKey: { isSet: true, masked: "sk-xyz…1111", source: "environment" },
+    vkAccessToken: { isSet: true, masked: "vk1.a…7Zq9", source: "database" },
   },
 });
 
@@ -460,14 +462,14 @@ check(
 );
 check(
   "Настройки: поля замаскированы и пусты",
-  (settingsEmptyHtml.match(/type="password"/g) ?? []).length === 2 &&
+  (settingsEmptyHtml.match(/type="password"/g) ?? []).length === 3 &&
     !/value="sk-/.test(settingsFilledHtml),
-  "два password без значения",
+  "три password без значения",
 );
 check(
   "Настройки: кнопка показа/скрытия у каждого поля",
-  (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length === 2,
-  "2 кнопки",
+  (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length === 3,
+  "3 кнопки",
 );
 // Counted as buttons, not as a substring: the explanatory section below the form
 // mentions the same phrase in prose.
@@ -494,7 +496,7 @@ check(
 );
 check(
   "Настройки: кнопка очистки только у заданного ключа",
-  (settingsFilledHtml.match(/>Очистить</g) ?? []).length === 2 &&
+  (settingsFilledHtml.match(/>Очистить</g) ?? []).length === 3 &&
     !settingsEmptyHtml.includes(">Очистить<"),
   "скрыта при unset",
 );
@@ -518,6 +520,68 @@ check(
   "Настройки: форма не отдаёт полный ключ в разметке",
   !settingsFilledHtml.includes("sk-abcdefghij"),
   "только маска",
+);
+
+// --- VK token field --------------------------------------------------------
+check(
+  "Настройки: поле токена ВК присутствует",
+  settingsEmptyHtml.includes("Пользовательский токен ВКонтакте (VK_ACCESS_TOKEN)"),
+  "подпись как в задании",
+);
+check(
+  "Настройки: токен ВК — password с кнопкой показа",
+  (settingsFilledHtml.match(/type="password"/g) ?? []).length === 3 &&
+    (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length === 3,
+  "три поля",
+);
+check(
+  "Настройки: кнопка «Тест токена VK»",
+  (settingsFilledHtml.match(/>Тест токена VK<\/button>/g) ?? []).length === 1,
+  "одна кнопка",
+);
+check(
+  "Настройки: у ВК своя подсказка про назначение",
+  settingsFilledHtml.includes("стену сообщества") &&
+    settingsFilledHtml.includes("автозагрузка видео в VK Видео"),
+  "роли токена описаны",
+);
+check(
+  "Настройки: инструкция «Как получить токен VK?» раскрывается",
+  settingsFilledHtml.includes("<details") &&
+    settingsFilledHtml.includes("Как получить токен VK?"),
+  "details/summary",
+);
+check(
+  "Настройки: три шага инструкции на месте",
+  settingsFilledHtml.includes("dev.vk.com") &&
+    settingsFilledHtml.includes("Standalone-приложение") &&
+    settingsFilledHtml.includes("access_token из адресной строки"),
+  "шаги 1–3",
+);
+check(
+  "Настройки: пояснение про флаг offline",
+  settingsFilledHtml.includes("offline делает токен бессрочным"),
+  "есть",
+);
+check(
+  "Настройки: ссылка на OAuth с нужными scope",
+  settingsFilledHtml.includes("scope=video,wall,offline,groups") &&
+    settingsFilledHtml.includes("response_type=token") &&
+    settingsFilledHtml.includes("client_id=ID_ПРИЛОЖЕНИЯ"),
+  "параметры верные",
+);
+check(
+  "Настройки: OAuth-ссылка помечена rel=noopener",
+  /href="https:\/\/oauth\.vk\.com\/[^"]*"[^>]*rel="noopener noreferrer"/.test(
+    settingsFilledHtml,
+  ),
+  "безопасно",
+);
+check(
+  "Настройки: инструкция только у поля ВК",
+  (settingsFilledHtml.match(/Как получить токен VK\?/g) ?? []).length === 1 &&
+    !settingsFilledHtml.includes("Как получить ключ DeepSeek"),
+  "одна подсказка",
 );
 
 // --- Dzen experiment block --------------------------------------------------

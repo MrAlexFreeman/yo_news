@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  ALLOWED_KEYS,
   FIELD_BY_NAME,
   type SettingKey,
   isAllowedKey,
@@ -42,18 +43,28 @@ function isJsonRequest(request: Request): boolean {
   return request.headers.get("content-type")?.split(";")[0].trim() === "application/json";
 }
 
-/** GET → the current state of every allowed setting, with keys masked. */
+/** Setting key → the request field name that carries it, the reverse of the map. */
+const NAME_BY_KEY = Object.fromEntries(
+  Object.entries(FIELD_BY_NAME).map(([name, key]) => [key, name]),
+) as Record<SettingKey, FieldName>;
+
+/**
+ * GET → the current state of every allowed setting, with keys masked.
+ *
+ * Built by walking ALLOWED_KEYS rather than naming each field. The previous
+ * version listed them one by one, which meant adding VK_ACCESS_TOKEN required
+ * three coordinated edits and the third one was easy to forget — a silently
+ * missing field reads as "this setting has no UI", not as a mistake.
+ */
 export async function GET() {
   const resolved = await resolveAllSettings();
 
-  // Built field-by-field from the closed key list; a raw loop over process.env
-  // would be exactly the leak ALLOWED_KEYS exists to prevent.
-  const body = {
-    deepseekApiKey: toView(resolved.DEEPSEEK_API_KEY),
-    deepinfraApiKey: toView(resolved.DEEPINFRA_API_KEY),
-  };
+  const settings: Record<string, ReturnType<typeof toView>> = {};
+  for (const key of ALLOWED_KEYS) {
+    settings[NAME_BY_KEY[key]] = toView(resolved[key]);
+  }
 
-  return NextResponse.json({ settings: body });
+  return NextResponse.json({ settings });
 }
 
 export async function POST(request: Request) {
@@ -135,13 +146,15 @@ export async function POST(request: Request) {
   // reflect whatever the environment now supplies, which the client cannot know.
   const after = await resolveAllSettings();
 
+  const settings: Record<string, ReturnType<typeof toView>> = {};
+  for (const key of ALLOWED_KEYS) {
+    settings[NAME_BY_KEY[key]] = toView(after[key]);
+  }
+
   return NextResponse.json({
     ok: true,
     saved: [...updates.keys()],
     cleared: [...updates.entries()].filter(([, value]) => !value).map(([key]) => key),
-    settings: {
-      deepseekApiKey: toView(after.DEEPSEEK_API_KEY),
-      deepinfraApiKey: toView(after.DEEPINFRA_API_KEY),
-    },
+    settings,
   });
 }

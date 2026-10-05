@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Eye, EyeOff, Loader2, Plug, Save, X } from "lucide-react";
+import { Check, ChevronRight, ExternalLink, Eye, EyeOff, Loader2, Plug, Save, X } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "@/lib/utils";
@@ -12,7 +12,7 @@ type SettingView = {
   source: "database" | "environment" | "unset";
 };
 
-type Provider = "deepseek" | "deepinfra";
+type Provider = "deepseek" | "deepinfra" | "vk";
 
 type Field = {
   provider: Provider;
@@ -21,6 +21,10 @@ type Field = {
   hint: string;
   /** URL for the "test" note, so an editor knows where the key is going. */
   service: string;
+  /** Label of the test button; VK's is a token, not a key. */
+  testLabel?: string;
+  /** Collapsible "how do I get this" panel. */
+  instructions?: { title: string; steps: string[]; linkLabel?: string; link?: string };
 };
 
 const FIELDS: Field[] = [
@@ -30,6 +34,7 @@ const FIELDS: Field[] = [
     label: "Ключ DeepSeek API",
     hint: "Составляет английский промпт для генератора обложки.",
     service: "api.deepseek.com",
+    testLabel: "Тест подключения",
   },
   {
     provider: "deepinfra",
@@ -37,6 +42,26 @@ const FIELDS: Field[] = [
     label: "Ключ DeepInfra API",
     hint: "Рисует картинку моделью FLUX-1-schnell.",
     service: "api.deepinfra.com",
+    testLabel: "Тест подключения",
+  },
+  {
+    provider: "vk",
+    name: "vkAccessToken",
+    label: "Пользовательский токен ВКонтакте (VK_ACCESS_TOKEN)",
+    hint: "Репост материалов на стену сообщества и автозагрузка видео в VK Видео.",
+    service: "api.vk.com",
+    testLabel: "Тест токена VK",
+    instructions: {
+      title: "Как получить токен VK?",
+      steps: [
+        "Зайдите на dev.vk.com и создайте Standalone-приложение.",
+        "Перейдите по ссылке (подставьте ID своего приложения):",
+        "Нажмите «Разрешить» и скопируйте access_token из адресной строки (флаг offline делает токен бессрочным).",
+      ],
+      linkLabel: "Перейти по ссылке",
+      link:
+        "https://oauth.vk.com/authorize?client_id=ID_ПРИЛОЖЕНИЯ&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope=video,wall,offline,groups&response_type=token&v=5.199",
+    },
   },
 ];
 
@@ -256,7 +281,7 @@ export function SettingsForm({ initial }: SettingsFormProps) {
                   ) : (
                     <Plug className="size-4" aria-hidden />
                   )}
-                  Тест подключения
+                  {field.testLabel ?? "Тест подключения"}
                 </button>
 
                 {current?.isSet ? (
@@ -312,6 +337,43 @@ export function SettingsForm({ initial }: SettingsFormProps) {
               <p className="text-[11px] text-neutral-400">
                 Ключ отправляется на {field.service}.
               </p>
+
+              {field.instructions ? (
+                <details className="rounded-sm border border-neutral-200 bg-white">
+                  {/* <details> rather than a button plus state: the panel opens with
+                      the keyboard, prints, and needs no ARIA wiring to be usable. */}
+                  <summary className="cursor-pointer list-none px-2 py-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                    <span className="inline-flex items-center gap-1.5">
+                      <ChevronRight
+                        className="size-3.5 transition-transform group-open:rotate-90"
+                        aria-hidden
+                      />
+                      {field.instructions.title}
+                    </span>
+                  </summary>
+                  <ol className="space-y-1.5 border-t border-neutral-200 px-2 py-2 text-xs text-neutral-600">
+                    {field.instructions.steps.map((step, index) => (
+                      <li key={index} className="flex gap-2">
+                        <span className="font-mono text-neutral-400">{index + 1}.</span>
+                        <span>{step}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  {field.instructions.link && field.instructions.linkLabel ? (
+                    <p className="px-2 pb-2">
+                      <a
+                        href={field.instructions.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 underline hover:text-blue-900"
+                      >
+                        {field.instructions.linkLabel}
+                        <ExternalLink className="size-3" aria-hidden />
+                      </a>
+                    </p>
+                  ) : null}
+                </details>
+              ) : null}
             </div>
           );
         })}

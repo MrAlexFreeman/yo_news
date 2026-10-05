@@ -28,6 +28,7 @@ import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar"
 import { StickyActionBar } from "@/app/admin/articles/components/sticky-action-bar";
 import { TagInput } from "@/app/admin/articles/components/tag-input";
 import { TitleField } from "@/app/admin/articles/components/title-field";
+import { VkVideoDrop } from "@/app/admin/articles/components/vk-video-drop";
 import { AiCoverGenerator } from "@/app/admin/articles/components/ai-cover-generator";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
 import { parseMediaField, serializeMedia, type MediaItem } from "@/lib/article-media";
@@ -868,6 +869,18 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                     ссылка: Дзен сам превращает ссылки на VK Видео, YouTube и
                     Рутюб в видеовиджет.
                   </p>
+
+                  {/*
+                    The drop zone writes straight into the same field a pasted
+                    link would occupy, so nothing needs translating afterwards and
+                    "Отменить" reverts the upload along with everything else.
+                  */}
+                  <VkVideoDrop
+                    onUploaded={(url) => {
+                      setVideoUrl(url);
+                      setUploadWarning(null);
+                    }}
+                  />
                 </div>
 
                 <hr className="border-neutral-200" />
