@@ -12,6 +12,7 @@ import {
   renderCover,
 } from "@/lib/ai-cover";
 import { pickHint, resolveCoverStyle } from "@/lib/cover-prompt";
+import { resolveFluxModel } from "@/lib/flux-models";
 import { UPLOAD_DIR } from "@/lib/upload-dir";
 
 export const runtime = "nodejs";
@@ -49,6 +50,7 @@ type RequestBody = {
   /** Accepted only so a tab open across a deploy keeps its hint. */
   prompt?: unknown;
   style?: unknown;
+  fluxModel?: unknown;
   title?: unknown;
   lead?: unknown;
   content?: unknown;
@@ -104,6 +106,10 @@ export async function POST(request: Request) {
   // crafted value out of the DeepSeek system prompt.
   const style = resolveCoverStyle(body.style);
 
+  // Resolved through the allowlist, falling back to schnell. klein-9b measures about
+  // 7.5x dearer per image, so an unrecognised value must not silently cost that much.
+  const fluxModel = resolveFluxModel(body.fluxModel);
+
   // Cheap validation first, rate limit second. A rejected request must not burn
   // the editor's window: someone who mistypes a hint and immediately retries
   // would otherwise be told to wait because of their own typo.
@@ -131,17 +137,21 @@ export async function POST(request: Request) {
   try {
     // Title, lead, body, the editor's hint and the chosen style all go to DeepSeek
     // in one message: the hint is the visual focus, the story is the context it has
-    // to stay inside, and the style decides how it is rendered.
+    // to stay inside, and the style decides how it is rendered. The model choice is
+    // not part of that — it is an image step, not a writing one.
     const draft = await buildPhotoPrompt({ title, lead, content, hint, style });
 
-    // renderCover appends the style postfix, so `sent` is what FLUX actually saw.
-    const { bytes, prompt: sent } = await renderCover(draft);
+    // renderCover appends the style postfix and picks the endpoint, so `sent` is
+    // what the image model actually received, postfix included.
+    const { bytes, prompt: sent, model } = await renderCover(draft, fluxModel);
     const filename = await store(bytes);
 
-    console.log(`[ai-cover] ${filename} ← [${style}] ${describePrompt(sent)}`);
+    console.log(
+      `[ai-cover] ${filename} ← [${style}/${model}] ${describePrompt(sent)}`,
+    );
 
     return NextResponse.json(
-      { url: `/uploads/${filename}`, prompt: describePrompt(sent), style },
+      { url: `/uploads/${filename}`, prompt: describePrompt(sent), style, fluxModel: model },
       { status: 201 },
     );
   } catch (error) {

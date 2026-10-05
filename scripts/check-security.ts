@@ -77,6 +77,14 @@ import {
   mergePhotoSources,
 } from "../src/lib/photo-sources";
 import {
+  DEFAULT_FLUX_MODEL,
+  FLUX_MODELS,
+  buildFluxBody,
+  fluxModelSpec,
+  isFluxModel,
+  resolveFluxModel,
+} from "../src/lib/flux-models";
+import {
   SEARCH_TAKE,
   articlePath,
   buildSearchText,
@@ -1551,6 +1559,114 @@ function checkPhotoSources() {
 }
 
 /**
+ * The FLUX model picker.
+ *
+ * Asserted against what DeepInfra was measured returning, because the brief's
+ * alternative parameter shape is real and more expensive: the same 9B call reported
+ * 0.00843 USD through width/height and 0.015 USD through aspect_ratio. So the body is
+ * pinned to the cheap shape, and the frame is pinned to a size both models accept.
+ */
+function checkFluxModels() {
+  check(
+    "Модель FLUX: в списке ровно две",
+    FLUX_MODELS.length === 2,
+    FLUX_MODELS.map((m) => m.value).join(", "),
+  );
+  check(
+    "Модель FLUX: по умолчанию schnell",
+    DEFAULT_FLUX_MODEL === "flux-1-schnell",
+    DEFAULT_FLUX_MODEL,
+  );
+
+  for (const [value, label] of [
+    ["flux-1-schnell", "FLUX 1 Schnell (Быстрая, повседневная)"],
+    ["flux-2-klein-9b", "FLUX 2 Klein 9B (Премиум, высокая детализация)"],
+  ] as const) {
+    const spec = FLUX_MODELS.find((m) => m.value === value);
+    check(
+      `Модель FLUX: «${label}» — value и подпись`,
+      spec?.value === value && spec.label === label,
+      spec?.label ?? "нет",
+    );
+  }
+
+  for (const value of ["flux-1-schnell", "flux-2-klein-9b"]) {
+    check(`Модель FLUX: «${value}» проходит allowlist`, isFluxModel(value), "да");
+    check(
+      `Модель FLUX: «${value}» разрешается в себя`,
+      resolveFluxModel(value) === value && fluxModelSpec(value).value === value,
+      value,
+    );
+    check(
+      `Модель FLUX: «${value}» ведёт на свой эндпоинт`,
+      fluxModelSpec(value).endpoint.endsWith(
+        value === "flux-1-schnell" ? "FLUX-1-schnell" : "FLUX-2-klein-9b",
+      ) && fluxModelSpec(value).endpoint.startsWith(
+        "https://api.deepinfra.com/v1/inference/black-forest-labs/",
+      ),
+      fluxModelSpec(value).endpoint,
+    );
+  }
+
+  // A stale tab sends nothing, and a crafted value must not reach DeepInfra's URL.
+  for (const value of [undefined, null, "", "FLUX-1-SCHNELL", "klein", "flux-3", 42, {}]) {
+    check(
+      `Модель FLUX: «${JSON.stringify(value) ?? "undefined"}» → schnell`,
+      resolveFluxModel(value) === "flux-1-schnell" &&
+        !fluxModelSpec(value).endpoint.includes("klein"),
+      fluxModelSpec(value).value,
+    );
+  }
+
+  // klein gets the shorter budget the newsroom asked for; schnell's is left alone.
+  check(
+    "Модель FLUX: у klein запас в 30 секунд",
+    fluxModelSpec("flux-2-klein-9b").timeoutMs === 30_000,
+    `${fluxModelSpec("flux-2-klein-9b").timeoutMs} мс`,
+  );
+  check(
+    "Модель FLUX: у schnell прежний бюджет не урезан",
+    fluxModelSpec("flux-1-schnell").timeoutMs === 90_000,
+    `${fluxModelSpec("flux-1-schnell").timeoutMs} мс`,
+  );
+
+  // One body shape for both: aspect_ratio costs about twice as much on the 9B and
+  // hands the frame size to the provider.
+  for (const value of ["flux-1-schnell", "flux-2-klein-9b"]) {
+    const body = buildFluxBody("prompt text", value);
+    check(
+      `Модель FLUX: «${value}» — тело без aspect_ratio`,
+      !("aspect_ratio" in body) && body.width === 1024 && body.height === 576,
+      JSON.stringify(body),
+    );
+    const width = body.width as number;
+    const height = body.height as number;
+    check(
+      `Модель FLUX: «${value}» — кадр 16:9 и кратен 16`,
+      width === height * (16 / 9) && width % 16 === 0 && height % 16 === 0,
+      `${width}×${height}`,
+    );
+    check(
+      `Модель FLUX: «${value}» — 4 шага`,
+      body.num_inference_steps === 4,
+      `${body.num_inference_steps}`,
+    );
+    check(
+      `Модель FLUX: «${value}» — промпт проходит без изменений`,
+      buildFluxBody("prompt text", value).prompt === "prompt text",
+      "дословно",
+    );
+  }
+
+  // 675 from the brief is not a multiple of 16, which is the constraint FLUX enforces.
+  check(
+    "Модель FLUX: размер из ТЗ 1200×675 не подошёл бы",
+    675 % 16 !== 0 && 576 % 16 === 0,
+    "675 кратен 16? нет; 576 кратен 16? да",
+  );
+}
+
+/**
  * The Dzen experiment rule and the feed markup it produces.
  *
  * The server-side gate is the load-bearing part: the editor's checkbox being
@@ -2318,6 +2434,7 @@ async function main() {
   checkSettingsPrimitives();
   checkBalances();
   checkPhotoSources();
+  checkFluxModels();
   checkDzenExperiment();
   checkArticleLinks();
   checkArticleSearch();

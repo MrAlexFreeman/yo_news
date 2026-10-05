@@ -23,6 +23,7 @@ import { SubscribeBlock } from "../src/components/subscribe-block";
 import { ArticleVideo } from "../src/components/article-video";
 import { MAX_MEDIA_ITEMS, type MediaItem } from "../src/lib/article-media";
 import { COVER_STYLES, DEFAULT_COVER_STYLE } from "../src/lib/cover-prompt";
+import { DEFAULT_FLUX_MODEL, FLUX_MODELS } from "../src/lib/flux-models";
 import {
   DZEN_MIN_CARD_WIDTH,
   NARROW_COVER_WARNING,
@@ -91,11 +92,13 @@ const dialogEmptyHtml = render(LinkDialog as never, {
 const aiProps = { title: "Заголовок", lead: "Лид", content: "<p>Текст</p>", onGenerated: noop };
 const panelDefaults = {
   style: DEFAULT_COVER_STYLE,
+  fluxModel: DEFAULT_FLUX_MODEL,
   hint: "",
   busy: false,
   error: null,
   result: null,
   onStyleChange: noop,
+  onFluxModelChange: noop,
   onHintChange: noop,
   onGenerate: noop,
   onApply: noop,
@@ -464,8 +467,11 @@ check(
 );
 check(
   "Стиль: ровно четыре варианта",
-  (aiAutoHtml.match(/<option /g) ?? []).length === COVER_STYLES.length,
-  `${(aiAutoHtml.match(/<option /g) ?? []).length} вариантов`,
+  // Scoped to the style values rather than counting every <option>: the FLUX model
+  // picker sits in the same panel and its options would be counted too.
+  (aiAutoHtml.match(/value="(realistic|illustration|sketch|painting)"/g) ?? []).length ===
+    COVER_STYLES.length,
+  `${(aiAutoHtml.match(/value="(realistic|illustration|sketch|painting)"/g) ?? []).length} вариантов`,
 );
 check(
   "Стиль: поле блокируется на время запроса",
@@ -477,6 +483,48 @@ check(
   "Стиль: список идёт над полем подсказки",
   aiAutoHtml.indexOf('id="aiCoverStyle"') < aiAutoHtml.indexOf('id="aiCoverHint"'),
   "сначала стиль, потом подсказка",
+);
+
+// --- FLUX model picker ------------------------------------------------------
+check(
+  "Модель: выпадающий список на месте",
+  /<select[^>]*id="aiCoverModel"/.test(aiAutoHtml),
+  "select с меткой",
+);
+check(
+  "Модель: метка «Модель» связана с полем",
+  /<label for="aiCoverModel"[^>]*>[\s\S]{0,80}?Модель/.test(aiAutoHtml),
+  "label/for ведёт к select",
+);
+
+for (const model of FLUX_MODELS) {
+  check(
+    `Модель: вариант «${model.label}» в списке`,
+    aiAutoHtml.includes(`value="${model.value}"`) && aiAutoHtml.includes(model.label),
+    model.value,
+  );
+}
+
+check(
+  "Модель: по умолчанию выбран schnell",
+  aiAutoHtml.includes(`<option value="flux-1-schnell" selected="">`),
+  "selected на flux-1-schnell",
+);
+check(
+  "Модель: ровно два варианта",
+  (aiAutoHtml.match(/value="flux-/g) ?? []).length === FLUX_MODELS.length,
+  `${(aiAutoHtml.match(/value="flux-/g) ?? []).length} вариантов`,
+);
+check(
+  "Модель: поле блокируется на время запроса",
+  /<select[^>]*id="aiCoverModel"[^>]*disabled/.test(aiBusyHtml) ||
+    /<select[^>]*disabled[^>]*id="aiCoverModel"/.test(aiBusyHtml),
+  "disabled при busy",
+);
+check(
+  "Модель: селект рядом со стилем, а не отдельной строкой",
+  aiAutoHtml.indexOf('id="aiCoverModel"') - aiAutoHtml.indexOf('id="aiCoverStyle"') < 1200,
+  "ряд в одной сетке",
 );
 check(
   "Генератор: сказано, что заголовок и лид учитываются всегда",

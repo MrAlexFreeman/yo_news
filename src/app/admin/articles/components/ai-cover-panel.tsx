@@ -7,17 +7,20 @@ import {
   COVER_STYLES,
   type CoverStyle,
 } from "@/lib/cover-prompt";
+import { FLUX_MODELS, type FluxModel } from "@/lib/flux-models";
 import { cn } from "@/lib/utils";
 
 export type AiCoverResult = { url: string; prompt: string } | null;
 
 type AiCoverPanelProps = {
   style: CoverStyle;
+  fluxModel: FluxModel;
   hint: string;
   busy: boolean;
   error: string | null;
   result: AiCoverResult;
   onStyleChange: (style: CoverStyle) => void;
+  onFluxModelChange: (model: FluxModel) => void;
   onHintChange: (hint: string) => void;
   onGenerate: () => void;
   onApply: () => void;
@@ -44,11 +47,13 @@ export const AI_HINT_PLACEHOLDER =
  */
 export function AiCoverPanel({
   style,
+  fluxModel,
   hint,
   busy,
   error,
   result,
   onStyleChange,
+  onFluxModelChange,
   onHintChange,
   onGenerate,
   onApply,
@@ -72,28 +77,61 @@ export function AiCoverPanel({
         </button>
       </div>
 
-      <div className="space-y-1.5">
-        <label htmlFor="aiCoverStyle" className="text-xs font-medium text-neutral-600">
-          Стиль изображения
-        </label>
-        <select
-          id="aiCoverStyle"
-          value={style}
-          disabled={busy}
-          onChange={(event) => onStyleChange(event.target.value as CoverStyle)}
-          className={cn(
-            "w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2",
-            busy
-              ? "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400"
-              : "border-neutral-300 bg-white text-neutral-800 focus:border-neutral-500 focus:ring-neutral-200",
-          )}
-        >
-          {COVER_STYLES.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <label htmlFor="aiCoverStyle" className="text-xs font-medium text-neutral-600">
+            Стиль изображения
+          </label>
+          <select
+            id="aiCoverStyle"
+            value={style}
+            disabled={busy}
+            onChange={(event) => onStyleChange(event.target.value as CoverStyle)}
+            className={cn(
+              "w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2",
+              busy
+                ? "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400"
+                : "border-neutral-300 bg-white text-neutral-800 focus:border-neutral-500 focus:ring-neutral-200",
+            )}
+          >
+            {COVER_STYLES.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/*
+          Next to the style rather than below it: both answer "what kind of picture",
+          so they are read as one decision. Klein is priced about 7.5x above schnell on
+          the same frame, which is measured rather than assumed, so the labels say so
+          and schnell's stays the default — an editor who is not chasing a hero image
+          should not pay for the premium one by accident.
+        */}
+        <div className="space-y-1.5">
+          <label htmlFor="aiCoverModel" className="text-xs font-medium text-neutral-600">
+            Модель
+          </label>
+          <select
+            id="aiCoverModel"
+            value={fluxModel}
+            disabled={busy}
+            onChange={(event) => onFluxModelChange(event.target.value as FluxModel)}
+            className={cn(
+              "w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2",
+              busy
+                ? "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400"
+                : "border-neutral-300 bg-white text-neutral-800 focus:border-neutral-500 focus:ring-neutral-200",
+            )}
+          >
+            {FLUX_MODELS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="space-y-1.5">

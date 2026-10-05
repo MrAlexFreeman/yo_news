@@ -8,6 +8,7 @@ import {
   type AiCoverResult,
 } from "@/app/admin/articles/components/ai-cover-panel";
 import { DEFAULT_COVER_STYLE, type CoverStyle } from "@/lib/cover-prompt";
+import { DEFAULT_FLUX_MODEL, type FluxModel } from "@/lib/flux-models";
 
 type AiCoverGeneratorProps = {
   /** Headline and body, so "по тексту статьи" works from this tab alone. */
@@ -41,6 +42,7 @@ export function AiCoverGenerator({
 }: AiCoverGeneratorProps) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState<CoverStyle>(DEFAULT_COVER_STYLE);
+  const [fluxModel, setFluxModel] = useState<FluxModel>(DEFAULT_FLUX_MODEL);
   const [hint, setHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +60,16 @@ export function AiCoverGenerator({
         headers: { "Content-Type": "application/json" },
         // `customPrompt` is the hint, sent whether or not it is filled in: the
         // server decides what an empty one means, so the two cannot drift apart.
-        body: JSON.stringify({ customPrompt: hint, style, title, lead, content }),
+        // `style` and `fluxModel` are sent the same way — always, so the server is the
+        // single place that decides what a missing value means.
+        body: JSON.stringify({
+          customPrompt: hint,
+          style,
+          fluxModel,
+          title,
+          lead,
+          content,
+        }),
       });
       const payload = (await response.json()) as {
         url?: string;
@@ -106,12 +117,17 @@ export function AiCoverGenerator({
   return (
     <AiCoverPanel
       style={style}
+      fluxModel={fluxModel}
       hint={hint}
       busy={busy}
       error={error}
       result={result}
       onStyleChange={(next) => {
         setStyle(next);
+        setError(null);
+      }}
+      onFluxModelChange={(next) => {
+        setFluxModel(next);
         setError(null);
       }}
       onHintChange={(next) => {

@@ -2,9 +2,6 @@ import "server-only";
 
 import {
   AI_TITLE_LIMIT,
-  COVER_HEIGHT,
-  COVER_STEPS,
-  COVER_WIDTH,
   applyFluxPostfix,
   buildDeepseekSystemPrompt,
   sanitizeFluxPrompt,
@@ -12,6 +9,7 @@ import {
   type CoverStyle,
 } from "@/lib/cover-prompt";
 import { extractImageBytes } from "@/lib/deepinfra-response";
+import { buildFluxBody, fluxModelSpec, type FluxModel } from "@/lib/flux-models";
 import { getSetting } from "@/lib/settings";
 
 /**
@@ -50,17 +48,17 @@ export class AiCoverError extends Error {
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const DEEPSEEK_MODEL = "deepseek-chat";
-const DEEPINFRA_URL =
-  "https://api.deepinfra.com/v1/inference/black-forest-labs/FLUX-1-schnell";
 
 /**
- * Timeouts. The text step is quick and a hang means something is wrong upstream;
- * the image step gets longer because a cold FLUX worker really can take a while.
- * Without these a stalled provider would hold the request until nginx gives up
+ * The image endpoint and its time budget moved into lib/flux-models.ts, which now
+ * holds the whole model allowlist — the URL used to be a constant here and had to be
+ * edited in two places once the selector shipped.
+ *
+ * What is left is the text step: quick, and a hang means something is wrong upstream.
+ * Without a timeout a stalled provider would hold the request until nginx gives up
  * and leave the editor staring at a spinner.
  */
 const PROMPT_TIMEOUT_MS = 20_000;
-const IMAGE_TIMEOUT_MS = 90_000;
 
 /**
  * FLUX happily produces multi-megabyte base64. A cap keeps a runaway response
@@ -214,24 +212,24 @@ export async function buildPhotoPrompt(source: {
  * FLUX-1-schnell answers with base64 PNG. The format is whatever the upstream sends
  * — the caller decides what to store after inspecting the bytes.
  */
-export async function renderCover(prompt: string): Promise<{ bytes: Buffer; prompt: string }> {
+export async function renderCover(
+  prompt: string,
+  fluxModel?: unknown,
+): Promise<{ bytes: Buffer; prompt: string; model: FluxModel }> {
   const apiKey = await requireKey("DEEPINFRA_API_KEY");
+
+  const spec = fluxModelSpec(fluxModel);
 
   const finalPrompt = sanitizeFluxPrompt(applyFluxPostfix(prompt));
 
-  const response = await fetch(DEEPINFRA_URL, {
+  const response = await fetch(spec.endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
-    body: JSON.stringify({
-      prompt: finalPrompt,
-      width: COVER_WIDTH,
-      height: COVER_HEIGHT,
-      num_inference_steps: COVER_STEPS,
-    }),
+    signal: AbortSignal.timeout(spec.timeoutMs),
+    body: JSON.stringify(buildFluxBody(finalPrompt, spec.value)),
   });
 
   if (!response.ok) {
@@ -266,7 +264,7 @@ export async function renderCover(prompt: string): Promise<{ bytes: Buffer; prom
     throw new AiCoverError("Изображение от модели слишком большое.", "image");
   }
 
-  return { bytes: image, prompt: finalPrompt };
+  return { bytes: image, prompt: finalPrompt, model: spec.value };
 }
 
 /** Upstream errors are logged, not shown: they can echo the request key. */
