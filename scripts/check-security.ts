@@ -534,8 +534,31 @@ function checkAiCover() {
   // filter that eats "documentary" or "texture" would quietly damage every good
   // prompt while still passing a check that only looked for the bad words.
   const mustStrip: [string, string[]][] = [
+    // The two failures measured on production, before this rewrite.
     ["A shop sign reading SALE hangs above a busy street", ["sign", "SALE"]],
-    ["newsstand with newspapers and a poster on the wall", ["poster", "newspaper"]],
+    ["Crowd of shoppers streaming toward a mall entrance at dusk", ["mall"]],
+    // The scenes the system prompt now forbids, checked here as a backstop in case
+    // the text model ignores the instruction.
+    ["shopping center interior with crowds", ["shopping center"]],
+    ["a supermarket aisle with shelves", ["supermarket"]],
+    ["storefront shutters closed at dawn", ["storefront"]],
+    ["shop window display of winter coats", ["shop window"]],
+    ["market stall with fresh produce", ["market stall"]],
+    ["gas station at night", ["gas"]],
+    ["retail park on the outskirts", ["retail"]],
+    // Warning vocabulary, which exists to sit on a board.
+    ["warning sign at the edge of a forest", ["warning"]],
+    ["caution tape on a wet floor", ["caution"]],
+    ["danger glow over an abandoned plant", ["danger"]],
+    ["an alert expression on a bystander", ["alert"]],
+    ["a full stop sign at the junction", ["stop"]],
+    ["warning barrier at forest edge near an open-pit mine", ["warning"]],
+    // Compounded barriers, matched whole so no qualifier survives.
+    ["construction barrier across the road", ["construction barrier"]],
+    ["police tape strung across a doorway", ["police tape"]],
+    ["road barrier blocking the quarry road", ["road barrier"]],
+    // The rest of the object list.
+    ["newsstand with newspapers and a poster", ["newspaper", "poster"]],
     ["road sign at the intersection, blurred headlights", ["sign"]],
     ["an office with a nameplate and a badge on the desk", ["nameplate", "badge"]],
     ["phone screen showing a map", ["screen"]],
@@ -544,7 +567,6 @@ function checkAiCover() {
     ["notices pasted on the wall", ["notices"]],
     ["a wooden plaque in the hall", ["plaque"]],
     ["banner across the street", ["banner"]],
-    ["storefront shutters closed at dawn", ["storefront"]],
     ["shopfront at night", ["shopfront"]],
     ["a placard on the gate", ["placard"]],
     ["billboard above the highway", ["billboard"]],
@@ -556,15 +578,25 @@ function checkAiCover() {
 
   for (const [input, gone] of mustStrip) {
     const out = sanitizeFluxPrompt(input);
-    const leaked = gone.filter(
-      (word) => new RegExp(`\\b${word}\\b`, "i").test(out),
-    );
+    const leaked = gone.filter((word) => new RegExp(`\\b${word}\\b`, "i").test(out));
     check(
       `Генератор: «${input}» — триггеры вырезаны`,
       leaked.length === 0,
       leaked.length === 0 ? out : `осталось: ${leaked.join(", ")}`,
     );
   }
+
+  // Nothing is substituted any more. An earlier version replaced "sign" with
+  // "facade", and production images showed why that backfired: a blank facade is an
+  // invitation to letter, so the model filled the empty wall with gibberish exactly
+  // where the word had been. Removing the subject leaves nothing to fill, which is
+  // why the expected outputs above are scenes with a hole rather than a scene with
+  // a substitute building.
+  check(
+    "Генератор: подстановка «facade» больше не используется",
+    sanitizeFluxPrompt("a shop sign in the street").toLowerCase().includes("facade") === false,
+    sanitizeFluxPrompt("a shop sign in the street"),
+  );
 
   const mustSurvive = [
     "close-up of a wooden gavel, shallow depth of field",
@@ -574,6 +606,14 @@ function checkAiCover() {
     "empty wooden bench, soft bokeh background",
     "witness taking notes in a dim hearing room",
     "silhouettes of pedestrians under an overcast sky",
+    "restore a wooden bench in a quiet park",
+    "coral barrier reef seen from below",
+    "thick fog between pine crowns at dawn",
+    "a shopper's hands holding coins over a wooden table",
+    "wet asphalt reflecting street lamps, steam rising from ice",
+    // "market" alone has to survive: it is load-bearing in financial news, which is
+    // why the scene rule matches "market stall" rather than the bare word.
+    "stock market crash, trading floor bokeh",
   ];
 
   for (const input of mustSurvive) {
@@ -707,6 +747,42 @@ function checkAiCover() {
       ) && prompt.includes("gavel close-up or empty wooden bench"),
       "правило 4 с примерами",
     );
+    // The measured failure: a shopping-centre story still produced gibberish on shop
+    // fronts even with a clean prompt, because the scene itself invites lettering.
+    // So the scenes are named, not just the objects.
+    check(
+      `Промпт: «${style}» — запрещены торговые сцены`,
+      prompt.includes("FORBIDDEN SCENES") &&
+        prompt.includes("mall, shopping center, retail, store, supermarket") &&
+        prompt.includes("market stall, gas station, construction barrier, police tape, road barrier"),
+      "список сцен",
+    );
+    check(
+      `Промпт: «${style}» — запрещены слова предупреждений`,
+      prompt.includes("Any warning vocabulary at all: warning, caution, danger, stop, alert."),
+      "список предупреждений",
+    );
+    check(
+      `Промпт: «${style}» — ракурс зафиксирован`,
+      prompt.includes(
+        "NEVER frame a wide angle of human environments. Prefer macro photography, extreme close-ups of objects, ground-level shots, silhouette angles, or natural landscapes without man-made boards.",
+      ),
+      "принудительный ракурс",
+    );
+    // The metaphor library is what turns a forbidden scene into a photographable
+    // one; without it the rules only leave the model with nothing to say.
+    for (const theme of [
+      "Retail, prices, trade",
+      "Danger, forest, quarry, environment",
+      "Incidents, utilities, transport",
+      "Power, courts, decisions",
+    ]) {
+      check(
+        `Промпт: «${style}» — метафора «${theme}»`,
+        prompt.includes(`- ${theme}:`),
+        "библиотека метафор",
+      );
+    }
     check(
       `Промпт: «${style}» — только голая строка`,
       prompt.includes("5. Output ONLY the English prompt string, without any preamble or quotes."),

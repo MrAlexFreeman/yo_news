@@ -48,38 +48,44 @@ export function applyFluxPostfix(prompt: string): string {
 }
 
 /**
- * Subjects that reliably come back covered in fake lettering.
+ * Whole phrases removed together, so no qualifier survives its head noun.
  *
- * Split by what they replace with, because the substitution has to keep the
- * sentence readable: FLUX reads the prompt as a description, and "a facade in the
- * background" describes something, whereas deleting the noun outright leaves "a  in
- * the background" and reads as noise.
+ * Without these, deleting "sign" alone turned "road sign" into "road", which is
+ * still a road — and a road is still somewhere FLUX puts a sign.
  */
-const FACADE_TRIGGERS =
-  /\b(?:signs?|signage|billboards?|banners?|posters?|placards?|plaques?|notices?|nameplates?|storefronts?|shopfronts?)\b/gi;
+const SIGN_PHRASES =
+  /\b(?:road signs?|street signs?|traffic signs?|warning signs?|warning sign|signage|shop windows?|market stalls?|gas stations?|construction barriers?|police tape|road barriers?|license plates?|licence plates?)\b/gi;
 
 /**
- * Two-word forms matched before their single-word parts, so the qualifier does not
- * survive its head noun: without this, "road sign" became "road facade" and the
- * leftover word still points FLUX at a road.
+ * Scenes that invite lettering, removed as a backstop for the same reason the
+ * subject nouns are: DeepSeek is told not to use them, and told again, and still
+ * reaches for one.
+ *
+ * "market stall" rather than a bare "market": a bare "market" is load-bearing
+ * vocabulary in financial news, and cutting it out of "stock market crash" leaves
+ * a worse prompt than the one we were trying to protect.
  */
-const ROAD_SIGN_TRIGGERS = /\b(?:road signs?|street signs?|traffic signs?)\b/gi;
+const SCENE_TRIGGERS =
+  /\b(?:malls?|shopping cent(?:er|re)s?|retail|stores?|supermarkets?|storefronts?|shopfronts?)\b/gi;
 
-/** Written-on objects: the substitute says "plain", which is the whole point. */
-const SURFACE_TRIGGERS =
-  /\b(?:badges?|labels?|licence plates?|license plates?)\b/gi;
+/**
+ * Warning vocabulary, which exists to sit on a board.
+ *
+ * Same reasoning applied to the adjectives: a warning sign is drawn because
+ * something in the scene is a warning, so the adjectives go with the noun.
+ */
+const WARNING_WORDS = /\b(?:warning|caution|danger|stop|alert)\b/gi;
 
-/** Documents and displays, which become a featureless surface. */
-const BLANK_TRIGGERS =
-  /\b(?:newspapers?|documents?|sheets? of paper|papers?|screens?)\b/gi;
+/** Objects that carry writing. */
+const SIGNAGE_OBJECTS =
+  /\b(?:signs?|billboards?|banners?|posters?|placards?|plaques?|notices?|nameplates?|badges?|labels?|newspapers?|documents?|papers?|screens?)\b/gi;
 
 /**
  * Bare references to lettering, not to a physical object.
  *
- * An addition to the newsroom's list, and the reason the list alone is not enough:
- * swapping "sign" for "facade" turns "a sign reading SALE" into "a facade reading
- * SALE", still a request for writing. Stripping the word that asks for characters
- * closes that path. Word boundaries keep "texture", "textile" and "context" intact.
+ * Added beyond the newsroom's list: swapping or deleting the noun does not remove
+ * what the model wrote on it, and "sign reading SALE" survives either way.
+ * Word boundaries keep "texture", "textile" and "context" intact.
  */
 const WORDING_TRIGGERS =
   /\b(?:text|texts|letters?|lettering|words?|wording|typography|inscriptions?|captions?|glyphs?)\b/gi;
@@ -87,42 +93,49 @@ const WORDING_TRIGGERS =
 /**
  * Runs of capital letters: the attempt at lettering itself.
  *
- * Also an addition, and it closes the gap the substitution leaves. Removing the noun
- * does not remove what the model wrote on it — "sign reading SALE" survives as
- * "facade reading SALE", and SALE is a request for three characters rendered in
- * concrete. Image prompts are otherwise lower case, so an all-caps run carries no
+ * Image prompts are otherwise lower case, so an all-caps run carries no
  * descriptive information and only tells FLUX to draw a word.
- *
- * The verb left dangling afterwards ("a facade reading") is not tidied up on
- * purpose: FLUX matches tokens rather than parsing grammar, and removing it would
- * also eat legitimate verbs like "POLICE" used as a noun.
  */
 const CAPS_LETTERING = /\b[A-Z]{2,}\b/g;
 
 /**
- * Removes the words that make FLUX draw lettering, from the final prompt.
+ * Removes what makes FLUX draw lettering and signage, from the final prompt.
  *
- * Run on the assembled prompt — postfix included — rather than on the text model's
- * output alone, so what FLUX receives is provably free of the triggers and the
- * guarantee does not depend on the postfix happening to be clean.
+ * Everything is cut rather than substituted. That reverses an earlier version of
+ * this function, which replaced "sign" with "facade" — and measurement showed the
+ * substitution was making the problem worse, not neutral: a blank facade is an
+ * invitation to letter, so the model filled the empty wall with gibberish exactly
+ * where the word had been removed. Removing the subject leaves nothing to fill.
  *
- * The replacement is neutral vocabulary, not deletion, for the reason above: a
- * prompt that still describes a scene beats one with holes in its grammar.
+ * The cut is to a space rather than to an empty string, so "a sign in the street"
+ * becomes "a in the street" and not "ain the street".
+ *
+ * Run on the assembled prompt — postfix included — so what FLUX receives is
+ * provably free of the triggers and the guarantee does not depend on the postfix
+ * happening to be clean.
  */
 export function sanitizeFluxPrompt(prompt: string): string {
   return prompt
-    .replace(ROAD_SIGN_TRIGGERS, "facade")
-    .replace(FACADE_TRIGGERS, "facade")
-    .replace(SURFACE_TRIGGERS, "plain surface")
-    .replace(BLANK_TRIGGERS, "blank surface")
-    .replace(WORDING_TRIGGERS, "")
-    .replace(CAPS_LETTERING, "")
-    // Tidy what the substitutions leave behind: doubled spaces, a space before a
-    // comma or a full stop, and an empty pair of commas.
+    .replace(SIGN_PHRASES, " ")
+    .replace(SCENE_TRIGGERS, " ")
+    .replace(WARNING_WORDS, " ")
+    .replace(SIGNAGE_OBJECTS, " ")
+    .replace(WORDING_TRIGGERS, " ")
+    .replace(CAPS_LETTERING, " ")
+    // Tidy what the cuts leave behind: doubled spaces, a space before a comma or a
+    // full stop, an empty pair of commas, and an article left dangling at the very
+    // end of a clause.
+    //
+    // Deliberately narrow. An earlier version also stripped a leading "a"/"the" from
+    // the whole prompt, which turned "a shopper's hands holding coins" into
+    // "shopper's hands holding coins" — it was tidying the cuts and mangling every
+    // well-formed prompt at the same time. "a entrance at dusk" reads badly to a
+    // person and costs FLUX nothing.
     .replace(/\s+/g, " ")
     .replace(/\s+([,.;:])/g, "$1")
     .replace(/,\s*,/g, ",")
     .replace(/\(\s*\)/g, "")
+    .replace(/\b(a|an|the)\s+(?=[,.;]|$)/gi, "")
     .trim();
 }
 
@@ -239,6 +252,21 @@ export function buildDeepseekSystemPrompt(value: unknown): string {
     '   - "shallow depth of field, f/1.8 aperture, blurry out-of-focus background, bokeh"',
     "   - Focus on close-up details, objects, hands, vehicles from angles where plates are hidden, nature, silhouettes, or atmospheric environment.",
     "4. Focus on capturing the MOOD and METAPHOR of the news rather than literal institutions. (e.g., for court: gavel close-up or empty wooden bench; for city hall: architectural columns without plaques; for traffic: blurred headlights in rain).",
+    "",
+    "FORBIDDEN SCENES. Never describe these, even when the news is about them:",
+    "   - mall, shopping center, retail, store, supermarket, shop window, storefront, market stall, gas station, construction barrier, police tape, road barrier.",
+    "   - Any warning vocabulary at all: warning, caution, danger, stop, alert.",
+    "These subjects pull lettering into the frame no matter how the rest of the prompt is written, so they are excluded from the composition entirely.",
+    "",
+    "NEVER frame a wide angle of human environments. Prefer macro photography, extreme close-ups of objects, ground-level shots, silhouette angles, or natural landscapes without man-made boards.",
+    "",
+    "METAPHOR LIBRARY. When the news belongs to one of these themes, describe the listed image instead of the literal event:",
+    "   - Retail, prices, trade: a shopping trolley seen close-up; a shelf of unlabelled vegetables and fruit; a shopper's hands holding coins or a paper bag.",
+    "   - Danger, forest, quarry, environment: pine crowns against an overcast sky; a tyre tread mark in mud; a sandy quarry slope; thick fog between trees.",
+    "   - Incidents, utilities, transport: wet asphalt reflecting street lamps; the silhouette of utility machinery at dusk; a bend in an empty snow-covered road; steam rising from ice.",
+    "   - Power, courts, decisions: classical architectural columns in bokeh; a wooden council table; an empty chamber in soft light.",
+    "Pick one metaphor and stay close to it. Do not name the news event itself in the prompt.",
+    "",
     "5. Output ONLY the English prompt string, without any preamble or quotes.",
   ].join("\n");
 }
