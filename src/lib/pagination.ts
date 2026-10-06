@@ -20,6 +20,19 @@ export function tagsPageHref(slug: string, page: number): string {
   return page <= 1 ? `/tags/${slug}` : `/tags/${slug}/page/${page}`;
 }
 
+/**
+ * Same shape, for a forum section's thread list.
+ *
+ * A deeper page is a path segment rather than a query string on purpose, matching
+ * every other listing on the site: query-string pagination is not prerendered, and a
+ * board people come back to is worth prerendering.
+ */
+export function forumPageHref(categorySlug: string, page: number): string {
+  return page <= 1
+    ? `/forum/${categorySlug}`
+    : `/forum/${categorySlug}/page/${page}`;
+}
+
 /** Parses a path segment like "3" into a page number, defaulting to 1. */
 export function parsePageSegment(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? "1", 10);

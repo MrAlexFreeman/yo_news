@@ -135,3 +135,62 @@ model Category {
   slug     String    @unique
   articles Article[]
 }
+
+// --- forum -------------------------------------------------------------------
+//
+// A reader discussion board. Separate tables rather than a comment column on
+// Article: a forum thread outlives the story it was started from, and a thread can
+// be about anything — which is also why posts carry no user accounts. Everything
+// here is anonymous by design, with a display name typed into the form.
+//
+// Tables and columns are mapped to snake_case explicitly. The rest of the schema
+// uses Prisma's default PascalCase, so this is a deliberate difference: the forum
+// tables are named in the data-layer vocabulary rather than the ORM's, and
+// `@@map` is what makes the SQL match the specification instead of
+// "ForumCategory".
+
+/// A forum section. `orderIndex` is set by hand and sorts the board.
+model ForumCategory {
+  id          Int          @id @default(autoincrement())
+  title       String
+  slug        String       @unique
+  description String?
+  orderIndex  Int          @default(0) @map("order_index")
+  topics      ForumTopic[]
+
+  @@map("forum_categories")
+}
+
+/// A thread. `viewsCount` is incremented by the public page, not by an endpoint,
+/// so it counts rendered reads rather than requests that were never followed.
+model ForumTopic {
+  id         Int          @id @default(autoincrement())
+  categoryId Int          @map("category_id")
+  title      String
+  slug       String       @unique
+  authorName String       @map("author_name")
+  isPinned   Boolean      @default(false) @map("is_pinned")
+  isClosed   Boolean      @default(false) @map("is_closed")
+  viewsCount Int          @default(0) @map("views_count")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+  category   ForumCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  posts      ForumPost[]
+
+  @@index([categoryId, isPinned, updatedAt])
+  @@map("forum_topics")
+}
+
+/// A message in a thread. Deleting the thread cascades here, so /admin has one
+/// button to remove a whole discussion.
+model ForumPost {
+  id         Int      @id @default(autoincrement())
+  topicId    Int      @map("topic_id")
+  authorName String   @map("author_name")
+  content    String
+  createdAt  DateTime @default(now()) @map("created_at")
+  topic      ForumTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@index([topicId, createdAt])
+  @@map("forum_posts")
+}

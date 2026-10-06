@@ -18,7 +18,7 @@ import { ensureNoVkAutoplay } from "@/lib/video-embed";
  * synchronous, so a module-level policy cannot be observed by a concurrent call.
  */
 
-export type Policy = "article" | "dzen";
+export type Policy = "article" | "forum" | "dzen";
 
 let policy: Policy = "article";
 let installed = false;
@@ -162,6 +162,39 @@ function applyDzenPolicy(node: unknown, base: string) {
   }
 }
 
+/**
+ * Forum-post rules.
+ *
+ * Much narrower than the article policy, and deliberately so. An article body is
+ * written by the editorial desk; a forum post is typed by an anonymous visitor into
+ * a public form, so the markup has to be assumed hostile. The tag and attribute
+ * allowlists in sanitize.ts already exclude links, images, players, `class` and
+ * `style` — this hook is the second layer, so that widening a list there by mistake
+ * cannot hand an anonymous poster the article page's privileges.
+ *
+ * Anything carrying a URL or a style is stripped outright rather than corrected. A
+ * link in a forum post is a phishing target with no editorial review behind it, and
+ * a `style` attribute is both a defacement vector and a way to hide text.
+ */
+function applyForumPolicy(node: unknown) {
+  const element = node as Node;
+
+  for (const attribute of URI_ATTRIBUTES) element.removeAttribute?.(attribute);
+  element.removeAttribute?.("style");
+  element.removeAttribute?.("class");
+
+  // The tags below have no business in a post at all. They are not in the
+  // allowlist, so this only fires if that list is ever widened.
+  if (["a", "img", "iframe", "object", "embed", "form", "input", "button", "style", "script"].includes(tagOf(node))) {
+    element.remove?.();
+    return;
+  }
+
+  if (hasDataUri(node)) {
+    for (const attribute of URI_ATTRIBUTES) element.removeAttribute?.(attribute);
+  }
+}
+
 let feedBase = "";
 
 /** Base the Dzen policy rewrites relative URLs against, set per call. */
@@ -179,6 +212,7 @@ export function withPolicy<T>(next: Policy, run: () => T): T {
   if (!installed) {
     DOMPurify.addHook("afterSanitizeAttributes", (node) => {
       if (policy === "dzen") applyDzenPolicy(node, feedBase);
+      else if (policy === "forum") applyForumPolicy(node);
       else applyArticlePolicy(node);
     });
     installed = true;

@@ -145,6 +145,27 @@ body {
   min-height: 1.5em;
 }
 
+/* A reader's message. Not `.prose` and not `.article-body` on purpose: this is the
+   one place on the site where the words came from a stranger, so it gets its own
+   small vocabulary — seven text tags and no attributes. Quotes are set in the
+   publication's serif like the article body's, which is enough to make a reply read
+   as a reply. */
+.forum-post p {
+  margin: 0 0 0.75em;
+}
+.forum-post p:last-child {
+  margin-bottom: 0;
+}
+.forum-post blockquote {
+  margin: 0 0 0.75em;
+  border-left: 3px solid var(--color-rule);
+  padding-left: 0.75em;
+  color: var(--color-ink-soft);
+}
+.forum-post blockquote p {
+  margin-bottom: 0.35em;
+}
+
 .article-body blockquote {
   font-family: var(--font-lora), Georgia, serif;
   font-style: normal;

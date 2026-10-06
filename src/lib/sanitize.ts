@@ -92,3 +92,43 @@ export function sanitizeArticleHtml(dirty: string): string {
     }),
   );
 }
+
+/**
+ * Tags a forum post may contain.
+ *
+ * Text, line breaks and quotes, and nothing else. No `<a>`, no `<img>`, no
+ * `<iframe>`, no `<h*>` — a reader's post is not an article, and a heading in the
+ * middle of a thread reads as an attempt to impersonate the moderation desk.
+ *
+ * `<a>` is excluded rather than merely restricted: `KEEP_CONTENT` unwraps it, so a
+ * pasted link keeps its words and loses its href. That is the behaviour a reader
+ * pasting a URL wants — the text is still readable — without leaving an unmoderated
+ * outbound link on the site.
+ */
+const FORUM_ALLOWED_TAGS = [
+  "p", "br",
+  "strong", "b", "em", "i", "u",
+  "blockquote", "q", "cite",
+];
+
+/**
+ * Forum post body, sanitised for an anonymous author.
+ *
+ * No attributes at all — not an empty `ALLOWED_ATTR` out of caution but because
+ * nothing in the tag list needs one. `class` and `style` in particular are absent
+ * from a reader's post on purpose: a class is a defacement, and a style is a way to
+ * make text invisible to a moderator looking for spam.
+ */
+export function sanitizeForumHtml(dirty: string): string {
+  return withPolicy("forum", () =>
+    DOMPurify.sanitize(dirty, {
+      ALLOWED_TAGS: FORUM_ALLOWED_TAGS,
+      ALLOWED_ATTR: [],
+      ALLOW_DATA_ATTR: false,
+      ALLOW_ARIA_ATTR: false,
+      // A poster's words are the content; stripping a tag must not delete the
+      // sentence inside it.
+      KEEP_CONTENT: true,
+    }),
+  );
+}

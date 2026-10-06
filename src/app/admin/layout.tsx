@@ -14,6 +14,7 @@ import Link from "next/link";
 
 const NAV = [
   { href: "/admin/articles", label: "Материалы" },
+  { href: "/admin/forum", label: "Форум" },
   { href: "/admin/settings", label: "Настройки" },
 ] as const;
 

@@ -113,6 +113,22 @@ export function PublicHeader({ categories, now }: PublicHeaderProps) {
               </Link>
             </li>
           ))}
+
+          {/*
+            The forum sits after the rubrics rather than among them, because it is not
+            one: the pills above are filters over the same feed, and this is a different
+            kind of page. Its `aria-current` is not set here — the pill strip is
+            rendered for every page, so a real active state would mean passing the
+            pathname down for one link.
+          */}
+          <li className="shrink-0">
+            <Link
+              href="/forum"
+              className="inline-flex min-h-8 items-center rounded-full border border-rule bg-paper-dim px-3.5 py-1.5 text-xs font-semibold tracking-wide text-ink-soft transition-all hover:border-yo hover:bg-yo/5 hover:text-yo-ink hover:shadow-xs"
+            >
+              Форум
+            </Link>
+          </li>
         </ul>
       </nav>
     </header>
