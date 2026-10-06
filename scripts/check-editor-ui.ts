@@ -34,6 +34,14 @@ import { sanitizeArticleHtml } from "../src/lib/sanitize";
 import { ArticlePreview } from "../src/app/admin/articles/components/article-preview";
 import { buildVideoEmbed } from "../src/lib/video-embed";
 import { installDom } from "./tiptap-dom";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+/** The one stylesheet that styles both the storefront and the editor surface. */
+const globalCss = readFileSync(
+  fileURLToPath(new URL("../src/app/globals.css", import.meta.url)),
+  "utf8",
+);
 import { editorBodyHtml } from "../src/app/admin/articles/components/editor-output";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -929,9 +937,39 @@ for (const label of TOOLBAR_LABELS) {
   );
 }
 
+// The drop cap is opt-in through `drop-cap`. The storefront and the preview mirror
+// the public page and ask for it; the editing surface must not, because
+// `article-body` is on it too and a floated first letter inside a contenteditable
+// both looked wrong and moved where the caret lands.
+//
+// Asserted against the stylesheet rather than by rendering the article page: the
+// storefront's markup is assembled in a server component that needs a whole article
+// and its relations, and the rule under test is a selector. jsdom does not resolve
+// pseudo-element styles at all, so a computed-style check would prove nothing.
+const DROP_CAP_RULE = /\.article-body\.drop-cap\s+p:first-of-type::first-letter\s*\{/;
+check(
+  "Оформление: буквица включается только явным классом",
+  DROP_CAP_RULE.test(globalCss) &&
+    !/\.article-body\s+p:first-of-type::first-letter/.test(globalCss),
+  DROP_CAP_RULE.test(globalCss)
+    ? "селектор требует .drop-cap"
+    : "правило буквицы не найдено или не требует класса",
+);
+check(
+  "Оформление: предпросмотр повторяет витрину и просит буквицу",
+  previewOpenHtml.includes("drop-cap"),
+  previewOpenHtml.match(/class="[^"]*drop-cap[^"]*"/)?.[0] ?? "нет класса",
+);
+check(
+  "Оформление: редактор буквицу не просит",
+  !editorHtml.includes("drop-cap"),
+  "поверхность редактирования без drop-cap",
+);
+
 check(
   "Редактор: предпросмотр рендерит тело через санитайзер",
-  previewOpenHtml.includes('class="article-body prose'),
+  previewOpenHtml.includes("article-body") &&
+    previewOpenHtml.includes("prose"),
   "сверка с витриной",
 );
 
@@ -1302,6 +1340,57 @@ function runCommands(make: (content: string) => import("@tiptap/core").Editor) {
     sameTab.getHTML(),
   );
   sameTab.destroy();
+
+  // Typing at the edge of a link. With the mark's default `inclusive` behaviour this
+  // produced <a>рели后续з</a> — the new characters joined the link with nothing on
+  // screen to say so, and would have been published that way.
+  const afterLink = make('<p><a href="/news/abc" target="_blank">релиз</a></p>');
+  afterLink.commands.insertContentAt(
+    afterLink.state.doc.content.size - 1,
+    " потом",
+  );
+  const afterLinkHtml = afterLink.getHTML();
+  check(
+    "Ссылка: текст после ссылки не становится её частью",
+    afterLinkHtml.includes("релиз") &&
+      afterLinkHtml.includes("потом") &&
+      !/<a[^>]*>[^<]*потом/.test(afterLinkHtml),
+    afterLinkHtml,
+  );
+
+  // The same at the leading edge, where the other trap sits.
+  const beforeLink = make('<p><a href="/news/abc" target="_blank">релиз</a></p>');
+  beforeLink.commands.insertContentAt(1, "начало ");
+  const beforeLinkHtml = beforeLink.getHTML();
+  check(
+    "Ссылка: текст перед ссылкой не становится её частью",
+    !/<a[^>]*>начало/.test(beforeLinkHtml),
+    beforeLinkHtml,
+  );
+
+  // The link is still editable: selecting across it and applying the mark extends it
+  // deliberately, which is how a link gets longer after all.
+  const extended = make('<p><a href="/news/abc" target="_blank">релиз</a></p>');
+  extended
+    .chain()
+    .focus()
+    .setTextSelection({ from: 1, to: 8 })
+    .setLink({ href: "/news/abc", target: "_blank" })
+    .run();
+  check(
+    "Ссылка: выделенный текст всё ещё можно сделать ссылкой",
+    /<a[^>]*href="\/news\/abc"[^>]*>[^<]*релиз/.test(extended.getHTML()),
+    extended.getHTML(),
+  );
+
+  // Plain text is plain: no mark, no colour class, in a fresh paragraph.
+  const plain = make("<p></p>");
+  plain.commands.insertContent("Привет мир");
+  check(
+    "Ссылка: обычный текст не получает оформление ссылки",
+    plain.getHTML() === "<p>Привет мир</p>",
+    plain.getHTML(),
+  );
 
   const video = make("<p>До</p>");
   video

@@ -119,8 +119,14 @@ body {
   --tw-prose-captions: var(--color-ink-soft);
 }
 
-.article-body p:first-of-type::first-letter {
-  /* Drop cap on the lead paragraph, newspaper style. */
+/* Drop cap on the lead paragraph, newspaper style.
+   Opt-in through `drop-cap` rather than applied to every article body. The editor
+   reuses `.article-body` so its colours and rhythm match the page, and a floated
+   `::first-letter` inside a contenteditable both looked wrong and fought the caret:
+   the first line's box starts under the float, so clicking at the start of the
+   paragraph did not put the cursor where it was clicked. The storefront and the
+   preview ask for the drop cap by name; the editing surface does not. */
+.article-body.drop-cap p:first-of-type::first-letter {
   float: left;
   font-family: var(--font-lora), Georgia, serif;
   font-size: 3.4em;
@@ -129,6 +135,14 @@ body {
   padding-right: 0.08em;
   padding-top: 0.06em;
   color: var(--color-accent);
+}
+
+/* Editor surface only. An empty paragraph still has to hold a line, or there is
+   nowhere to click to start the next sentence. Nothing else is set here on
+   purpose: paragraph margins come from `.prose`, and overriding them would make
+   the editor's spacing disagree with the published page. */
+.tiptap p {
+  min-height: 1.5em;
 }
 
 .article-body blockquote {

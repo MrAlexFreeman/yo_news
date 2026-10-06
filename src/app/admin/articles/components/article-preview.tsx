@@ -42,7 +42,7 @@ export function ArticlePreview({ html, open, onToggle }: ArticlePreviewProps) {
         html.trim() ? (
           <div className="rounded border border-neutral-300 bg-white p-4">
             <div
-              className="article-body prose prose-slate max-w-none text-sm"
+              className="article-body drop-cap prose prose-slate max-w-none text-sm"
               dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(html) }}
             />
           </div>

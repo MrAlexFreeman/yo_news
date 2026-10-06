@@ -262,7 +262,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
       {/* Authored in the editorial CMS, so it is sanitised before rendering:
           <script>, inline on* handlers and javascript: URLs are removed. */}
       <div
-        className="article-body prose prose-slate mt-6 max-w-none lg:prose-lg"
+        className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
         dangerouslySetInnerHTML={{
           __html: sanitizeArticleHtml(article.contentHtml),
         }}

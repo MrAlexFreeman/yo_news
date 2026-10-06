@@ -312,8 +312,9 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
 
     const chain = editor.chain().focus();
     const { from, to } = editor.state.selection;
+    const inserted = from === to;
 
-    if (from === to) {
+    if (inserted) {
       const label = request.label.trim();
       if (!label) return;
       chain.insertContent(label);
@@ -321,6 +322,18 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
     }
 
     chain.extendMarkRange("link").setLink(attrs).run();
+
+    // The caret lands after the link, not inside it.
+    //
+    // Selecting the label is what lets the mark land on it, but leaving the caret
+    // there means the editor is standing inside a link with every following character
+    // destined for it — and the previous source editor put the caret after the markup,
+    // so this is a regression rather than a new behaviour. Combined with
+    // `inclusive: false` on the mark, the next thing typed is ordinary text.
+    if (inserted) {
+      const after = editor.state.selection.to;
+      editor.commands.setTextSelection(after);
+    }
   }
 
   function insertVideo(editorInstance: NonNullable<typeof editor>) {

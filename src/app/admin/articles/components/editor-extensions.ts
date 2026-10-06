@@ -63,7 +63,24 @@ export function editorExtensions() {
         // set per link instead — noopener only where the link opens a new tab.
         rel: null,
       },
-    }),
+      // inclusive: false, so typing at the edge of a link writes plain text instead
+      // of continuing the link.
+      //
+      // This is the difference between a link and a trap. With the default the mark
+      // swallows everything typed after it: finish a sentence, carry on, and the
+      // next few words turn orange and underlined with no sign of why, then ship as
+      // part of the link. Measured here — text typed at the trailing edge of
+      // `<a>релиз</a>` came out as `<a>рели后续з</a>`.
+      //
+      // The usual reason to want an inclusive mark is to keep writing a long link
+      // text by hand. In this editor the label comes from the link dialog and the URL
+      // from an article search, so that case does not arise, and the mistake costs far
+      // more than the convenience is worth. Extending an existing link is done by
+      // selecting the text and pressing the button, which is what «Ссылка» is for.
+      //
+      // On `extend` rather than `configure`: `inclusive` is part of the mark spec, not
+      // an extension option.
+    }).extend({ inclusive: false }),
     Placeholder.configure({ placeholder: "Начните писать текст материала…" }),
     // inline: false keeps an image a block of its own; allowBase64: false because
     // the body is stored HTML and a data URI would bloat the article row.
