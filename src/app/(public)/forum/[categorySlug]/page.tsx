@@ -33,11 +33,14 @@ export async function generateMetadata({
     category.description ?? `Темы и ответы в разделе «${category.title}».`;
   const url = `/forum/${category.slug}`;
 
+  // "Форум: Авто и дороги" rather than "Авто и дороги — форум": the root layout
+  // appends " - Ё-новости", and a title ending in an em dash already ends up with two
+  // separators in a row.
   return {
-    title: `${category.title} — форум`,
+    title: `Форум: ${category.title}`,
     description,
     alternates: { canonical: url },
-    openGraph: { type: "website", url, title: category.title, description },
+    openGraph: { type: "website", url, title: `Форум: ${category.title}`, description },
   };
 }
 

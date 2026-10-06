@@ -17,6 +17,11 @@
  * The database cases write and then delete, in a `finally`, under a marker author
  * name, so a crashed run leaves one identifiable row rather than a silent one.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import robots from "@/app/robots";
+import { isCurrentPath } from "@/components/nav-pill";
 import { prisma } from "@/lib/prisma";
 import { sanitizeForumHtml } from "@/lib/sanitize";
 import {
@@ -455,10 +460,127 @@ async function checkDataLayer() {
   );
 }
 
+// --- 5. navigation and discoverability --------------------------------------
+
+/**
+ * The pill strip's active state.
+ *
+ * Two failure modes worth pinning, and they pull in opposite directions. Miss the
+ * prefix test and the forum pill stays grey while you are standing on the forum. Miss
+ * the boundary and `/forums` — or `/tagsomething` — lights up the wrong pill, which
+ * is worse than never lighting up: it tells a reader they are somewhere they are not.
+ */
+async function checkNavigation() {
+  const cases: [string, string, boolean][] = [
+    ["/forum", "/forum", true],
+    ["/forum/avto-i-dorogi", "/forum", true],
+    ["/forum/avto-i-dorogi/proverka-formy", "/forum", true],
+    ["/forum/", "/forum", true],
+    ["/forums", "/forum", false],
+    ["/forum-news", "/forum", false],
+    ["/", "/forum", false],
+    ["/category/tech", "/forum", false],
+    ["/", "/", true],
+    ["/forum", "/", false],
+    ["/category/tech", "/category/tech", true],
+    ["/category/technology", "/category/tech", false],
+    ["/tags", "/tags", true],
+    ["/tags/transport", "/tags", true],
+    ["/tagsomething", "/tags", false],
+  ];
+
+  let bad = 0;
+  for (const [pathname, href, expected] of cases) {
+    const actual = isCurrentPath(pathname, href);
+    if (actual !== expected) bad += 1;
+    check(
+      `Навигация: «${href}» активен на «${pathname}» — ${expected}`,
+      actual === expected,
+      `получили ${actual}`,
+    );
+  }
+
+  // robots.txt is generated, so the served rules are the only ones that count.
+  // `rules` is typed as either one rule or a list of them, so it is normalised first.
+  const rules = robots().rules;
+  const ruleList = Array.isArray(rules) ? rules : [rules];
+  const blocked = ruleList.flatMap((rule) => {
+    const disallow = rule.disallow;
+    if (disallow === undefined) return [] as string[];
+    return (Array.isArray(disallow) ? disallow : [disallow]).map((entry) =>
+      String(entry ?? ""),
+    );
+  });
+  check(
+    "SEO: robots.txt не запрещает /forum",
+    !blocked.some((entry) => "/forum" === entry || entry.startsWith("/forum")),
+    `запрещено: ${blocked.filter(Boolean).join(", ") || "(пусто)"}`,
+  );
+  check(
+    "SEO: robots.txt по-прежнему закрывает админку",
+    blocked.includes("/admin") && blocked.includes("/search"),
+    `запрещено: ${blocked.join(", ")}`,
+  );
+
+  // A forum nobody can find is a forum that does not exist, so the links themselves
+  // are part of what has to hold.
+  const headerSource = readFileSync(
+    fileURLToPath(new URL("../src/components/public-header.tsx", import.meta.url)),
+    "utf8",
+  );
+  const footerSource = readFileSync(
+    fileURLToPath(new URL("../src/components/public-footer.tsx", import.meta.url)),
+    "utf8",
+  );
+  check(
+    "Навигация: ссылка на форум есть в шапке",
+    headerSource.includes('href="/forum"'),
+    "NavPill href=\"/forum\"",
+  );
+  check(
+    "Навигация: ссылка на форум есть в подвале",
+    /href:\s*"\/forum"/.test(footerSource),
+    "NAV_LINKS содержит /forum",
+  );
+  check(
+    "Навигация: главная ссылка больше не объявляет себя текущей страницей всегда",
+    !headerSource.includes('aria-current="page"'),
+    "активное состояние вычисляется в NavPill",
+  );
+
+  // The section title goes through the root template, which appends " - Е-новости".
+  // A title that already ends in an em dash renders with two separators in a row, so
+  // the real `generateMetadata` is called rather than the file being read: a source
+  // scan here matched the comment explaining the fix instead of the code doing it.
+  const meta = await sectionMetadata("avto-i-dorogi");
+  const sectionTitle = typeof meta.title === "string" ? meta.title : "";
+  check(
+    "SEO: заголовок раздела не даёт двойного разделителя",
+    sectionTitle === "Форум: Авто и дороги" && !sectionTitle.includes("—"),
+    sectionTitle || "(пусто)",
+  );
+  check(
+    "SEO: у раздела есть canonical и описание",
+    typeof meta.description === "string" &&
+      meta.description.length > 40 &&
+      meta.alternates?.canonical === "/forum/avto-i-dorogi",
+    `canonical: ${meta.alternates?.canonical ?? "нет"}`,
+  );
+}
+
+/** The metadata the section page produces for one slug. */
+async function sectionMetadata(slug: string) {
+  const { generateMetadata } = await import(
+    "../src/app/(public)/forum/[categorySlug]/page"
+  );
+  return generateMetadata({ params: Promise.resolve({ categorySlug: slug }) });
+}
+
 async function main() {
   checkSanitiser();
   checkText();
   checkSpamGate();
+  await checkNavigation();
   await checkDataLayer();
 
   for (const { name, ok, detail } of checks) {

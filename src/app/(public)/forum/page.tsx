@@ -5,16 +5,30 @@ import { MessageSquare, Pin, Users } from "lucide-react";
 import { getForumCategories } from "@/lib/forum";
 import { plural } from "@/lib/date";
 
+/**
+ * Board metadata.
+ *
+ * The title is a plain "Форум" so the root layout's template turns it into
+ * «Форум - Ё-новости» — the same shape every other page on the site gets, and one
+ * template to keep correct. Spelling the site name out here as well would produce
+ * «Форум - eartnews.ru - Ё-новости».
+ *
+ * The description names what a reader finds here rather than repeating the word
+ * "форум": a search engine reads a meta description as a summary of the queries the
+ * page answers, and «обсуждение новостей региона, городских тем, авто и дорог» says
+ * more about this page than «форум издания» does.
+ */
 export const metadata: Metadata = {
   title: "Форум",
   description:
-    "Обсуждение материалов издания и городских новостей: темы, ответы, свежие обсуждения.",
+    "Форум eartnews.ru — обсуждение новостей региона, городских тем, авто и дорог.",
   alternates: { canonical: "/forum" },
   openGraph: {
     type: "website",
     url: "/forum",
     title: "Форум",
-    description: "Обсуждение материалов издания и городских новостей.",
+    description:
+      "Форум eartnews.ru — обсуждение новостей региона, городских тем, авто и дорог.",
   },
 };
 

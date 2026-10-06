@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { LiveDateline } from "@/components/live-dateline";
 import { Logo } from "@/components/logo";
+import { NavPill } from "@/components/nav-pill";
 import { formatDateline } from "@/lib/date";
 import { SITE_TAGLINE } from "@/lib/site";
 
@@ -91,43 +92,29 @@ export function PublicHeader({ categories, now }: PublicHeaderProps) {
         </div>
       </div>
 
-      {/* Rubric strip: pill links, scrollable on narrow screens. */}
+      {/* Rubric strip: pill links, scrollable on narrow screens.
+
+          There is no drawer or burger menu on this site, and the forum does not need
+          one: this row scrolls horizontally on a phone and every pill carries
+          `shrink-0`, so the forum is reachable without a tap-to-open step. Adding a
+          mobile menu just for one link would be a second navigation to keep in step. */}
       <nav aria-label="Рубрики" className="border-t border-rule">
         <ul className="mx-auto flex max-w-7xl gap-1.5 overflow-x-auto px-4 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <li className="shrink-0">
-            <Link
-              href="/"
-              aria-current="page"
-              className="inline-flex min-h-8 items-center rounded-full bg-ink px-3.5 py-1.5 text-xs font-semibold tracking-wide text-paper transition-transform hover:scale-[1.03]"
-            >
-              Все новости
-            </Link>
+            <NavPill href="/" label="Все новости" />
           </li>
           {categories.map((category) => (
             <li key={category.slug} className="shrink-0">
-              <Link
+              <NavPill
                 href={`/category/${category.slug}`}
-                className="inline-flex min-h-8 items-center rounded-full border border-rule bg-white px-3.5 py-1.5 text-xs font-semibold tracking-wide text-ink-soft transition-all hover:border-yo hover:bg-yo/5 hover:text-yo-ink hover:shadow-xs"
-              >
-                {category.name}
-              </Link>
+                label={category.name}
+              />
             </li>
           ))}
-
-          {/*
-            The forum sits after the rubrics rather than among them, because it is not
-            one: the pills above are filters over the same feed, and this is a different
-            kind of page. Its `aria-current` is not set here — the pill strip is
-            rendered for every page, so a real active state would mean passing the
-            pathname down for one link.
-          */}
+          {/* The forum sits after the rubrics rather than among them, because it is
+              not one: the pills above are filters over the same feed. */}
           <li className="shrink-0">
-            <Link
-              href="/forum"
-              className="inline-flex min-h-8 items-center rounded-full border border-rule bg-paper-dim px-3.5 py-1.5 text-xs font-semibold tracking-wide text-ink-soft transition-all hover:border-yo hover:bg-yo/5 hover:text-yo-ink hover:shadow-xs"
-            >
-              Форум
-            </Link>
+            <NavPill href="/forum" label="Форум" tone="muted" />
           </li>
         </ul>
       </nav>
