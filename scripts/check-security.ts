@@ -97,7 +97,6 @@ import {
   isSearchable,
   normaliseQuery,
 } from "../src/lib/article-search";
-import { buildLinkMarkup } from "../src/app/admin/articles/components/link-dialog";
 import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -2385,35 +2384,20 @@ function checkArticleSearch() {
   );
 }
 
-/** The link dialog's markup, and the storefront contract it has to satisfy. */
-function checkLinkDialog() {
-  const blank = buildLinkMarkup({
-    label: "релиз проекта",
-    url: "/news/abc",
-    blank: true,
-  });
-  check(
-    "Ссылка: разметка с target=_blank и rel",
-    blank === '<a href="/news/abc" target="_blank" rel="noopener noreferrer">релиз проекта</a>',
-    blank,
-  );
-
-  // "_self" rather than omitting target: the site applies _blank to a link that
-  // states no preference, so omitting it would make the checkbox a decoration.
-  const same = buildLinkMarkup({ label: "текст", url: "https://e.test", blank: false });
-  check(
-    "Ссылка: «новая вкладка» выключена — явный _self",
-    same.includes('target="_self"') && !same.includes("rel="),
-    same,
-  );
-
-  check(
-    "Ссылка: кавычки в адресе экранируются",
-    buildLinkMarkup({ label: "a", url: '/x"onmouseover="1', blank: true }).includes(
-      "&quot;",
-    ),
-    "экранировано",
-  );
+/**
+ * The storefront contract for links.
+ *
+ * The editor no longer assembles anchor markup by hand, so there is no builder
+ * left to test: the checks below drive the sanitiser directly, which is the layer
+ * that actually decides what a reader gets.
+ */
+function checkLinkPolicy() {
+  // Already-formed links, the shape the editor now emits. What the sanitiser does
+  // with a target it is handed is the contract under test; how the anchor markup is
+  // assembled is the editor's business, checked in check-editor-ui.ts.
+  const blank =
+    '<a href="/news/abc" target="_blank" rel="noopener noreferrer">релиз проекта</a>';
+  const same = '<a href="https://e.test" target="_self">текст</a>';
 
   // The storefront result of each form.
   const renderedBlank = sanitizeArticleHtml(blank);
@@ -2548,7 +2532,7 @@ async function main() {
   checkDzenExperiment();
   checkArticleLinks();
   checkArticleSearch();
-  checkLinkDialog();
+  checkLinkPolicy();
   checkVideoEmbedParams();
   checkVkNoNext();
   checkVideoDropGuard();

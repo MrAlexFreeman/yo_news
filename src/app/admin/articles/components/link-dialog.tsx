@@ -326,19 +326,3 @@ export function LinkDialog({ initialLabel, onApply, onClose }: LinkDialogProps) 
     </div>
   );
 }
-
-/**
- * The markup the dialog produces.
- *
- * `target="_self"` rather than omitting the attribute when the box is unchecked:
- * the site applies `_blank` as its default for a link that expresses no
- * preference, so "same tab" has to be stated explicitly for the checkbox to
- * actually mean something.
- */
-export function buildLinkMarkup(input: LinkRequest): string {
-  const href = input.url.replace(/"/g, "&quot;");
-  const target = input.blank ? "_blank" : "_self";
-  const rel = input.blank ? ' rel="noopener noreferrer"' : "";
-
-  return `<a href="${href}" target="${target}"${rel}>${input.label}</a>`;
-}

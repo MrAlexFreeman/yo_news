@@ -742,7 +742,6 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
                     setContentHtml(value);
                   }}
                   error={errors.contentHtml}
-                  onLinkInserted={() => setPreviewOpen(true)}
                 />
 
                 <ArticlePreview

@@ -1,0 +1,81 @@
+import Image from "@tiptap/extension-image";
+import Link from "@tiptap/extension-link";
+import Placeholder from "@tiptap/extension-placeholder";
+import { TableKit } from "@tiptap/extension-table";
+import TextAlign from "@tiptap/extension-text-align";
+import Underline from "@tiptap/extension-underline";
+import StarterKit from "@tiptap/starter-kit";
+
+import { VideoEmbed } from "@/app/admin/articles/components/video-embed-node";
+
+/**
+ * How a link looks in the editor.
+ *
+ * The same amber the sanitiser applies to links on the public page, so the editor
+ * and the article agree and an editor can trust what they see here. `.article-body`
+ * already styles anchors, but stating it on the mark as well means a link is still
+ * visibly a link if the prose cascade is ever changed.
+ */
+export const LINK_CLASS =
+  "text-amber-600 hover:text-amber-700 underline font-medium";
+
+/**
+ * The editor's schema, in one place.
+ *
+ * Lives apart from the component so the checks can build a real editor from the
+ * same list the UI uses. A test that assembled its own extensions would go on
+ * passing after someone changed the component, which is precisely the failure this
+ * file exists to prevent.
+ *
+ * The set is chosen to cover everything the toolbar can emit and everything the
+ * sanitiser permits the toolbar to emit. Anything TipTap's schema does not know is
+ * deleted from the body the first time that article is saved, so the additions here
+ * — video, table, underline, alignment — are data-preservation decisions, not
+ * features for their own sake.
+ */
+export function editorExtensions() {
+  return [
+    // StarterKit v3 ships Link and Underline. Left enabled they would register a
+    // second copy of each extension under the same name, and the editor would pick
+    // one of the pair at random; both are configured explicitly instead.
+    StarterKit.configure({
+      link: false,
+      underline: false,
+      // h2 and h3 only: the stylesheet sizes those, and an h1 inside a body would
+      // compete with the article title.
+      heading: { levels: [2, 3] },
+      codeBlock: { HTMLAttributes: { class: "text-sm" } },
+    }),
+    Underline,
+    Link.configure({
+      // An editor that navigates away on click cannot be edited around, and a
+      // body full of links would make ordinary clicking useless.
+      openOnClick: false,
+      autolink: false,
+      linkOnPaste: false,
+      // Clicking a link puts the caret in it instead of following it.
+      enableClickSelection: true,
+      HTMLAttributes: {
+        class: LINK_CLASS,
+        // TipTap's default rel is "noopener noreferrer nofollow". The last part is
+        // wrong for this publication: the link dialog exists to cross-link articles,
+        // and nofollow on an internal link tells search engines to stop there. rel is
+        // set per link instead — noopener only where the link opens a new tab.
+        rel: null,
+      },
+    }),
+    Placeholder.configure({ placeholder: "Начните писать текст материала…" }),
+    // inline: false keeps an image a block of its own; allowBase64: false because
+    // the body is stored HTML and a data URI would bloat the article row.
+    Image.configure({ inline: false, allowBase64: false }),
+    TextAlign.configure({
+      types: ["heading", "paragraph", "image"],
+      alignments: ["left", "center", "right", "justify"],
+    }),
+    // TableKit, not Table: v3 splits a table into four nodes and the Table node
+    // alone references row/cell/header by name, so adding it by itself throws
+    // while the schema is being built.
+    TableKit.configure({ table: { resizable: false } }),
+    VideoEmbed,
+  ];
+}

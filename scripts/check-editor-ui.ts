@@ -30,10 +30,11 @@ import {
 } from "../src/lib/image-dimensions";
 import { DZEN_TITLE_LIMIT, TITLE_SOFT_LIMIT } from "../src/app/admin/articles/types";
 import { DZEN_URL } from "../src/lib/site";
-import { buildLinkMarkup } from "../src/app/admin/articles/components/link-dialog";
 import { sanitizeArticleHtml } from "../src/lib/sanitize";
-import { normalizeArticleHtml } from "../src/lib/article-html";
 import { ArticlePreview } from "../src/app/admin/articles/components/article-preview";
+import { buildVideoEmbed } from "../src/lib/video-embed";
+import { installDom } from "./tiptap-dom";
+import { editorBodyHtml } from "../src/app/admin/articles/components/editor-output";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 const check = (name: string, ok: boolean, detail: string) => {
@@ -888,61 +889,507 @@ check(
 );
 
 // --- storefront link markup (end to end through the sanitiser) --------------
-const inserted = sanitizeArticleHtml(
-  buildLinkMarkup({ label: "релиз", url: "/news/abc", blank: true }),
-);
+// The editor is no longer a source textarea. Asserting the old design here would be
+// asserting a regression, so the shape check is inverted — and the question it was
+// really asking, "can this thing be trusted with a stored article?", is answered
+// properly by the round trip below rather than by looking at markup.
 check(
-  "Ссылка: вставка доходит до витрины кликабельной",
-  inserted.includes("underline") && inserted.includes("text-amber-600"),
-  inserted,
-);
-check(
-  "Ссылка: текст ссылки не теряется при санитайзере",
-  inserted.includes(">релиз<"),
-  "текст на месте",
+  "Редактор: визуальная поверхность, а не textarea с исходником",
+  editorHtml.includes('role="group"') && !editorHtml.includes("<textarea"),
+  "ProseMirror, создаётся на клиенте",
 );
 
-// The full save pipeline, not just the sanitiser. The complaint that produced this
-// task was that a link arrives as plain text, and the only way to disprove that is
-// to run the markup through what actually stores it and then what actually renders.
-const throughSave = normalizeArticleHtml(
-  `<p>Смотрите ${buildLinkMarkup({ label: "ответ мэрии", url: "/news/abc", blank: true })} и материал.</p>`,
-);
-const throughRender = sanitizeArticleHtml(throughSave);
-check(
-  "Ссылка: разметка переживает normalizeArticleHtml тегом",
-  throughSave.includes('<a href="/news/abc"'),
-  throughSave,
-);
-check(
-  "Ссылка: не превращается в экранированный текст",
-  !throughSave.includes("&lt;a") && !throughSave.includes("&amp;lt;"),
-  "тег остался тегом",
-);
-check(
-  "Ссылка: после сохранения и рендера — кликабельная",
-  /<a [^>]*href="\/news\/abc"/.test(throughRender) &&
-    throughRender.includes("underline"),
-  throughRender,
-);
+// Every control the toolbar is supposed to offer, checked by its accessible name
+// rather than by an icon. A missing button is a capability silently lost in a
+// rewrite, and it is invisible in a screenshot of the page.
+const TOOLBAR_LABELS = [
+  "Исходный код",
+  "Жирный",
+  "Курсив",
+  "Подчеркнутый",
+  "Заголовок H2",
+  "Заголовок H3",
+  "Цитата",
+  "Выравнивание по левому краю",
+  "Выравнивание по центру",
+  "Выравнивание по правому краю",
+  "Выравнивание по ширине",
+  "Маркированный список",
+  "Нумерованный список",
+  "Таблица",
+  "Ссылка (Ctrl+K)",
+  "Видео",
+  "Изображение",
+];
+for (const label of TOOLBAR_LABELS) {
+  check(
+    `Панель: кнопка «${label}» на месте`,
+    editorHtml.includes(`aria-label="${label}"`),
+    label,
+  );
+}
 
-// There is no rich-text engine in this editor, and asserting otherwise would be the
-// mistake that sent this task down the wrong path. Assert the shape that explains
-// the behaviour instead, so the next person does not have to rediscover it.
-check(
-  "Редактор: это textarea, а не contenteditable — тени стилить нечем",
-  editorHtml.includes("<textarea") && !editorHtml.includes("contenteditable"),
-  "исходная правка HTML",
-);
 check(
   "Редактор: предпросмотр рендерит тело через санитайзер",
   previewOpenHtml.includes('class="article-body prose'),
-  "единственное место, где ссылка видна как ссылка",
+  "сверка с витриной",
 );
 
-for (const { name, ok, detail } of checks) {
-  console.log(`${ok ? "OK  " : "FAIL"} ${name} — ${detail}`);
+/**
+ * Every construct a stored article body can contain.
+ *
+ * Built from two sources: what the toolbar can emit, and what the corpus actually
+ * holds. The video and table fixtures are the reason the editor carries a video
+ * node and the table extension — with plain StarterKit both parse into nothing, and
+ * an article that had one would lose it on the next save.
+ */
+/**
+ * Every construct a stored article body can contain.
+ *
+ * Built from two sources: what the toolbar can emit, and what the corpus actually
+ * holds. The video and table fixtures are the reason the editor carries a video
+ * node and the table extension — with plain StarterKit both parse into nothing, and
+ * an article that had one would lose it on the next save.
+ *
+ * `mustKeep` is checked against what the editor stores; `mustRender` against what
+ * the sanitiser hands the reader. They differ on purpose — the sanitiser is a
+ * separate policy, and a construct can be preserved by the editor and stripped on
+ * the way out. That is worth seeing rather than papering over.
+ */
+type RoundTrip = {
+  name: string;
+  html: string;
+  mustKeep: RegExp[];
+  mustRender?: RegExp[];
+};
+
+const ROUND_TRIPS: RoundTrip[] = [
+  {
+    name: "абзац с переносом строки",
+    html: "<p>Первый абзац<br>второй строкой</p>",
+    mustKeep: [/<br\s*\/?>/],
+  },
+  {
+    name: "заголовок H2",
+    html: "<h2>Подзаголовок</h2>",
+    mustKeep: [/<h2[^>]*>[\s\S]*Подзаголовок[\s\S]*<\/h2>/],
+  },
+  {
+    name: "маркированный список",
+    html: "<ul><li>Первый</li><li>Второй</li></ul>",
+    mustKeep: [/<ul[^>]*>/, /<li[^>]*>(?:<p[^>]*>)?Первый/],
+  },
+  {
+    name: "нумерованный список",
+    html: "<ol><li>Шаг</li></ol>",
+    mustKeep: [/<ol[^>]*>/, /<li[^>]*>(?:<p[^>]*>)?Шаг/],
+  },
+  {
+    name: "цитата",
+    html: "<blockquote><p>Цитата</p></blockquote>",
+    mustKeep: [/<blockquote[^>]*>/, /Цитата/],
+  },
+  {
+    name: "жирный, курсив и подчёркнутый",
+    html: "<p><strong>жирный</strong> <em>курсив</em> <u>подчёркнутый</u></p>",
+    mustKeep: [
+      /<strong[^>]*>жирный<\/strong>/,
+      /<em[^>]*>курсив<\/em>/,
+      /<u[^>]*>подчёркнутый<\/u>/,
+    ],
+  },
+  {
+    name: "ссылка",
+    html: '<p><a href="/news/abc" target="_blank" rel="noopener noreferrer">релиз</a></p>',
+    mustKeep: [
+      /<a[^>]*href="\/news\/abc"/,
+      /target="_blank"/,
+      /rel="noopener noreferrer"/,
+      /релиз/,
+    ],
+    mustRender: [
+      /<a[^>]*href="\/news\/abc"/,
+      /target="_blank"/,
+      /rel="noopener noreferrer"/,
+    ],
+  },
+  {
+    name: "выравнивание по центру",
+    html: '<p style="text-align: center">По центру</p>',
+    mustKeep: [/text-align:\s*center/i],
+    mustRender: [/text-align:\s*center/i],
+  },
+  {
+    name: "картинка",
+    html: '<img src="/uploads/a.webp" alt="Кадр">',
+    mustKeep: [/<img[^>]*src="\/uploads\/a\.webp"/],
+    mustRender: [/<img[^>]*src="\/uploads\/a\.webp"/, /alt="Кадр"/],
+  },
+  {
+    name: "исходный код",
+    html: "<pre><code>const a = 1;</code></pre>",
+    mustKeep: [/<pre[^>]*>/, /const a = 1;/],
+    mustRender: [/<pre[^>]*>/, /const a = 1;/],
+  },
+  {
+    name: "таблица",
+    html: "<table><tbody><tr><td><p>Ячейка</p></td></tr></tbody></table>",
+    mustKeep: [/<table[^>]*>/, /<td[^>]*>/, /Ячейка/],
+    mustRender: [/<table[^>]*>/, /<td[^>]*>/, /Ячейка/],
+  },
+  {
+    name: "видео YouTube",
+    html: buildVideoEmbed("https://youtu.be/dQw4w9WgXcQ") ?? "",
+    mustKeep: [
+      /<figure class="video-embed">/,
+      /<iframe[^>]*src="https:\/\/www\.youtube\.com\/embed\/dQw4w9WgXcQ"/,
+      /allowfullscreen/,
+      /referrerpolicy="strict-origin-when-cross-origin"/,
+    ],
+    // The player affordances belong on the live page too. They were being stripped
+    // by the sanitiser's URI check until `allow`, `allowfullscreen`,
+    // `referrerpolicy` and `loading` were listed as attribute-safe.
+    mustRender: [
+      /<iframe[^>]*src="https:\/\/www\.youtube\.com\/embed\/dQw4w9WgXcQ"/,
+      /allowfullscreen/,
+      /referrerpolicy="strict-origin-when-cross-origin"/,
+    ],
+  },
+  {
+    name: "видео VK",
+    html: buildVideoEmbed("https://vk.com/video-123_456") ?? "",
+    mustKeep: [
+      /<figure class="video-embed">/,
+      // The owner id keeps the minus sign the share URL carries, and `&` is escaped
+      // in the attribute exactly as it should be.
+      /<iframe[^>]*src="https:\/\/vk\.com\/video_ext\.php\?oid=-123&amp;id=456&amp;no_next=1&amp;autoplay=0"/,
+    ],
+    mustRender: [
+      /<iframe[^>]*src="https:\/\/vk\.com\/video_ext\.php\?oid=-123&amp;id=456&amp;no_next=1&amp;autoplay=0"/,
+    ],
+  },
+];
+
+/**
+ * Runs the schema over one body, twice.
+ *
+ * The second pass is the load-bearing one. An editor that drops an unsupported node
+ * looks fine on the first open and destroyed on the second, so comparing pass two
+ * against pass one catches a fixture TipTap cannot represent at all — the `<figure>`
+ * becoming text, the `<table>` unwrapping into paragraphs — even where the first
+ * pass happened to survive.
+ */
+async function runRoundTrips() {
+  // Before the import, not after: ProseMirror reads `document` while building its
+  // view, and the dynamic import is what keeps that from mattering at module load.
+  installDom();
+  const { Editor } = await import("@tiptap/core");
+  const { editorExtensions } = await import(
+    "../src/app/admin/articles/components/editor-extensions"
+  );
+
+  const make = (content: string) =>
+    new Editor({
+      element: document.createElement("div"),
+      extensions: editorExtensions(),
+      content,
+    });
+
+  /**
+   * Прогрев: первый Editor в процессе всегда падает.
+   *
+   * Наблюдается в @tiptap/core 3.31 — первая сборка схемы возвращает "Adding
+   * different instances of a keyed plugin", а вторая и все последующие проходят.
+   * Проверено на наборах расширений по очереди: падает именно первая сборка, а не
+   * какая-то конкретная комбинация, и порядок импортов на это не влияет.
+   *
+   * Меняет ли это что-нибудь в браузере — вопрос открытый: там `window` существует
+   * с самого начала и модульная инициализация идёт иначе. Набор не должен зависеть
+   * от такого поведения, поэтому лишний редактор создаётся и выбрасывается явно, а
+   * проверки идут со второго.
+   */
+  try {
+    make("<p>прогрев</p>").destroy();
+  } catch {
+    // Падение здесь ожидаемо и именно ради него прогрев и нужен. Если следующий
+    // вызов тоже не пройдёт, упадёт уже настоящая проверка — с её сообщением.
+  }
+
+  for (const fixture of ROUND_TRIPS) {
+    const editor = make(fixture.html);
+    const html = editorBodyHtml(editor);
+    editor.commands.setContent(html, { emitUpdate: false });
+    const again = editorBodyHtml(editor);
+    const rendered = sanitizeArticleHtml(html);
+
+    const lost = fixture.mustKeep.filter((expected) => !expected.test(html));
+    check(
+      `Редактор: «${fixture.name}» переживает сохранение`,
+      lost.length === 0,
+      lost.length === 0 ? html : `потеряно: ${lost.join(" | ")} → ${html}`,
+    );
+    check(
+      `Редактор: «${fixture.name}» стабилен при повторном сохранении`,
+      again === html,
+      again === html ? "повторный проход ничего не меняет" : `${html} → ${again}`,
+    );
+    check(
+      `Редактор: «${fixture.name}» доходит до витрины`,
+      (fixture.mustRender ?? []).every((expected) => expected.test(rendered)),
+      rendered.slice(0, 170),
+    );
+    editor.destroy();
+  }
+
+  // The trailing empty paragraph is an editing affordance, not content. Asserted on
+  // its own because it would otherwise show up only as a diff in one of the
+  // idempotence checks above, where its cause would be a guess.
+  const trailing = make("<p>Текст</p>");
+  check(
+    "Редактор: пустой абзац в конце не попадает в базу",
+    editorBodyHtml(trailing) === "<p>Текст</p>",
+    editorBodyHtml(trailing),
+  );
+  trailing.destroy();
+
+  const blank = make("");
+  check(
+    "Редактор: пустое тело остаётся пустым",
+    editorBodyHtml(blank) === "",
+    JSON.stringify(editorBodyHtml(blank)),
+  );
+  blank.destroy();
+
+  runCommands(make);
+  report();
 }
-const failed = checks.filter((c) => !c.ok);
-console.log(`\n${checks.length - failed.length}/${checks.length} проверок пройдено`);
-process.exitCode = failed.length > 0 ? 1 : 0;
+
+/**
+ * The toolbar's actual commands, on a real editor.
+ *
+ * The round trip above proves nothing is lost; this proves the controls do
+ * something. Rendered markup alone cannot show that — a button wired to a command
+ * that does not exist still renders perfectly.
+ */
+function runCommands(make: (content: string) => import("@tiptap/core").Editor) {
+  const select = (from: number, to: number) => ({ from, to });
+
+  const bold = make("<p>Слово</p>");
+  bold.chain().focus().setTextSelection(select(1, 6)).toggleBold().run();
+  check(
+    "Команда: toggleBold оборачивает выделение",
+    /<strong[^>]*>Слово<\/strong>/.test(bold.getHTML()),
+    bold.getHTML(),
+  );
+  bold.destroy();
+
+  const italic = make("<p>Слово</p>");
+  italic.chain().focus().setTextSelection(select(1, 6)).toggleItalic().run();
+  check(
+    "Команда: toggleItalic оборачивает выделение",
+    /<em[^>]*>Слово<\/em>/.test(italic.getHTML()),
+    italic.getHTML(),
+  );
+  italic.destroy();
+
+  const underline = make("<p>Слово</p>");
+  underline.chain().focus().setTextSelection(select(1, 6)).toggleUnderline().run();
+  check(
+    "Команда: toggleUnderline работает, хотя не входит в StarterKit",
+    /<u[^>]*>Слово<\/u>/.test(underline.getHTML()),
+    underline.getHTML(),
+  );
+  underline.destroy();
+
+  const heading = make("<p>Заголовок</p>");
+  heading.chain().focus().toggleHeading({ level: 2 }).run();
+  const headingHtml = heading.getHTML();
+  check(
+    "Команда: toggleHeading даёт h2 и отмечает нужную кнопку",
+    /<h2[^>]*>Заголовок<\/h2>/.test(headingHtml) &&
+      heading.isActive("heading", { level: 2 }) &&
+      !heading.isActive("heading", { level: 3 }),
+    headingHtml,
+  );
+  heading.destroy();
+
+  const quote = make("<p>Цитата</p>");
+  quote.chain().focus().toggleBlockquote().run();
+  check(
+    "Команда: toggleBlockquote оборачивает абзац",
+    /<blockquote[^>]*>[\s\S]*Цитата[\s\S]*<\/blockquote>/.test(quote.getHTML()),
+    quote.getHTML(),
+  );
+  quote.destroy();
+
+  const lists = make("<p>Пункт</p>");
+  lists.chain().focus().toggleBulletList().run();
+  const bullet = lists.getHTML();
+  lists.chain().focus().toggleBulletList().toggleOrderedList().run();
+  const ordered = lists.getHTML();
+  check(
+    "Команда: маркированный и нумерованный списки",
+    /<ul[^>]*>[\s\S]*Пункт/.test(bullet) &&
+      /<ol[^>]*>[\s\S]*Пункт/.test(ordered),
+    `${bullet} | ${ordered}`,
+  );
+  lists.destroy();
+
+  const align = make("<p>Текст</p>");
+  align.chain().focus().setTextAlign("center").run();
+  check(
+    "Команда: setTextAlign пишет style, который читает и санитайзер",
+    /text-align:\s*center/i.test(align.getHTML()) &&
+      /text-align:\s*center/i.test(sanitizeArticleHtml(align.getHTML())),
+    align.getHTML(),
+  );
+  align.destroy();
+
+  const link = make("<p>релиз</p>");
+  link
+    .chain()
+    .focus()
+    .setTextSelection(select(1, 6))
+    .extendMarkRange("link")
+    .setLink({ href: "/news/abc", target: "_blank", rel: "noopener noreferrer" })
+    .run();
+  const linkHtml = link.getHTML();
+  check(
+    "Команда: setLink вешает ссылку на выделение целиком",
+    /<a[^>]*href="\/news\/abc"[^>]*>релиз<\/a>/.test(linkHtml),
+    linkHtml,
+  );
+  check(
+    "Команда: ссылка выглядит ссылкой прямо в редакторе",
+    linkHtml.includes("underline") && linkHtml.includes("text-amber-600"),
+    linkHtml,
+  );
+  check(
+    "Команда: link.isActive отмечает кнопку «Ссылка»",
+    link.isActive("link"),
+    linkHtml,
+  );
+
+  // unsetLink is what the dialog's empty-URL branch calls, and the only way an
+  // editor takes a link off a word.
+  link.chain().focus().extendMarkRange("link").unsetLink().run();
+  check(
+    "Команда: unsetLink снимает ссылку, а не оставляет пустой тег",
+    !link.getHTML().includes("<a") && link.getHTML().includes("релиз"),
+    link.getHTML(),
+  );
+  link.destroy();
+
+  // A link with no target is what the old markup produced, and the storefront turns
+  // it into target="_blank". So the mark has to carry the target itself, or the
+  // dialog's "new tab" checkbox would do nothing on the page.
+  const sameTab = make("<p>текст</p>");
+  sameTab
+    .chain()
+    .focus()
+    .setTextSelection(select(1, 6))
+    .setLink({ href: "https://e.test", target: "_self" })
+    .run();
+  check(
+    "Ссылка: «новая вкладка» выключена — явный _self",
+    /target="_self"/.test(sameTab.getHTML()),
+    sameTab.getHTML(),
+  );
+  check(
+    "Ссылка: внутренняя ссылка не помечается nofollow",
+    !/nofollow/.test(sameTab.getHTML()),
+    sameTab.getHTML(),
+  );
+  sameTab.destroy();
+
+  const video = make("<p>До</p>");
+  video
+    .chain()
+    .focus()
+    .insertContent({
+      type: "videoEmbed",
+      attrs: { src: "https://rutube.ru/play/embed/abc123" },
+    })
+    .run();
+  const videoHtml = video.getHTML();
+  check(
+    "Команда: вставка видео даёт figure с iframe, как buildVideoEmbed",
+    /<figure class="video-embed">/.test(videoHtml) &&
+      /<iframe[^>]*src="https:\/\/rutube\.ru\/play\/embed\/abc123"/.test(videoHtml),
+    videoHtml,
+  );
+  video.destroy();
+
+  // A frame pasted from a site we do not embed. The sanitiser would strip it at
+  // render time, but the editor must not frame it either: sanitising the stored HTML
+  // says nothing about what runs on the admin origin while someone is editing.
+  const foreign = make(
+    '<p>До</p><iframe src="https://evil.example/steal"></iframe><p>После</p>',
+  );
+  check(
+    "Видео: чужой iframe не превращается в узел редактора",
+    !foreign.getHTML().includes("evil.example"),
+    foreign.getHTML(),
+  );
+  foreign.destroy();
+
+  // The link extension validates protocols, and the sanitiser blocks them again at
+  // render. Both are asserted because they are independent guarantees and either
+  // one alone would do.
+  const scripted = make("<p>нажми</p>");
+  scripted
+    .chain()
+    .focus()
+    .setTextSelection(select(1, 6))
+    .setLink({ href: "javascript:alert(1)" })
+    .run();
+  const scriptedHtml = scripted.getHTML();
+  check(
+    "Ссылка: javascript: не доходит до витрины",
+    !sanitizeArticleHtml(scriptedHtml).includes("javascript:"),
+    sanitizeArticleHtml(scriptedHtml),
+  );
+  scripted.destroy();
+
+  // Attribute injection through the href. The markup builder this editor used to call
+  // escaped quotes by hand and is gone; the guarantee has to be asserted where the
+  // value is written now, which is the mark. TipTap serialises through the DOM, so the
+  // quote is escaped rather than closing the attribute — and the sanitiser drops the
+  // handler outright.
+  const injected = make("<p>клик</p>");
+  injected
+    .chain()
+    .focus()
+    .setTextSelection(select(1, 5))
+    .setLink({ href: '/x" onmouseover="alert(1)' })
+    .run();
+  const injectedHtml = injected.getHTML();
+  // Parsed rather than pattern-matched: `onmouseover=&quot;` inside an href value is
+  // escaped text, not an attribute, and a substring search cannot tell those apart.
+  const probe = document.createElement("div");
+  probe.innerHTML = sanitizeArticleHtml(injectedHtml);
+  check(
+    "Ссылка: кавычка в адресе не превращается в обработчик события",
+    probe.querySelectorAll("[onmouseover]").length === 0 &&
+      probe.querySelector("a")?.getAttribute("href") ===
+        '/x" onmouseover="alert(1)',
+    injectedHtml,
+  );
+  injected.destroy();
+}
+
+function report() {
+  for (const { name, ok, detail } of checks) {
+    console.log(`${ok ? "OK  " : "FAIL"} ${name} — ${detail}`);
+  }
+  const failed = checks.filter((c) => !c.ok);
+  console.log(
+    `\n${checks.length - failed.length}/${checks.length} проверок пройдено`,
+  );
+  process.exitCode = failed.length > 0 ? 1 : 0;
+}
+
+runRoundTrips().catch((error: unknown) => {
+  console.error("проверки редактора не выполнены:", error);
+  process.exitCode = 1;
+});

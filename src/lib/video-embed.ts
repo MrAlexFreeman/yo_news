@@ -8,6 +8,16 @@
  * vector, not a video player.
  */
 
+/**
+ * Player permissions on the generated iframe.
+ *
+ * Shared with the editor's video node so an embed pasted as raw HTML and one
+ * inserted from the toolbar end up with identical permissions — two spellings of
+ * the same policy would drift.
+ */
+export const VIDEO_EMBED_ALLOW =
+  "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen";
+
 /** Hosts we are willing to frame, and the path shape each one uses. */
 type Provider = {
   label: string;
@@ -176,7 +186,7 @@ export function buildVideoEmbed(input: string): string | null {
     return [
       '<figure class="video-embed">',
       `<iframe src="${src}" title="Видео" loading="lazy"`,
-      ' allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"',
+      ` allow="${VIDEO_EMBED_ALLOW}"`,
       ' allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>',
       "</figure>",
     ].join("");

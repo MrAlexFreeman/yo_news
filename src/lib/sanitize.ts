@@ -51,7 +51,18 @@ const ALLOWED_URI_REGEXP = /^(?:https?:|mailto:|tel:|\/|#)/i;
  * a URL, so neither can smuggle `javascript:`; href still goes through the regex,
  * which is what actually blocks a scripted link.
  */
-const URI_SAFE_ATTR = ["target", "rel"];
+const URI_SAFE_ATTR = [
+  "target",
+  "rel",
+  // The same trap as above, one level down: the video iframe's player affordances
+  // are not URLs either, and every one of them was being stripped, which is why a
+  // published video had no fullscreen button. `allow` carries a permissions policy
+  // list, not an address — nothing in any of these can execute or fetch.
+  "allow",
+  "allowfullscreen",
+  "referrerpolicy",
+  "loading",
+];
 
 /**
  * Strips `<script>`, inline `on*` handlers, data-URI URLs, iframes pointing
