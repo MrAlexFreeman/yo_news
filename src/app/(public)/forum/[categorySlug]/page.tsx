@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
 import { ForumForm } from "@/app/(public)/forum/components/forum-form";
@@ -57,7 +58,10 @@ const PAGE_SIZE = 20;
  */
 export async function ForumCategoryListing({ categorySlug, page }: ListingProps) {
   const category = await getForumCategoryBySlug(categorySlug);
-  if (!category) return null;
+  // notFound() rather than rendering nothing: a null page answers 200 with an empty
+  // body, which tells a crawler the section exists and has no threads. That is worse
+  // than an error for a URL nobody linked to on purpose.
+  if (!category) notFound();
 
   const total = await countForumTopics(category.id);
   const pages = totalPages(total, PAGE_SIZE);
