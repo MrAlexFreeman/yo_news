@@ -39,6 +39,15 @@ export type SaveArticleResult = {
   vkQueued?: boolean;
   /** VK post id when the repost succeeded; null when it was skipped or failed. */
   vkPostId?: string | null;
+  /**
+   * Why the VK repost did not happen, in the provider's own words.
+   *
+   * Added because `vkQueued` only restates the checkbox: it is true whether the post
+   * reached the wall or failed at the API, so a failed repost looked exactly like a
+   * successful one in the editor's form. Without this field the only trace was a line
+   * in the server console, which is why a repost that never worked went unnoticed.
+   */
+  vkError?: string | null;
 };
 
 /** Form state mirrored between the client inputs and the action payload. */

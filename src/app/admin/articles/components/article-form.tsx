@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertCircle,
   CheckCircle2,
   FileText,
   Image as ImageIcon,
@@ -593,6 +594,34 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
             {state.ok ? <CheckCircle2 className="size-4" aria-hidden /> : null}
             {deleteMessage ?? state.message}
           </p>
+        ) : null}
+
+        {/*
+          The repost outcome, kept apart from the save message above because it can
+          fail while the save itself succeeded — the article is in the database and
+          on the site either way. Before this existed `vkQueued` only restated the
+          checkbox, so a repost that VK refused looked exactly like one that worked.
+        */}
+        {state.ok && state.vkQueued ? (
+          state.vkError ? (
+            <p
+              role="alert"
+              className="flex items-start gap-1.5 text-sm font-medium text-red-600"
+            >
+              <AlertCircle className="mt-px size-4 shrink-0" aria-hidden />
+              <span>
+                Материал сохранён и опубликован на сайте, но в ВК не ушёл: {state.vkError}
+              </span>
+            </p>
+          ) : state.vkPostId ? (
+            <p role="status" className="text-sm text-neutral-500">
+              Опубликовано в ВК, запись {state.vkPostId}.
+            </p>
+          ) : (
+            <p role="status" className="text-sm text-neutral-500">
+              Материал сохранён. ВК принял публикацию без номера записи.
+            </p>
+          )
         ) : null}
       </header>
 

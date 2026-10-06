@@ -318,6 +318,10 @@ export async function createArticleAction(
   // Repost to VK when the article goes live with the flag on. Wrapped so a
   // missing token or a VK outage never rolls back the database write.
   let vkPostId: string | null = null;
+  // Carried back to the form so a failed repost is visible to the editor instead of
+  // only reaching the server console. The console line is kept: an operator reading
+  // pm2 wants the same detail, and the editor wants the short sentence.
+  let vkError: string | null = null;
   if (article.status === "published" && article.isVk) {
     try {
       const vk = await publishArticleToVk({
@@ -331,9 +335,12 @@ export async function createArticleAction(
         vkPostId = vk.postId ?? null;
         if (vk.warning) console.warn(`[vk] ${vk.warning}`);
       } else {
-        console.warn(`[vk] СЂРµРїРѕСЃС‚ РЅРµ РІС‹РїРѕР»РЅРµРЅ: ${vk.error}`);
+        vkError = vk.error ?? "ВК не принял публикацию.";
+        console.warn(`[vk] репост не выполнен: ${vkError}`);
       }
     } catch (error) {
+      vkError =
+        error instanceof Error ? error.message : "непредвиденная ошибка репоста";
       console.error("[vk] РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅР°СЏ РѕС€РёР±РєР° СЂРµРїРѕСЃС‚Р°:", error);
     }
   }
@@ -424,6 +431,7 @@ revalidatePath("/admin/articles");
     dzenExperimentLocked,
     vkQueued: article.status === "published" && article.isVk,
     vkPostId,
+    vkError,
   };
 }
 
