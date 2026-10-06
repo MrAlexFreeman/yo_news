@@ -1,0 +1,25 @@
+# Line endings.
+#
+# `core.autocrlf=true` is set on the Windows workstation this project is edited from,
+# and it rewrites LF to CRLF on checkout everywhere. That is invisible for TypeScript
+# and harmless for it, but a shell script with CRLF does not run on the server: bash
+# reads the carriage return as part of the command and fails with
+# `deploy.sh: line 12: $'\r': command not found` — at runtime, on the deploy path, not
+# at review time.
+#
+# So the two things that must stay LF are pinned here rather than left to whoever
+# happens to have autocrlf off.
+*.sh text eol=lf
+*.sql text eol=lf
+
+# Generated artefacts and local databases, kept out of diffs and out of line-ending
+# negotiation: a conflict inside either is noise.
+prisma/generated/** text eol=lf
+*.db binary
+*.db-wal binary
+*.db-shm binary
+*.db-journal binary
+
+# Prisma's own client output. The project already ignores this path in .gitignore,
+# where the Prisma-generated comment explains why; repeating it here would only
+# create a second place to keep in step.
