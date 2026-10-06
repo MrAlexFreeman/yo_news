@@ -489,10 +489,11 @@ async function checkNavigation() {
     ["/tagsomething", "/tags", false],
   ];
 
-  let bad = 0;
+  // Each case reports through `check`, and the summary at the end turns the failures
+  // into the exit code — a local tally would be a second source of truth that
+  // nothing reads.
   for (const [pathname, href, expected] of cases) {
     const actual = isCurrentPath(pathname, href);
-    if (actual !== expected) bad += 1;
     check(
       `Навигация: «${href}» активен на «${pathname}» — ${expected}`,
       actual === expected,
