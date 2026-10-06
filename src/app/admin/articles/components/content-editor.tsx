@@ -108,6 +108,14 @@ type ContentEditorProps = {
   value: string;
   onChange: (value: string) => void;
   error?: string;
+  /**
+   * Fired after a link has been inserted.
+   *
+   * A textarea shows the anchor as source text, which is what it is — there is no
+   * markup inside it to style. The parent uses this to open the rendered preview,
+   * which is the only place the link can be seen as a link.
+   */
+  onLinkInserted?: () => void;
 };
 
 const PARAGRAPH = /<p\b([^>]*)>/gi;
@@ -156,12 +164,24 @@ function withAlignment(tag: string, alignment: string): string {
 }
 
 /**
- * Placeholder rich-text editor styled after CKEditor 4: a raised toolbar strip
- * of icon buttons above a monospaced source area. It manipulates the selection
- * as HTML text, so the stored value stays the same `contentHtml` string the
- * schema expects — swapping in TipTap later leaves the form contract intact.
+ * A source editor styled after CKEditor 4: a raised toolbar strip of icon buttons
+ * above a monospaced source area. It manipulates the selection as HTML text, so the
+ * stored value stays the same `contentHtml` string the schema expects — swapping in
+ * TipTap later leaves the form contract intact.
+ *
+ * What it is not, and this matters when someone reports "the link shows as raw
+ * HTML": there is no rich-text engine here. No ProseMirror, no contenteditable, no
+ * execCommand. The area below the toolbar is a plain `<textarea>`, so an anchor
+ * necessarily appears as its source text and cannot be coloured blue inside the
+ * editing area — there is no DOM in there to style. The rendered result is visible in
+ * the preview panel, which the parent opens on a link insert for that reason.
  */
-export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
+export function ContentEditor({
+  value,
+  onChange,
+  error,
+  onLinkInserted,
+}: ContentEditorProps) {
   const id = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [toolbarError, setToolbarError] = useState<string | null>(null);
@@ -216,6 +236,10 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
     onChange(`${before}${markup}${after}`);
 
     const caret = state.selectionStart + markup.length;
+    // The inserted text lands in a source textarea, so the editor cannot see it as a
+    // link. Opening the preview at this exact moment is what turns "here is some
+    // anchor soup" into "here is your clickable link".
+    onLinkInserted?.();
     requestAnimationFrame(() => {
       textarea.focus();
       textarea.setSelectionRange(caret, caret);

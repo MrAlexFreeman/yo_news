@@ -32,6 +32,8 @@ import { DZEN_TITLE_LIMIT, TITLE_SOFT_LIMIT } from "../src/app/admin/articles/ty
 import { DZEN_URL } from "../src/lib/site";
 import { buildLinkMarkup } from "../src/app/admin/articles/components/link-dialog";
 import { sanitizeArticleHtml } from "../src/lib/sanitize";
+import { normalizeArticleHtml } from "../src/lib/article-html";
+import { ArticlePreview } from "../src/app/admin/articles/components/article-preview";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 const check = (name: string, ok: boolean, detail: string) => {
@@ -76,6 +78,12 @@ const emptyGalleryHtml = render(ArticleGallery as never, { items: [] });
 const editorHtml = render(ContentEditor as never, {
   value: "<p>Текст статьи</p>",
   onChange: noop,
+});
+// Open, because the point of the panel is what it renders rather than how it hides.
+const previewOpenHtml = render(ArticlePreview as never, {
+  html: '<p>Смотрите <a href="/news/abc" target="_blank">ответ мэрии</a>.</p>',
+  open: true,
+  onToggle: noop,
 });
 const dialogHtml = render(LinkDialog as never, {
   initialLabel: "выделенный фрагмент",
@@ -892,6 +900,44 @@ check(
   "Ссылка: текст ссылки не теряется при санитайзере",
   inserted.includes(">релиз<"),
   "текст на месте",
+);
+
+// The full save pipeline, not just the sanitiser. The complaint that produced this
+// task was that a link arrives as plain text, and the only way to disprove that is
+// to run the markup through what actually stores it and then what actually renders.
+const throughSave = normalizeArticleHtml(
+  `<p>Смотрите ${buildLinkMarkup({ label: "ответ мэрии", url: "/news/abc", blank: true })} и материал.</p>`,
+);
+const throughRender = sanitizeArticleHtml(throughSave);
+check(
+  "Ссылка: разметка переживает normalizeArticleHtml тегом",
+  throughSave.includes('<a href="/news/abc"'),
+  throughSave,
+);
+check(
+  "Ссылка: не превращается в экранированный текст",
+  !throughSave.includes("&lt;a") && !throughSave.includes("&amp;lt;"),
+  "тег остался тегом",
+);
+check(
+  "Ссылка: после сохранения и рендера — кликабельная",
+  /<a [^>]*href="\/news\/abc"/.test(throughRender) &&
+    throughRender.includes("underline"),
+  throughRender,
+);
+
+// There is no rich-text engine in this editor, and asserting otherwise would be the
+// mistake that sent this task down the wrong path. Assert the shape that explains
+// the behaviour instead, so the next person does not have to rediscover it.
+check(
+  "Редактор: это textarea, а не contenteditable — тени стилить нечем",
+  editorHtml.includes("<textarea") && !editorHtml.includes("contenteditable"),
+  "исходная правка HTML",
+);
+check(
+  "Редактор: предпросмотр рендерит тело через санитайзер",
+  previewOpenHtml.includes('class="article-body prose'),
+  "единственное место, где ссылка видна как ссылка",
 );
 
 for (const { name, ok, detail } of checks) {
