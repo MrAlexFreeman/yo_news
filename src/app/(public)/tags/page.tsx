@@ -3,12 +3,14 @@ import Link from "next/link";
 
 import { getTagsWithPublishedArticles } from "@/lib/public-queries";
 import { plural } from "@/lib/date";
-import { SITE_NAME } from "@/lib/site";
 
 export const revalidate = 300;
 
 export const metadata: Metadata = {
-  title: `Тэги — ${SITE_NAME}`,
+  // "Тэги", not `Тэги — ${SITE_NAME}`. The root layout's title template appends the
+  // site name to whatever a page sets, so writing it here by hand rendered
+  // «Тэги — Ё-новости — Ё-новости» in every search result for this page.
+  title: "Тэги",
   description: "Все теги издания и материалы по каждому из них.",
   alternates: { canonical: "/tags" },
 };
