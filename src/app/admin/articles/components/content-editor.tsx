@@ -173,6 +173,28 @@ const GROUPS: ToolbarAction[][] = [
   ],
 ];
 
+/**
+ * Attributes for the editable element itself.
+ *
+ * A function, not a constant, because `setOptions` replaces the whole `attributes`
+ * object rather than merging into it. Pushing only `aria-invalid` would drop the
+ * class, the height and `aria-required` the moment it ran — the editor would mount
+ * and then lose its typography, which no type or lint would have caught.
+ */
+function editorAttributes(error?: string) {
+  return {
+    // The same classes the public page uses, so what an editor sees while writing is
+    // the spacing and type of what readers get. Diverging margins here are what make
+    // a "visual" editor lie.
+    class: "article-body prose min-h-[30rem] max-w-none px-3 py-2",
+    spellcheck: "false",
+    // On the editable itself rather than the wrapper: only a textbox role carries
+    // these, and the body is required.
+    "aria-required": "true",
+    "aria-invalid": error ? "true" : "false",
+  };
+}
+
 type ContentEditorProps = {
   value: string;
   onChange: (value: string) => void;
@@ -214,16 +236,7 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
     // disagrees with the client on the first paint.
     immediatelyRender: false,
     editorProps: {
-      attributes: {
-        // The same classes the public page uses, so what an editor sees while
-        // writing is the spacing and type of what readers get. Diverging margins
-        // here are what make a "visual" editor lie.
-        class: "article-body prose min-h-[30rem] max-w-none px-3 py-2",
-        spellcheck: "false",
-        // On the editable itself rather than the wrapper: only a textbox role
-        // carries these, and the body is required.
-        "aria-required": "true",
-      },
+      attributes: editorAttributes(),
     },
     onUpdate: ({ editor: current }) => {
       const html = editorBodyHtml(current);
@@ -252,7 +265,7 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
   useEffect(() => {
     editor?.setOptions({
       editorProps: {
-        attributes: { "aria-invalid": error ? "true" : "false" },
+        attributes: editorAttributes(error),
       },
     });
   }, [editor, error]);
