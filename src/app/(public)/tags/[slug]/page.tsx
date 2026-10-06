@@ -34,11 +34,17 @@ export async function generateMetadata({
 
   const description = `Материалы по тегу «${tag.name}» — ${SITE_NAME}. ${SITE_TAGLINE}.`;
   const url = `/tags/${tag.slug}`;
+  // Bare tag name in `title`, because the root layout's template appends the site
+  // name. Writing `${tag.name} — ${SITE_NAME}` here rendered
+  // «Транспорт — Ё-новости — Ё-новости`.
+  const title = tag.name;
 
   return {
-    title: `${tag.name} — ${SITE_NAME}`,
+    title,
     description,
     alternates: { canonical: url },
+    // Open Graph has no template of its own, so the full title is spelled out there —
+    // it is read outside the page, without our layout.
     openGraph: { title: `${tag.name} — ${SITE_NAME}`, description, url, siteName: SITE_NAME },
   };
 }
