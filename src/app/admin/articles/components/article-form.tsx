@@ -488,7 +488,17 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   }
 
   function handleDelete() {
-    if (!state.id || !window.confirm("Удалить материал без возможности восстановления?")) {
+    /*
+      Moved to the trash rather than erased. The dialog says so, and says where it went:
+      an editor who reads "удалить" on a story they may want back next week needs to
+      know that the trash tab holds it, not assume the worst and go looking in a backup.
+    */
+    if (
+      !state.id ||
+      !window.confirm(
+        "Переместить материал в корзину? Он пропадёт с сайта, но его можно будет вернуть из корзины в списке материалов.",
+      )
+    ) {
       return;
     }
 

@@ -10,7 +10,11 @@
 
 import { readFile } from "node:fs/promises";
 
-import { contentTypeFor, resolveUploadPath } from "@/lib/upload-dir";
+import {
+  contentTypeFor,
+  resolveUploadPath,
+  UPLOAD_URL_PREFIX,
+} from "@/lib/upload-dir";
 import type { getSetting as GetSetting } from "@/lib/settings";
 
 const VK_API_BASE = "https://api.vk.com/method";
@@ -185,9 +189,6 @@ export function buildPostText(article: VkArticle): string {
 
   return lead ? `${article.title}\n\n${lead}\n\n${link}` : `${article.title}\n\n${link}`;
 }
-
-/** Where an uploaded file lives, given the `/uploads/...` value stored on an article. */
-const UPLOAD_URL_PREFIX = "/uploads/";
 
 /**
  * The bytes of a cover image, plus what VK should be told they are.

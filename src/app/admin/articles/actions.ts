@@ -4,6 +4,13 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { Prisma } from "@/generated/prisma/client";
+import {
+  destroyForGood,
+  markTrashed,
+  pluralArticles,
+  restoreFromTrash,
+  revalidateArticlePaths,
+} from "@/lib/article-trash";
 import type { SaveArticleResult } from "@/app/admin/articles/types";
 import { normalizeArticleHtml } from "@/lib/article-html";
 import { isArticleStatus } from "@/lib/article-status";
@@ -435,26 +442,109 @@ revalidatePath("/admin/articles");
   };
 }
 
-/** Removes an article. Used by the "РЈРґР°Р»РёС‚СЊ" button. */
+/** Removes an article. Used by the "В корзину" button. */
 export async function deleteArticleAction(
   formData: FormData,
 ): Promise<{ ok: boolean; message: string }> {
   const id = str(formData, "id");
   if (!id) {
-    return { ok: false, message: "РќРµС‡РµРіРѕ СѓРґР°Р»СЏС‚СЊ: РјР°С‚РµСЂРёР°Р» РµС‰С‘ РЅРµ СЃРѕС…СЂР°РЅС‘РЅ." };
+    return { ok: false, message: "Нечего удалять: материал ещё не сохранён." };
   }
 
-  try {
-    await prisma.article.delete({ where: { id } });
-  } catch {
-    return { ok: false, message: "РњР°С‚РµСЂРёР°Р» РЅРµ РЅР°Р№РґРµРЅ вЂ” РІРѕР·РјРѕР¶РЅРѕ, РѕРЅ СѓР¶Рµ СѓРґР°Р»С‘РЅ." };
-  }
+  /*
+    Moves to the trash rather than deleting the row.
 
-  revalidatePath("/admin/articles");
+    This used to be `prisma.article.delete`, and the button promised "без возможности
+    восстановления". With a trash on the list page that promise is a trap: an editor who
+    meant "this is not going out today" would lose the story, its tags and its slug, and
+    the only route back would be the database. The irreversible version still exists — it
+    lives in the trash tab, behind a second confirmation, where the button says exactly
+    that.
+  */
+  const result = await softDeleteArticles([id]);
+  if (!result.ok) return result;
 
   if (str(formData, "intent") === "save") {
     redirect("/admin/articles");
   }
 
-  return { ok: true, message: "РњР°С‚РµСЂРёР°Р» СѓРґР°Р»С‘РЅ." };
+  return { ok: true, message: "Материал перемещён в корзину." };
+}
+
+/**
+ * Moves articles to the trash.
+ *
+ * `ids` is `string[]` and not the `number[]` a reader might expect: `Article.id` is a
+ * `cuid()`, not a row number, so there is no integer to pass. The list is treated as
+ * untrusted anyway — it arrives from a form — and cleaned in the store.
+ */
+export async function softDeleteArticles(
+  ids: string[],
+): Promise<{ ok: boolean; message: string }> {
+  const result = await markTrashed(ids);
+  if (!result.ok) {
+    return { ok: false, message: "Нечего удалять: материалы уже в корзине." };
+  }
+
+  revalidateTrashed(result);
+  return { ok: true, message: `В корзину: ${pluralArticles(result.count)}.` };
+}
+
+/** Puts articles back, whole and exactly as they were. */
+export async function restoreArticles(
+  ids: string[],
+): Promise<{ ok: boolean; message: string }> {
+  const result = await restoreFromTrash(ids);
+  if (!result.ok) {
+    return { ok: false, message: "Нечего восстанавливать: материалы не в корзине." };
+  }
+
+  revalidateTrashed(result);
+  return { ok: true, message: `Восстановлено: ${pluralArticles(result.count)}.` };
+}
+
+/**
+ * Destroys trashed articles for good, together with the cover files only they used.
+ *
+ * The wording in the confirm dialog is the real guard against a mistake here; this
+ * handler's own protection is that it refuses any id that is not already in the bin, so
+ * a crafted POST cannot turn the trash tab into a shortcut past the live list.
+ */
+export async function hardDeleteArticles(
+  ids: string[],
+): Promise<{ ok: boolean; message: string }> {
+  const result = await destroyForGood(ids);
+  if (!result.ok) {
+    return {
+      ok: false,
+      message: "Ни один из выбранных материалов не лежит в корзине.",
+    };
+  }
+
+  revalidateTrashed(result);
+
+  return {
+    ok: true,
+    message: [
+      `Удалено навсегда: ${pluralArticles(result.count)}.`,
+      result.removedFiles.length > 0
+        ? `Файлов обложек удалено: ${result.removedFiles.length}.`
+        : "Файлы обложек удалять было нечего.",
+    ].join(" "),
+  };
+}
+
+/** Invalidates every cached copy whose contents just changed. */
+function revalidateTrashed(result: {
+  slugs: string[];
+  categorySlugs: string[];
+  tagSlugs: string[];
+}): void {
+  for (const path of revalidateArticlePaths(
+    result.slugs,
+    result.categorySlugs,
+    result.tagSlugs,
+  )) {
+    revalidatePath(path);
+  }
 }

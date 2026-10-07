@@ -1,7 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Pencil, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 
+import {
+  ArticlesTable,
+  type ArticleRow,
+} from "@/app/admin/articles/components/articles-table";
 import { isArticleStatus } from "@/lib/article-status";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
@@ -30,24 +34,98 @@ const DATE_FORMAT = new Intl.DateTimeFormat("ru-RU", {
   minute: "2-digit",
 });
 
-export default async function ArticlesListPage() {
-  const articles = await prisma.article.findMany({
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      title: true,
-      slug: true,
-      status: true,
-      isDzen: true,
-      isVk: true,
-      isExclusive: true,
-      is18plus: true,
-      views: true,
-      publishedAt: true,
-      createdAt: true,
-      category: { select: { name: true } },
+type PageParams = { searchParams: Promise<{ view?: string }> };
+
+/** Row shape the table needs; shared by both tabs so the columns cannot drift. */
+const ROW_FIELDS = {
+  id: true,
+  title: true,
+  slug: true,
+  status: true,
+  isDzen: true,
+  isVk: true,
+  isExclusive: true,
+  is18plus: true,
+  views: true,
+  publishedAt: true,
+  deletedAt: true,
+  category: { select: { name: true } },
+} as const;
+
+type ArticleRowRecord = {
+  id: string;
+  title: string;
+  slug: string;
+  status: string;
+  isDzen: boolean;
+  isVk: boolean;
+  isExclusive: boolean;
+  is18plus: boolean;
+  views: number;
+  publishedAt: Date | null;
+  deletedAt: Date | null;
+  category: { name: string } | null;
+};
+
+function toRow(
+  article: ArticleRowRecord,
+  view: "active" | "trash",
+): ArticleRow {
+  // The trash column shows when the story was trashed; the active list shows when it
+  // went out. One row shape, and the cell that differs is chosen here rather than in
+  // the component, so a second caller cannot pick the wrong date.
+  const stamp = view === "trash" ? article.deletedAt : article.publishedAt;
+
+  return {
+    id: article.id,
+    title: article.title,
+    slug: article.slug,
+    status: isArticleStatus(article.status) ? article.status : "draft",
+    categoryName: article.category?.name ?? null,
+    views: article.views,
+    dateLabel: stamp ? DATE_FORMAT.format(stamp) : null,
+    dateIso: stamp ? stamp.toISOString() : null,
+    isDzen: article.isDzen,
+    isVk: article.isVk,
+    isExclusive: article.isExclusive,
+    is18plus: article.is18plus,
+  };
+}
+
+export default async function ArticlesListPage({ searchParams }: PageParams) {
+  const { view } = await searchParams;
+  /*
+    Only the exact string "trash" switches tabs. Anything else falls back to the active
+    list rather than 404ing: the parameter arrives from a link an editor may have typed
+    by hand, and a typo in `?veiw=trash` should show the newsroom, not an error.
+  */
+  const showTrash = view === "trash";
+  const tab: "active" | "trash" = showTrash ? "trash" : "active";
+
+  /*
+    Both lists and the trash count are read in one round trip each, and the count is a
+    separate query rather than `articles.length`: the tab is labelled "Корзина (N)" and
+    that N has to be the whole bin even when the bin holds more rows than one page shows.
+  */
+  const [articles, trashedCount] = await Promise.all([
+    prisma.article.findMany({
+      where: showTrash ? { deletedAt: { not: null } } : { deletedAt: null },
+      orderBy: showTrash ? { deletedAt: "desc" } : { createdAt: "desc" },
+      select: ROW_FIELDS,
+    }),
+    prisma.article.count({ where: { deletedAt: { not: null } } }),
+  ]);
+
+  const rows = articles.map((article) => toRow(article, tab));
+
+  const tabs = [
+    { href: "/admin/articles", label: "Все статьи", count: null },
+    {
+      href: "/admin/articles?view=trash",
+      label: "Корзина",
+      count: trashedCount,
     },
-  });
+  ] as const;
 
   return (
     <div className="flex flex-1 flex-col bg-neutral-100">
@@ -55,7 +133,9 @@ export default async function ArticlesListPage() {
         <div>
           <h1 className="text-base font-semibold text-neutral-900">Материалы</h1>
           <p className="text-xs text-neutral-500">
-            Всего: {articles.length}
+            {showTrash
+              ? `В корзине: ${trashedCount}`
+              : `Всего: ${articles.length}`}
           </p>
         </div>
         <Link
@@ -67,104 +147,63 @@ export default async function ArticlesListPage() {
         </Link>
       </header>
 
+      {/*
+        The tabs are links, not buttons: each one is its own URL, so the browser's back
+        button, a bookmark and a reload all behave the way an editor expects. `aria-current`
+        marks the one in view, which is also what keeps the styling honest — the active
+        tab is styled from the same condition rather than from a separate piece of state.
+      */}
+      <nav aria-label="Списки материалов" className="border-b border-neutral-300 bg-white px-6">
+        <ul className="-mb-px flex gap-1">
+          {tabs.map((tab) => {
+            const active =
+              tab.href === "/admin/articles" ? !showTrash : showTrash;
+
+            return (
+              <li key={tab.href}>
+                <Link
+                  href={tab.href}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                    active
+                      ? "border-green-600 text-neutral-900"
+                      : "border-transparent text-neutral-500 hover:text-neutral-800",
+                  )}
+                >
+                  {tab.label}
+                  {tab.count !== null ? (
+                    <span
+                      className={cn(
+                        "rounded-full px-1.5 py-0.5 text-xs tabular-nums",
+                        tab.count > 0
+                          ? "bg-neutral-200 text-neutral-700"
+                          : "bg-neutral-100 text-neutral-400",
+                      )}
+                    >
+                      {tab.count}
+                    </span>
+                  ) : null}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+
       <div className="flex-1 p-4">
-        {articles.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="rounded border border-neutral-300 bg-white p-8 text-center text-sm text-neutral-500">
-            Пока нет ни одного материала.
+            {showTrash
+              ? "Корзина пуста."
+              : "Пока нет ни одного материала."}
           </p>
         ) : (
-          <table className="w-full border-collapse overflow-hidden rounded border border-neutral-300 bg-white text-sm">
-            <thead>
-              <tr className="bg-neutral-100 text-left text-xs tracking-wide text-neutral-500 uppercase">
-                <th scope="col" className="px-3 py-2">Заголовок</th>
-                <th scope="col" className="px-3 py-2">Рубрика</th>
-                <th scope="col" className="px-3 py-2">Статус</th>
-                <th scope="col" className="px-3 py-2">Публикация</th>
-                <th scope="col" className="px-3 py-2 text-right">Просмотры</th>
-                <th scope="col" className="px-3 py-2">Метки</th>
-              </tr>
-            </thead>
-            <tbody>
-              {articles.map((article) => {
-                const status = isArticleStatus(article.status)
-                  ? article.status
-                  : "draft";
-
-                return (
-                  <tr key={article.id} className="border-t border-neutral-200">
-                    <td className="px-3 py-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <span className="font-medium text-neutral-900">
-                            {article.title}
-                          </span>
-                          <span className="block font-mono text-xs text-neutral-400">
-                            /{article.slug}
-                          </span>
-                        </div>
-                        {/* The edit route used to be missing entirely, so a draft
-                            could never be opened and re-published. */}
-                        <Link
-                          href={`/admin/articles/${article.id}/edit`}
-                          className="inline-flex shrink-0 items-center gap-1.5 rounded-sm border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-100"
-                        >
-                          <Pencil className="size-3.5" aria-hidden />
-                          Изменить
-                        </Link>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-neutral-600">
-                      {article.category?.name ?? "—"}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-xs font-medium",
-                          status === "published"
-                            ? "bg-green-100 text-green-800"
-                            : "bg-neutral-200 text-neutral-600",
-                        )}
-                      >
-                        {STATUS_LABELS[status]}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-xs text-neutral-500">
-                      {article.publishedAt
-                        ? DATE_FORMAT.format(article.publishedAt)
-                        : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {article.views}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className="flex flex-wrap gap-1">
-                        {article.isDzen ? (
-                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                            Дзен
-                          </span>
-                        ) : null}
-                        {article.isVk ? (
-                          <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-800">
-                            ВК
-                          </span>
-                        ) : null}
-                        {article.isExclusive ? (
-                          <span className="rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-800">
-                            Эксклюзив
-                          </span>
-                        ) : null}
-                        {article.is18plus ? (
-                          <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-800">
-                            18+
-                          </span>
-                        ) : null}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <ArticlesTable
+            rows={rows}
+            view={tab}
+            statusLabels={STATUS_LABELS}
+          />
         )}
       </div>
     </div>

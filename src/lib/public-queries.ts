@@ -9,6 +9,14 @@ import { prisma } from "@/lib/prisma";
  *
  * Everything here is `server-only` and filters to `status: "published"` — a
  * draft must never reach a public page, the RSS feed or a search engine.
+ *
+ * Every query here also filters `deletedAt: null`. Soft delete only works if the
+ * exclusion is written down at each call site rather than remembered once: there are
+ * thirteen of them, they read in six different shapes, and a trashed story that leaks
+ * into one listing is worse than one that is missing from all of them, because it
+ * looks deliberate. `trash:check` asserts the exclusion against a real trashed row on
+ * the storefront, the feeds, the archive, search and the sitemap, so a query added
+ * later without it fails the suite instead of shipping.
  */
 
 const LIST_FIELDS = {
@@ -48,6 +56,7 @@ export async function getPublishedArticles(
   return prisma.article.findMany({
     where: {
       status: "published",
+      deletedAt: null,
       ...(options.excludeId ? { id: { not: options.excludeId } } : {}),
       ...(options.categorySlug
         ? { category: { slug: options.categorySlug } }
@@ -65,7 +74,7 @@ export async function getPublishedArticles(
  */
 export async function getHeroArticle(): Promise<ArticleListItem | null> {
   const exclusive = await prisma.article.findFirst({
-    where: { status: "published", isExclusive: true },
+    where: { status: "published", deletedAt: null, isExclusive: true },
     orderBy: BY_FRESHNESS,
     select: LIST_FIELDS,
   });
@@ -91,7 +100,7 @@ export async function getTagBySlug(slug: string) {
   return prisma.tag.findFirst({
     where: {
       slug,
-      articles: { some: { article: { status: "published" } } },
+      articles: { some: { article: { status: "published", deletedAt: null } } },
     },
     select: {
       id: true,
@@ -111,6 +120,7 @@ export async function getArticlesByTag(
   return prisma.article.findMany({
     where: {
       status: "published",
+      deletedAt: null,
       tags: { some: { tag: { slug } } },
     },
     orderBy: BY_FRESHNESS,
@@ -123,7 +133,9 @@ export async function getArticlesByTag(
 /** Every tag with at least one published story, for the tag index and sitemap. */
 export async function getTagsWithPublishedArticles() {
   return prisma.tag.findMany({
-    where: { articles: { some: { article: { status: "published" } } } },
+    where: {
+      articles: { some: { article: { status: "published", deletedAt: null } } },
+    },
     orderBy: { name: "asc" },
     select: { id: true, name: true, slug: true },
   });
@@ -146,7 +158,7 @@ export async function getSectionsWithArticles(
     categories.map(async (category) => ({
       category: { name: category.name, slug: category.slug },
       articles: await prisma.article.findMany({
-        where: { status: "published", categoryId: category.id },
+        where: { status: "published", deletedAt: null, categoryId: category.id },
         orderBy: BY_FRESHNESS,
         take: perSection,
         select: LIST_FIELDS,
@@ -161,7 +173,7 @@ export async function getSectionsWithArticles(
 
 export async function getPublishedArticleBySlug(slug: string) {
   return prisma.article.findFirst({
-    where: { slug, status: "published" },
+    where: { slug, status: "published", deletedAt: null },
     select: {
       id: true,
       title: true,
@@ -200,6 +212,7 @@ export async function getRelatedArticles(
     ? await prisma.article.findMany({
         where: {
           status: "published",
+          deletedAt: null,
           id: { not: excludeId },
           category: { slug: categorySlug },
         },
@@ -215,6 +228,7 @@ export async function getRelatedArticles(
   const filler = await prisma.article.findMany({
     where: {
       status: "published",
+      deletedAt: null,
       id: { not: excludeId, notIn: related.map((article) => article.id) },
     },
     orderBy: BY_FRESHNESS,
@@ -238,7 +252,7 @@ export async function getCategoryArticles(
   skip: number,
 ): Promise<ArticleListItem[]> {
   return prisma.article.findMany({
-    where: { status: "published", categoryId },
+    where: { status: "published", deletedAt: null, categoryId },
     orderBy: BY_FRESHNESS,
     take,
     skip,
@@ -248,7 +262,7 @@ export async function getCategoryArticles(
 
 export async function countCategoryArticles(categoryId: string): Promise<number> {
   return prisma.article.count({
-    where: { status: "published", categoryId },
+    where: { status: "published", deletedAt: null, categoryId },
   });
 }
 
@@ -266,7 +280,7 @@ export async function getPublishedArticlesPage(
   skip: number,
 ): Promise<ArticleListItem[]> {
   return prisma.article.findMany({
-    where: { status: "published" },
+    where: { status: "published", deletedAt: null },
     orderBy: BY_FRESHNESS,
     take,
     skip,
@@ -276,5 +290,7 @@ export async function getPublishedArticlesPage(
 
 /** How many stories the /news archive has to paginate through. */
 export async function countPublishedArticles(): Promise<number> {
-  return prisma.article.count({ where: { status: "published" } });
+  return prisma.article.count({
+    where: { status: "published", deletedAt: null },
+  });
 }

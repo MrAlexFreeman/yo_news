@@ -5,18 +5,22 @@ import { prisma } from "@/lib/prisma";
 
 /**
  * Sitemap for the public site: home, rubrics, tag listings and every published
- * article. Drafts are excluded by the same `status` filter the pages use.
+ * article. Drafts are excluded by the same `status` filter the pages use, and
+ * trashed ones by the same `deletedAt` filter.
  *
  * An article flagged noIndex is left out here too. A sitemap entry asks a
  * crawler to index the URL; listing a page that then says noindex in its robots
  * meta is a contradiction, and the meta is the more specific instruction.
+ *
+ * Removing a story from the trash therefore has to invalidate this file, or a
+ * crawler keeps the URL it was given an hour ago — see `hardDeleteArticles`.
  */
 export const revalidate = 3600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const [articles, categories, tags] = await Promise.all([
     prisma.article.findMany({
-      where: { status: "published" },
+      where: { status: "published", deletedAt: null },
       orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
       select: {
         slug: true,
@@ -32,7 +36,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // Only tags that already have a live story, so the sitemap never advertises
     // an empty listing page.
     prisma.tag.findMany({
-      where: { articles: { some: { article: { status: "published" } } } },
+      where: {
+        articles: { some: { article: { status: "published", deletedAt: null } } },
+      },
       select: { slug: true },
     }),
   ]);

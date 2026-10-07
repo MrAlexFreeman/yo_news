@@ -74,9 +74,21 @@ model Article {
   // here: fold the case in JS, where toLowerCase() handles Cyrillic, and search
   // the folded column.
   searchText     String?
+  // Soft delete. Set instead of removing the row so an accidental click is reversible:
+  // the trash tab in /admin/articles can put the story back, and its tags and slug
+  // survive the round trip. Every public read path filters `deletedAt: null`, so a
+  // trashed story 404s on the storefront and leaves the feeds without anyone having
+  // to remember to unschedule it.
+  //
+  // Appended at the end like `dzenExperiment` above, for the same SQLite reason:
+  // a column inserted among the others makes Prisma rebuild the whole table.
+  deletedAt    DateTime? @map("deleted_at")
   tags        ArticleTag[]
 
   @@index([status, publishedAt])
+  // Serves the admin list, which always sorts by creation date and filters on this
+  // column: without it every render of the editorial table is a full scan.
+  @@index([deletedAt])
   @@index([categoryId])
 }
 

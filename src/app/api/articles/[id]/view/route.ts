@@ -19,7 +19,10 @@ export async function POST(
   }
 
   const existing = await prisma.article.findFirst({
-    where: { id, status: "published" },
+    // A trashed story is no longer on the site, so its counter must stop too: the
+    // 404 here is what the page itself would answer, and counting a view nothing
+    // can read is a number that only ever goes up.
+    where: { id, status: "published", deletedAt: null },
     select: { id: true },
   });
   if (!existing) {

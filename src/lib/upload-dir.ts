@@ -29,6 +29,16 @@ export function contentTypeFor(filename: string): string | null {
 }
 
 /**
+ * Where an uploaded file lives, given the `/uploads/...` value stored on an article.
+ *
+ * Lives here rather than next to any one reader: the VK cover upload uses it to decide
+ * a path is local and readable, and the trash uses it to decide a path is local and
+ * safe to unlink. Those two must agree, or a cover could be deleted that the publisher
+ * still expects to be on disk.
+ */
+export const UPLOAD_URL_PREFIX = "/uploads/";
+
+/**
  * Resolves a URL path segment to an absolute path inside UPLOAD_DIR, or null if
  * it would escape the directory. Guards against `..` traversal and absolute
  * paths smuggled through the URL.

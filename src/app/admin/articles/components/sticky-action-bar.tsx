@@ -84,15 +84,20 @@ export function StickyActionBar({
           Отменить
         </button>
 
+        {/*
+          Labelled "В корзину", not "Удалить", because that is what it does: the row
+          survives and can be restored from the list's second tab. An irreversible action
+          wearing a recoverable label is the more dangerous of the two mistakes here.
+        */}
         <button
           type="button"
           onClick={onDelete}
           disabled={pending || !canDelete}
-          title={canDelete ? "Удалить материал" : "Сначала сохраните материал"}
+          title={canDelete ? "Переместить материал в корзину" : "Сначала сохраните материал"}
           className="ml-auto flex items-center gap-2 rounded-sm bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-xs transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Trash2 className="size-4" aria-hidden />
-          Удалить
+          В корзину
         </button>
       </div>
     </div>

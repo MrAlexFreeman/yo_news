@@ -34,6 +34,7 @@ export async function searchArticles(
   const articles = await prisma.article.findMany({
     where: {
       status: "published",
+      deletedAt: null,
       OR: [
         { title: { contains: trimmed } },
         { subtitle: { contains: trimmed } },
@@ -56,6 +57,7 @@ export async function countSearchResults(query: string): Promise<number> {
   return prisma.article.count({
     where: {
       status: "published",
+      deletedAt: null,
       OR: [
         { title: { contains: trimmed } },
         { subtitle: { contains: trimmed } },

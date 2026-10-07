@@ -198,7 +198,10 @@ ${items.map((article) => renderItem(article, base)).join("\n")}
 
 export async function GET() {
   const articles = await prisma.article.findMany({
-    where: { status: "published", isDzen: true },
+    // `deletedAt: null` is not optional here. A trashed story still has its Dzen flag
+    // on, and syndicating it would republish on the partner's side — where there is
+    // no trash to take it back from.
+    where: { status: "published", deletedAt: null, isDzen: true },
     orderBy: { publishedAt: "desc" },
     take: FEED_LIMIT,
     select: {

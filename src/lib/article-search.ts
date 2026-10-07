@@ -50,10 +50,16 @@ export function isSearchable(query: string): boolean {
  *
  * Drafts are excluded because the box links to `/news/<slug>`, and a draft has no
  * public page to link to — offering one would hand the editor a 404.
+ *
+ * Trashed stories are excluded for exactly the same reason, and this is the one
+ * place that was not obvious: this is an *admin* box, so the instinct is that an
+ * editor should still be able to find anything they once published. But it links to
+ * the public page, and a trashed story has none. The trash tab is where they belong.
  */
 export function buildSearchWhere(query: string): Prisma.ArticleWhereInput {
   return {
     status: "published",
+    deletedAt: null,
     searchText: { contains: query.toLowerCase() },
   };
 }
