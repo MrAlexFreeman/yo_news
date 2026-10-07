@@ -27,7 +27,8 @@
     "multipart:check": "tsx scripts/check-multipart.ts",
     "ui:check": "tsx --env-file=.env scripts/check-editor-ui.ts",
     "forum:check": "tsx --env-file=.env scripts/check-forum.ts",
-    "check": "npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run ui:check && npm run forum:check && npm run multipart:check",
+    "home:check": "tsx --env-file=.env scripts/check-news-feed.ts",
+    "check": "npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run ui:check && npm run forum:check && npm run home:check && npm run multipart:check",
     "postinstall": "prisma generate"
   },
   "dependencies": {

@@ -94,6 +94,80 @@ export function formatRelative(value: Date, now: Date = new Date()): string {
   return DATE_SHORT.format(value);
 }
 
+/**
+ * A stable key for the calendar day a moment falls on, in the site's timezone.
+ *
+ * `Intl.DateTimeFormat` with the full date is used rather than slicing the ISO string,
+ * because the ISO string is in UTC and the day boundary is not: 23:30 in Moscow is the
+ * previous day in UTC, and slicing would file it under the wrong heading.
+ */
+function dayKey(value: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: SITE_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+/**
+ * Splits a newest-first list into day groups for the live feed.
+ *
+ * Why this exists: the feed's badge is a bare clock time, so a list running past
+ * midnight reads as out of order. "11:12" followed by "17:28" looks scrambled until
+ * you notice the first belongs to one day and the second to the day before. Naming
+ * the day between the groups removes the puzzle without touching the sort, which is
+ * already correct.
+ *
+ * `now` is passed in rather than read from the clock so a statically rendered page
+ * keeps the headings it was built with.
+ */
+export type DayGroup<T> = { key: string; label: string; items: T[] };
+
+/** "Сегодня", "Вчера", or the date — what a group heading says. */
+export function dayLabel(value: Date, now: Date): string {
+  const today = dayKey(value) === dayKey(now);
+  if (today) return "Сегодня";
+
+  const yesterday = new Date(now.getTime() - DAY);
+  if (dayKey(value) === dayKey(yesterday)) return "Вчера";
+
+  return withoutYearSuffix(
+    new Intl.DateTimeFormat("ru-RU", {
+      timeZone: SITE_TIME_ZONE,
+      day: "numeric",
+      month: "long",
+    }).format(value),
+  );
+}
+
+/**
+ * Groups `items` by calendar day, preserving their order inside each group.
+ *
+ * Expects newest first, which is what the feed query returns; groups come out in the
+ * order their first item appears, so no re-sorting happens here.
+ */
+export function groupByDay<T>(
+  items: readonly T[],
+  at: (item: T) => Date,
+  now: Date,
+): DayGroup<T>[] {
+  const groups: DayGroup<T>[] = [];
+
+  for (const item of items) {
+    const value = at(item);
+    const key = dayKey(value);
+    const last = groups.at(-1);
+    if (last && last.key === key) {
+      last.items.push(item);
+    } else {
+      groups.push({ key, label: dayLabel(value, now), items: [item] });
+    }
+  }
+
+  return groups;
+}
+
 /** Russian plural rule: 1 товар, 2 товара, 5 товаров. */
 export function plural(
   count: number,

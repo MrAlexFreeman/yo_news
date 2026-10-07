@@ -19,13 +19,22 @@ export const revalidate = 300;
 const TICKER_COUNT = 12;
 const RAIL_COUNT = 4;
 const SECTION_SIZE = 4;
+/** Stories in "Другие события дня". Four fill the 2×2 grid exactly. */
+const DAY_CARD_COUNT = 4;
 
 export default async function HomePage() {
-  const [hero, ticker, sections, rail] = await Promise.all([
+  /*
+    One extra list for the "Другие события дня" block. It is fetched separately rather
+    than sliced out of the rail's array because it needs stories that appear *nowhere*
+    else on the page — hero, ticker, rail and all nine rubric grids included — and
+    those are only known after the first four queries resolve.
+  */
+  const [hero, ticker, sections, rail, dayPool] = await Promise.all([
     getHeroArticle(),
     getPublishedArticles(TICKER_COUNT),
     getSectionsWithArticles(SECTION_SIZE, 9),
     getPublishedArticles(RAIL_COUNT + 8),
+    getPublishedArticles(TICKER_COUNT + RAIL_COUNT + 60),
   ]);
 
   const heroId = hero?.id;
@@ -50,13 +59,54 @@ export default async function HomePage() {
     articles: section.articles.filter((article) => !shown.has(article.id)),
   }));
 
+  /*
+    Stories for the 2×2 block under the hero.
+
+    Excluded from the rubric grids as well, so this fills the left column with material
+    the reader has not already scrolled past rather than repeating four headlines they
+    saw thirty lines up. The pool is already newest-first, so filtering from the front
+    yields the freshest leftovers.
+  */
+  const inSections = new Set(
+    visibleSections.flatMap((section) =>
+      section.articles.map((article) => article.id),
+    ),
+  );
+  const dayItems = dayPool
+    .filter((article) => !shown.has(article.id) && !inSections.has(article.id))
+    .slice(0, DAY_CARD_COUNT);
+
   return (
     <div className="space-y-8">
       {/* Hero + live ticker. */}
       <div className="grid gap-8 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {hero ? (
-            <ArticleCard article={hero} variant="lead" preload />
+            <>
+              <ArticleCard article={hero} variant="lead" preload />
+
+              {/*
+                The hero is one tall card and the feed beside it is twelve rows, so the
+                left column used to end early and leave a bare white rectangle under it —
+                the emptiest part of the page and the first thing seen. These four
+                stories fill it with material that appears nowhere else on the screen.
+              */}
+              {dayItems.length > 0 ? (
+                <section aria-labelledby="day-events" className="mt-6">
+                  <h2
+                    id="day-events"
+                    className="mb-3 border-b-2 border-ink pb-1 text-xs font-bold tracking-[0.14em] text-ink uppercase"
+                  >
+                    Другие события дня
+                  </h2>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {dayItems.map((article) => (
+                      <ArticleCard key={article.id} article={article} variant="compact" />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </>
           ) : (
             <div className="rounded-sm border border-dashed border-rule p-10 text-center">
               <h1 className="text-2xl">
@@ -70,9 +120,11 @@ export default async function HomePage() {
           )}
         </div>
 
-        {/* Right column: the live ticker, then the syndication block. Both sit
-            under the hero rather than beside it, because the hero is the one
-            element on this page that must stay full width. */}
+        {/* Right column: the live ticker, then the syndication block.
+
+            Both are in normal flow with `space-y-6` between them, and the ticker no
+            longer pins itself — a sticky feed painted over the block below it, which
+            read as the subscribe card sitting on top of the headlines. */}
         <div className="space-y-6">
           <NewsTicker
             articles={tickerItems.slice(0, TICKER_COUNT)}
