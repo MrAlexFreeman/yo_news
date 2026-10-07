@@ -1,5 +1,6 @@
 import { PublicFooter } from "@/components/public-footer";
 import { PublicHeader } from "@/components/public-header";
+import { YandexMetrika } from "@/components/analytics/yandex-metrika";
 import { getCategories } from "@/lib/public-queries";
 
 /**
@@ -8,6 +9,10 @@ import { getCategories } from "@/lib/public-queries";
  *
  * The dateline is frozen at render time: with `revalidate = 300` a cached page
  * must not recompute "today" on every request.
+ *
+ * The analytics counter sits here rather than in the root layout for the same reason
+ * the group exists: a counter measures readers, and an editorial visit is not a
+ * reader. It also keeps session recording away from the admin's own forms.
  */
 export default async function PublicLayout({ children }: LayoutProps<"/">) {
   const categories = await getCategories();
@@ -20,6 +25,7 @@ export default async function PublicLayout({ children }: LayoutProps<"/">) {
         {children}
       </main>
       <PublicFooter />
+      <YandexMetrika />
     </>
   );
 }

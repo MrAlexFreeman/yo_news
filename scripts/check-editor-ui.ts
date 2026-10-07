@@ -21,6 +21,11 @@ import { SettingsForm } from "../src/app/admin/settings/components/settings-form
 import { ArticleGallery } from "../src/components/article-gallery";
 import { SubscribeBlock } from "../src/components/subscribe-block";
 import { ArticleVideo } from "../src/components/article-video";
+import {
+  MetrikaNoScript,
+  isValidMetrikaId,
+  metrikaSnippet,
+} from "../src/components/analytics/yandex-metrika";
 import { MAX_MEDIA_ITEMS, type MediaItem } from "../src/lib/article-media";
 import { COVER_STYLES, DEFAULT_COVER_STYLE } from "../src/lib/cover-prompt";
 import { DEFAULT_FLUX_MODEL, FLUX_MODELS } from "../src/lib/flux-models";
@@ -1582,6 +1587,107 @@ async function runMountedEditor() {
   host.remove();
 }
 
+/**
+ * The Metrika counter.
+ *
+ * Its `<Script>` tag cannot be asserted here: `next/script` emits nothing under a bare
+ * `renderToStaticMarkup` — measured, it renders zero characters — because the inline
+ * code is hoisted by the App Router's own render pipeline. The live tag is therefore
+ * checked against the served page, and what is asserted here is the part that has to
+ * be right regardless: the noscript pixel, the snippet's contents, the id validation,
+ * and that the counter is wired into the public layout and not the editorial one.
+ */
+function checkMetrika() {
+  const pixel = renderToStaticMarkup(createElement(MetrikaNoScript, { id: "113536956" }));
+
+  check(
+    "Метрика: пиксель без JS ведёт на счётчик",
+    pixel.includes("https://mc.yandex.ru/watch/113536956"),
+    pixel.slice(0, 120),
+  );
+  check(
+    "Метрика: пиксель обёрнут в noscript",
+    pixel.startsWith("<noscript>") && pixel.endsWith("</noscript>"),
+    "иначе он грузился бы всем подряд и считал бы вдвое",
+  );
+  check(
+    "Метрика: пиксель уведён за экран и не имеет alt-текста",
+    pixel.includes("left:-9999px") && pixel.includes('alt=""'),
+    "декоративная картинка не попадает в озвучку скринридером",
+  );
+
+  const snippet = metrikaSnippet("113536956", true);
+  check(
+    "Метрика: сниппет — официальный загрузчик",
+    snippet.includes("https://mc.yandex.ru/metrika/tag.js") &&
+      snippet.includes('(window, document, "script"') &&
+      snippet.includes('"ym"'),
+    "адрес тега и имя глобальной функции на месте",
+  );
+  check(
+    "Метрика: в сниппет подставлен номер счётчика",
+    snippet.includes('ym(113536956, "init"'),
+    "номер передан в init",
+  );
+  check(
+    "Метрика: вебвизор включается и выключается флагом",
+    metrikaSnippet("1", true).includes("webvisor:true") &&
+      metrikaSnippet("1", false).includes("webvisor:false"),
+    "булево значение, а не строка",
+  );
+  check(
+    "Метрика: остальные опции счётчика как в документации",
+    snippet.includes("clickmap:true") &&
+      snippet.includes("trackLinks:true") &&
+      snippet.includes("accurateTrackBounce:true"),
+    "карта кликов, внешние ссылки, точный отказ",
+  );
+
+  /*
+    The validation is a security boundary, not a nicety: the id is interpolated into
+    JavaScript inside a `<script>`, and React does not escape script children. An id
+    taken from the environment is otherwise a way to append code to every public page.
+  */
+  check(
+    "Метрика: номер счётчика проверяется перед подстановкой",
+    isValidMetrikaId("113536956") &&
+      !isValidMetrikaId("1);alert(1);//") &&
+      !isValidMetrikaId("") &&
+      !isValidMetrikaId(null) &&
+      !isValidMetrikaId(" 12 "),
+    "только цифры, без пробелов и скобок",
+  );
+
+  /*
+    The counter must measure readers, not editors. Asserted against the source because
+    the mistake is a one-line move between layouts and it is invisible on the site: the
+    counter keeps working, it just counts the newsroom as well, and those visits land
+    in the same report as the audience numbers.
+  */
+  const read = (relative: string) =>
+    readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+
+  const publicLayout = read("../src/app/(public)/layout.tsx");
+  const rootLayout = read("../src/app/layout.tsx");
+  const adminLayout = read("../src/app/admin/layout.tsx");
+
+  check(
+    "Метрика: счётчик подключён в витринном layout",
+    publicLayout.includes("YandexMetrika"),
+    "(public)/layout.tsx",
+  );
+  check(
+    "Метрика: счётчика нет в корневом layout",
+    !rootLayout.includes("YandexMetrika") && !rootLayout.includes("mc.yandex.ru"),
+    "иначе он считал бы и админку",
+  );
+  check(
+    "Метрика: счётчика нет в layout админки",
+    !adminLayout.includes("YandexMetrika") && !adminLayout.includes("mc.yandex.ru"),
+    "редакционные визиты — не аудитория",
+  );
+}
+
 function report() {
   for (const { name, ok, detail } of checks) {
     console.log(`${ok ? "OK  " : "FAIL"} ${name} — ${detail}`);
@@ -1593,7 +1699,10 @@ function report() {
   process.exitCode = failed.length > 0 ? 1 : 0;
 }
 
-runRoundTrips().catch((error: unknown) => {
-  console.error("проверки редактора не выполнены:", error);
-  process.exitCode = 1;
+runRoundTrips()
+  .then(checkMetrika)
+  .then(report)
+  .catch((error: unknown) => {
+    console.error("проверки редактора не выполнены:", error);
+    process.exitCode = 1;
 });
