@@ -2,7 +2,7 @@
  * Auto-repost of published articles to a VK community wall.
  *
  * Flow when a cover image is attached:
- *   photos.getWallUploadServer в†’ POST the bytes to VK в†’ photos.saveWallPhoto в†’ wall.post
+ *   photos.getWallUploadServer → POST the bytes to VK → photos.saveWallPhoto → wall.post
  *
  * Every step degrades gracefully: if the tokens are missing (local dev) or any
  * call fails, the post still goes out as text with a link.
@@ -101,7 +101,7 @@ export function vkCommunityId(): string {
  * The token, resolved from the settings service.
  *
  * Reads the database first and the environment second, so an editor who pastes a
- * fresh token into /admin/settings replaces the wall reposter immediately вЂ” with no
+ * fresh token into /admin/settings replaces the wall reposter immediately — with no
  * .env edit and no pm2 restart. Cached `process.env` here would have made the
  * settings field look like it worked while the repost kept using the old token.
  */
@@ -351,7 +351,7 @@ export async function publishArticleToVk(
     return {
       ok: false,
       error:
-        "Р’Рљ РЅРµ РЅР°СЃС‚СЂРѕРµРЅ: Р·Р°РґР°Р№С‚Рµ VK_COMMUNITY_ID Рё С‚РѕРєРµРЅ Р’Рљ РІ СЂР°Р·РґРµР»Рµ В«РќР°СЃС‚СЂРѕР№РєРёВ» РёР»Рё РІ .env",
+        "ВК не настроен: задайте VK_COMMUNITY_ID и токен ВК в разделе «Настройки» или в .env",
     };
   }
 
@@ -366,12 +366,12 @@ export async function publishArticleToVk(
       if (photoId) {
         attachmentIds.push(photoId);
       } else {
-        warning = "Р’Рљ РЅРµ РІРµСЂРЅСѓР» id Р·Р°РіСЂСѓР¶РµРЅРЅРѕРіРѕ С„РѕС‚Рѕ вЂ” РїРѕСЃС‚ РѕС‚РїСЂР°РІР»РµРЅ Р±РµР· РѕР±Р»РѕР¶РєРё";
+        warning = "ВК не вернул id загруженного фото — пост отправлен без обложки";
       }
     } catch (error) {
       // The post itself is still worth publishing without the image.
-      warning = `РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РіСЂСѓР·РёС‚СЊ РѕР±Р»РѕР¶РєСѓ: ${
-        error instanceof Error ? error.message : "РЅРµРёР·РІРµСЃС‚РЅР°СЏ РѕС€РёР±РєР°"
+      warning = `Не удалось загрузить обложку: ${
+        error instanceof Error ? error.message : "неизвестная ошибка"
       }`;
     }
   }
@@ -392,7 +392,7 @@ export async function publishArticleToVk(
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : "РЅРµРёР·РІРµСЃС‚РЅР°СЏ РѕС€РёР±РєР° Р’Рљ",
+      error: error instanceof Error ? error.message : "неизвестная ошибка ВК",
     };
   }
 }

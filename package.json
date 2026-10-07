@@ -28,9 +28,10 @@
     "ui:check": "tsx --env-file=.env scripts/check-editor-ui.ts",
     "forum:check": "tsx --env-file=.env scripts/check-forum.ts",
     "home:check": "tsx --env-file=.env scripts/check-news-feed.ts",
-    "check": "npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run ui:check && npm run forum:check && npm run home:check && npm run trash:check && npm run multipart:check",
+    "check": "npm run encoding:check && npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run ui:check && npm run forum:check && npm run home:check && npm run trash:check && npm run multipart:check",
     "postinstall": "prisma generate",
-    "trash:check": "tsx --env-file=.env scripts/check-trash.mts"
+    "trash:check": "tsx --env-file=.env scripts/check-trash.mts",
+    "encoding:check": "tsx --env-file=.env scripts/check-encoding.mts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.10.0",

@@ -22,6 +22,7 @@ import {
   resolveDzenExperiment,
 } from "@/lib/dzen-experiment";
 import { prisma } from "@/lib/prisma";
+import { saveMessage } from "@/lib/save-message";
 import { slugify } from "@/lib/slugify";
 import { parseTagsField, syncArticleTags } from "@/lib/tags";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
@@ -67,8 +68,8 @@ function mediaColumn(raw: string): Prisma.InputJsonValue | typeof Prisma.JsonNul
 /**
  * `datetime-local` sends "2026-10-01T12:30" with no timezone. That is the
  * editor's wall clock in Moscow, so it is converted explicitly rather than left
- * to `new Date(...)`, which would read it in the *server's* zone вЂ” UTC on the
- * VPS вЂ” and silently shift every scheduled post by three hours.
+ * to `new Date(...)`, which would read it in the *server's* zone — UTC on the
+ * VPS — and silently shift every scheduled post by three hours.
  */
 const EDITOR_TIME_ZONE = "Europe/Moscow";
 
@@ -125,7 +126,7 @@ function moscowOffsetMinutes(at: Date): number {
 }
 
 /**
- * Appends `-2`, `-3`, вЂ¦ until the slug is free. `excludeId` lets an article
+ * Appends `-2`, `-3`, … until the slug is free. `excludeId` lets an article
  * keep its own slug when re-saved after a title edit.
  */
 async function uniqueSlug(base: string, excludeId?: string): Promise<string> {
@@ -147,8 +148,8 @@ async function uniqueSlug(base: string, excludeId?: string): Promise<string> {
 /**
  * Creates the article, or updates it when `id` is present.
  *
- * Two buttons submit this action. "РЎРѕС…СЂР°РЅРёС‚СЊ" (intent=save) redirects to the
- * article list; "РџСЂРёРјРµРЅРёС‚СЊ" (intent=apply) returns the result so the editor
+ * Two buttons submit this action. "Сохранить" (intent=save) redirects to the
+ * article list; "Применить" (intent=apply) returns the result so the editor
  * stays on the page.
  */
 export async function createArticleAction(
@@ -162,8 +163,8 @@ export async function createArticleAction(
   const rawStatus = str(formData, "status");
 
   const fieldErrors: SaveArticleResult["fieldErrors"] = {};
-  if (!title) fieldErrors.title = "Р—Р°РіРѕР»РѕРІРѕРє РѕР±СЏР·Р°С‚РµР»РµРЅ.";
-  if (!contentHtml) fieldErrors.contentHtml = "РўРµРєСЃС‚ РјР°С‚РµСЂРёР°Р»Р° РѕР±СЏР·Р°С‚РµР»РµРЅ.";
+  if (!title) fieldErrors.title = "Заголовок обязателен.";
+  if (!contentHtml) fieldErrors.contentHtml = "Текст материала обязателен.";
 
   // Validated here rather than trusted from the form: the same hidden mirror that
   // makes the field survive a tab switch is also a plain text field an editor can
@@ -192,17 +193,17 @@ export async function createArticleAction(
     categoryId = category?.id ?? null;
   }
 
-  // The sidebar owns the status. "РџСЂРёРјРµРЅРёС‚СЊ" used to force `published` here,
+  // The sidebar owns the status. "Применить" used to force `published` here,
   // which silently published drafts the editor had deliberately left as drafts,
   // and made the segmented control in the sidebar a lie. Only the explicit
-  // "РћРїСѓР±Р»РёРєРѕРІР°С‚СЊ" button sets the status, and it does so by submitting one.
+  // "Опубликовать" button sets the status, and it does so by submitting one.
   const requested = isArticleStatus(rawStatus) ? rawStatus : "draft";
   const status = intent === "publish" ? "published" : requested;
 
   if (Object.keys(fieldErrors).length > 0) {
     return {
       ok: false,
-      message: "РџСЂРѕРІРµСЂСЊС‚Рµ РІС‹РґРµР»РµРЅРЅС‹Рµ РїРѕР»СЏ.",
+      message: "Проверьте выделенные поля.",
       fieldErrors,
       // Echoed back so the client keeps submitting an update, not a fresh
       // create, after a rejected save.
@@ -233,7 +234,7 @@ export async function createArticleAction(
     // No id echoed back: the record is gone, so the next save must create anew.
     return {
       ok: false,
-      message: "РњР°С‚РµСЂРёР°Р» РЅРµ РЅР°Р№РґРµРЅ вЂ” РІРѕР·РјРѕР¶РЅРѕ, РѕРЅ Р±С‹Р» СѓРґР°Р»С‘РЅ.",
+      message: "Материал не найден — возможно, он был удалён.",
     };
   }
 
@@ -241,7 +242,7 @@ export async function createArticleAction(
   const slug = await uniqueSlug(slugBase, id || undefined);
 
   // Editorial rule: the Dzen experiment flag may only be granted at the moment of
-  // first publication. Enforced here, not in the form вЂ” a disabled checkbox is a
+  // first publication. Enforced here, not in the form — a disabled checkbox is a
   // UI convention, and this handler is reachable by any POST that carries the
   // Basic Auth header.
   const chosenDate = publicationDate(formData);
@@ -348,7 +349,7 @@ export async function createArticleAction(
     } catch (error) {
       vkError =
         error instanceof Error ? error.message : "непредвиденная ошибка репоста";
-      console.error("[vk] РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅР°СЏ РѕС€РёР±РєР° СЂРµРїРѕСЃС‚Р°:", error);
+      console.error("[vk] необработанная ошибка репоста:", error);
     }
   }
 
@@ -372,11 +373,11 @@ export async function createArticleAction(
         baseUrl: siteUrl(),
       });
       if (!renamed.ok && renamed.error) {
-        vkVideoWarning = `Р’РёРґРµРѕ РІ Р’Рљ РЅРµ РїРµСЂРµРёРјРµРЅРѕРІР°РЅРѕ: ${renamed.error}`;
+        vkVideoWarning = `Видео в ВК не переименовано: ${renamed.error}`;
         console.warn(`[vk-video] ${vkVideoWarning}`);
       }
     } catch (error) {
-      console.error("[vk-video] РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅР°СЏ РѕС€РёР±РєР° РїРµСЂРµРёРјРµРЅРѕРІР°РЅРёСЏ", error);
+      console.error("[vk-video] необработанная ошибка переименования", error);
     }
   }
 
@@ -389,7 +390,7 @@ setVkTokenSource();
 revalidatePath("/admin/articles");
   // The public storefront is statically rendered with ISR, so a newly published
   // story (or an edited one) is invisible until those paths are revalidated.
-  // Without this the editor hits "РћРїСѓР±Р»РёРєРѕРІР°С‚СЊ" and sees no change on the site.
+  // Without this the editor hits "Опубликовать" and sees no change on the site.
   revalidatePath("/");
   revalidatePath(`/news/${article.slug}`);
   revalidatePath("/sitemap.xml");
@@ -404,13 +405,13 @@ revalidatePath("/admin/articles");
   }
 
   // Tag listings show this story, so they go stale the moment it gains or loses a
-  // tag вЂ” including the ones it just lost, which still list it.
+  // tag — including the ones it just lost, which still list it.
   revalidatePath("/tags");
   for (const slug of tagSlugs) {
     revalidatePath(`/tags/${slug}`);
   }
 
-  // "РЎРѕС…СЂР°РЅРёС‚СЊ" leaves the editor; "РџСЂРёРјРµРЅРёС‚СЊ" reports back in place.
+  // "Сохранить" leaves the editor; "Применить" reports back in place.
   if (intent === "save") {
     redirect("/admin/articles");
   }
@@ -422,15 +423,12 @@ revalidatePath("/admin/articles");
 
   return {
     ok: true,
-    message: [
-      id ? "РњР°С‚РµСЂРёР°Р» РѕР±РЅРѕРІР»С‘РЅ." : "РњР°С‚РµСЂРёР°Р» СЃРѕР·РґР°РЅ.",
-      experimentRejected
-        ? `Р­РєСЃРїРµСЂРёРјРµРЅС‚ СЃ Р”Р·РµРЅ РЅРµ РІРєР»СЋС‡С‘РЅ: ${DZEN_EXPERIMENT_LOCKED_HINT}.`
-        : "",
-      vkVideoWarning ?? "",
-    ]
-      .filter(Boolean)
-      .join(" "),
+    message: saveMessage({
+      isUpdate: Boolean(id),
+      experimentRejected,
+      experimentHint: DZEN_EXPERIMENT_LOCKED_HINT,
+      vkVideoWarning,
+    }),
     id: article.id,
     slug: article.slug,
     dzenQueued: article.status === "published" && article.isDzen,
