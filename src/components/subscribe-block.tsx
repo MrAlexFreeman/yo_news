@@ -1,4 +1,5 @@
 import { Rss, Send, type LucideIcon } from "lucide-react";
+import { useId } from "react";
 
 import { DZEN_URL, TG_URL, VK_COMMUNITY_URL } from "@/lib/site";
 import { cn } from "@/lib/utils";
@@ -34,10 +35,15 @@ type SubscribeBlockProps = {
  */
 export function SubscribeBlock({ variant = "card", className }: SubscribeBlockProps) {
   const inline = variant === "inline";
+  // Per-instance id. The article page shows this block twice — in the sidebar and
+  // again at the end of the story — and a hardcoded id would put two elements with the
+  // same id in one document, which is invalid HTML and silently breaks the
+  // `aria-labelledby` pointing at it.
+  const headingId = useId();
 
   return (
     <section
-      aria-labelledby="subscribe-heading"
+      aria-labelledby={headingId}
       className={cn(
         "rounded-sm border border-rule bg-paper-dim",
         inline ? "mt-8 px-4 py-4 sm:px-6 sm:py-5" : "px-4 py-4",
@@ -45,7 +51,7 @@ export function SubscribeBlock({ variant = "card", className }: SubscribeBlockPr
       )}
     >
       <h2
-        id="subscribe-heading"
+        id={headingId}
         className={cn(
           "font-[family-name:var(--font-lora)] font-bold text-ink",
           inline ? "text-lg" : "text-base",

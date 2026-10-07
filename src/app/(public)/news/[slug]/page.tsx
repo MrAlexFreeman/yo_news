@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, MessageSquare } from "lucide-react";
 
 import { ArticleCard } from "@/components/article-card";
 import { ArticleGallery } from "@/components/article-gallery";
+import { ArticleSidebar } from "@/components/article-sidebar";
 import { ArticleVideo } from "@/components/article-video";
 import { CoverImage } from "@/components/cover-image";
 import { SubscribeBlock } from "@/components/subscribe-block";
@@ -13,6 +14,7 @@ import { parseMedia } from "@/lib/article-media";
 import { plainTextPreview } from "@/lib/article-html";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
+import { forumSectionForArticle } from "@/lib/forum-rubric";
 import { sanitizeArticleHtml } from "@/lib/sanitize";
 import {
   getPublishedArticleBySlug,
@@ -125,7 +127,12 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   const related = await getRelatedArticles(
     article.category?.slug ?? null,
     article.id,
+    // Three, not four: the main column is now eight of twelve and a fourth card
+    // wraps onto a row of its own, which reads as a mistake rather than a choice.
+    3,
   );
+
+  const forumSection = forumSectionForArticle(article.category?.slug ?? null);
 
   const timestamp = article.publishedAt ?? article.createdAt;
 
@@ -136,9 +143,22 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   const videoUrl = article.videoUrl ?? "";
 
   return (
-    <article className="mx-auto max-w-3xl">
-      {/* Breadcrumbs. */}
-      <nav aria-label="Хлебные крошки" className="mb-5 text-[11px] text-ink-soft">
+    /*
+      Two columns on a wide screen, one column below `lg`.
+
+      The grid, not a second container: `(public)/layout.tsx` already wraps every page
+      in `max-w-7xl` with its own horizontal padding. Adding `mx-auto max-w-7xl px-4`
+      here as well would stack the padding and make the article page narrower than
+      every other page on the site, which is the opposite of what the wider layout is
+      for.
+
+      Sidebar last in the DOM, so on a phone it lands strictly under the story with no
+      ordering rule needed to achieve it.
+    */
+    <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+      <article className="min-w-0 lg:col-span-8">
+        {/* Breadcrumbs. */}
+        <nav aria-label="Хлебные крошки" className="mb-5 text-[11px] text-ink-soft">
         <ol className="flex flex-wrap items-center gap-1">
           <li>
             <Link href="/" className="hover:text-accent">
@@ -200,7 +220,13 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         ) : null}
 
         {article.lead ? (
-          <p className="mt-3 text-base leading-relaxed text-ink-soft">
+          /*
+            The standfirst. Set apart from the body by size, weight and a rule below,
+            because it is the one sentence written to be read twice — once in the feed
+            and once here. `border-rule` and `text-ink` are the theme's own tokens
+            rather than a slate palette, so the lead follows a brand change.
+          */
+          <p className="mt-4 mb-6 border-b border-rule pb-4 text-lg leading-relaxed font-medium text-ink sm:text-xl">
             {article.lead}
           </p>
         ) : null}
@@ -235,26 +261,33 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
             alt={article.title}
             width={1200}
             height={800}
-            // The article cover is the page's LCP element.
+            // The article cover is the page's LCP element. The sidebar's compact
+            // thumbnails are the ones that get lazy-loaded, not this one.
             preload
-            sizes="(max-width: 768px) 100vw, 768px"
+            sizes="(max-width: 1024px) 100vw, 66vw"
             className="w-full rounded-sm bg-paper-dim"
           />
-          <figcaption className="mt-2 text-[11px] text-ink-soft">
-            {article.category?.name ?? "Фото"}
-          </figcaption>
 
-          {/* Editorial photo credit, printed under the cover in italics. */}
-          {article.photoAuthor || article.photoSource ? (
-            <p className="mt-1 text-[11px] text-ink-soft italic">
-              {article.photoAuthor ? (
-                <span>© {article.photoAuthor}</span>
+          {/*
+            One caption line, muted.
+
+            The photo credit used to be a second paragraph under the category name,
+            which read as two separate captions and left a stray italic row when only
+            one of the two fields was filled. They are one sentence: what the picture
+            is, and who took it.
+          */}
+          {article.category?.name || article.photoAuthor || article.photoSource ? (
+            <figcaption className="mt-2 text-xs text-ink-soft/80">
+              {article.category?.name ?? "Фото"}
+              {article.photoAuthor || article.photoSource ? (
+                <span className="text-ink-soft/60">
+                  {" · "}
+                  {article.photoAuthor ? <span>© {article.photoAuthor}</span> : null}
+                  {article.photoAuthor && article.photoSource ? " · " : null}
+                  {article.photoSource ? <span>{article.photoSource}</span> : null}
+                </span>
               ) : null}
-              {article.photoAuthor && article.photoSource ? (
-                <span aria-hidden> · </span>
-              ) : null}
-              {article.photoSource ? <span>{article.photoSource}</span> : null}
-            </p>
+            </figcaption>
           ) : null}
         </figure>
       ) : null}
@@ -292,26 +325,51 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         </ul>
       ) : null}
 
-      {related.length > 0 ? (
-        <aside
-          aria-labelledby="related-heading"
-          className="mt-10 border-t-2 border-ink pt-4"
-        >
-          <h2
-            id="related-heading"
-            className="mb-4 text-xs font-bold tracking-[0.14em] text-ink uppercase"
+      {/*
+          The end-of-article block: a way into the forum discussion of this story, and
+          the story's neighbours. It sits directly after the body and before the tags,
+          while the reader still has the argument in mind.
+        */}
+        <div className="mt-10 flex flex-wrap items-center gap-3 border-t-2 border-ink pt-5">
+          <Link
+            href={`/forum/${forumSection.slug}`}
+            className="inline-flex min-h-10 items-center gap-2 rounded-sm bg-ink px-4 py-2 text-sm font-medium text-paper transition-opacity hover:opacity-90"
           >
-            Читайте также
-          </h2>
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {related.map((item) => (
-              <ArticleCard key={item.id} article={item} variant="compact" />
-            ))}
-          </div>
-        </aside>
-      ) : null}
+            <MessageSquare className="size-4" aria-hidden />
+            Обсудить на форуме
+          </Link>
+          <span className="text-xs text-ink-soft">
+            Раздел «{forumSection.title}»
+          </span>
+        </div>
 
-      <SubscribeBlock variant="inline" className="mt-10" />
-    </article>
+        {related.length > 0 ? (
+          <aside
+            aria-labelledby="related-heading"
+            className="mt-10 border-t border-rule pt-4"
+          >
+            <h2
+              id="related-heading"
+              className="mb-4 text-xs font-bold tracking-[0.14em] text-ink uppercase"
+            >
+              Читайте также
+            </h2>
+            <div className="grid gap-5 sm:grid-cols-3">
+              {related.map((item) => (
+                <ArticleCard key={item.id} article={item} variant="compact" />
+              ))}
+            </div>
+          </aside>
+        ) : null}
+
+        <SubscribeBlock variant="inline" className="mt-10" />
+      </article>
+
+      <ArticleSidebar
+        currentArticleId={article.id}
+        currentTitle={article.title}
+        currentUrl={absoluteUrl(`/news/${article.slug}`)}
+      />
+    </div>
   );
 }

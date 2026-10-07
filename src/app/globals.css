@@ -137,6 +137,29 @@ body {
   color: var(--color-accent);
 }
 
+/* Paragraph rhythm, stated rather than inherited.
+   The prose plugin's defaults are in `em`, which is fine inside a block but drifts as
+   the type scale steps up between breakpoints: the gap between two paragraphs would
+   grow with the text next to it. A rem value keeps the rhythm constant, which is the
+   point of a rhythm. Line height moves from the plugin's 1.75 on `lg` back to 1.75
+   everywhere — the older 1.5 was tuned when the body was a narrow single column and
+   reads cramped at the width the article now occupies. */
+.article-body p {
+  margin-top: 0;
+  margin-bottom: 1.25rem;
+  line-height: 1.75;
+}
+
+/* The last paragraph must not leave a gap under itself, or the block before the tags
+   picks up a phantom band of space. */
+.article-body > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Quotes: brand rule, light wash, italic. Defined once, in the rule further down that
+   already carried the serif face — two rules for one selector means the later one
+   silently wins and the result depends on source order rather than on intent. */
+
 /* Editor surface only. An empty paragraph still has to hold a line, or there is
    nowhere to click to start the next sentence. Nothing else is set here on
    purpose: paragraph margins come from `.prose`, and overriding them would make
@@ -166,9 +189,25 @@ body {
   margin-bottom: 0.35em;
 }
 
+/* Quotes. `border-yo` rather than a raw Tailwind amber: `--color-yo` is this
+   publication's orange, and a palette literal here would be the one rule on the page
+   not driven by the theme — it would not follow a brand change. The wash is the same
+   orange at 5%, which is what a soft tint looks like on paper.
+   Italic replaces the roman face this rule used to force: a quoted passage is someone
+   else's words, and italic is how the body says so. */
 .article-body blockquote {
   font-family: var(--font-lora), Georgia, serif;
-  font-style: normal;
+  font-style: italic;
+  border-left: 4px solid var(--color-yo);
+  background-color: color-mix(in srgb, var(--color-yo) 5%, transparent);
+  border-radius: 0 4px 4px 0;
+  padding: 1rem;
+  margin: 1.5rem 0;
+  color: var(--color-ink-soft);
+}
+
+.article-body blockquote p:last-child {
+  margin-bottom: 0;
 }
 
 .article-body figure figcaption {

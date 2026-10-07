@@ -22,6 +22,8 @@ import { fileURLToPath } from "node:url";
 
 import robots from "@/app/robots";
 import { isCurrentPath } from "@/components/nav-pill";
+import { FORUM_SEED_CATEGORIES } from "@/lib/forum";
+import { forumSectionForArticle, forumSlugsInRubricMap } from "@/lib/forum-rubric";
 import { prisma } from "@/lib/prisma";
 import { sanitizeForumHtml } from "@/lib/sanitize";
 import {
@@ -577,11 +579,78 @@ async function sectionMetadata(slug: string) {
   return generateMetadata({ params: Promise.resolve({ categorySlug: slug }) });
 }
 
+// --- 6. the article sidebar's forum wiring ----------------------------------
+
+/**
+ * The article page's link into the forum.
+ *
+ * Two things can go wrong, and neither is visible on the forum's own pages: a rubric
+ * that maps to a section slug which does not exist (a 404 behind a button that looks
+ * fine), and a rubric that quietly stops matching because an editor renamed it. The
+ * forum's slug list is read from the seed rather than copied, so a renamed section
+ * fails here instead of in production.
+ */
+function checkSidebarWiring() {
+  // Explicitly `Set<string>`: the seed array is `as const`, so without the annotation
+  // the Set infers as a set of that literal union and every `has(someString)` below
+  // fails to typecheck — which is the wrong reason for a check to complain.
+  const known: Set<string> = new Set(
+    FORUM_SEED_CATEGORIES.map((category) => category.slug),
+  );
+  const mapped = forumSlugsInRubricMap();
+  const unknown = mapped.filter((slug) => !known.has(slug));
+
+  check(
+    "Сайдбар: все разделы форума из маппинга существуют",
+    unknown.length === 0,
+    unknown.length === 0 ? mapped.join(", ") : `нет таких: ${unknown.join(", ")}`,
+  );
+
+  // The real rubrics, measured from the database rather than assumed.
+  const rubrics = ["culture", "society", "politics", "incident", "sport", "tech", "economy", "science"];
+  const unresolved = rubrics.filter(
+    (slug) => !known.has(forumSectionForArticle(slug).slug),
+  );
+  check(
+    "Сайдбар: каждая рубрика разрешается в реальный раздел",
+    unresolved.length === 0,
+    unresolved.length === 0
+      ? `${rubrics.length} рубрик из базы разрешены`
+      : `не разрешены: ${unresolved.join(", ")}`,
+  );
+
+  // An article with no rubric at all must still produce a link, not a crash.
+  const orphan = forumSectionForArticle(null);
+  check(
+    "Сайдбар: материал без рубрики всё равно получает раздел",
+    known.has(orphan.slug),
+    `${orphan.slug} (${orphan.title})`,
+  );
+
+  // The button must name where it leads, or it is a leap of faith.
+  const society = forumSectionForArticle("society");
+  check(
+    "Сайдбар: кнопка называет раздел, в который ведёт",
+    society.title === "Городские проблемы и ЖКХ" && society.slug === "gorodskie-problemy-i-zhkh",
+    `${society.slug} — ${society.title}`,
+  );
+
+  // Everything else lands in the news section, on purpose: a reader who wants to
+  // discuss a story should always land somewhere.
+  const sport = forumSectionForArticle("sport");
+  check(
+    "Сайдбар: неразмеченная рубрика идёт в «Новости и события»",
+    sport.slug === "novosti-i-sobytiya",
+    `${sport.slug}`,
+  );
+}
+
 async function main() {
   checkSanitiser();
   checkText();
   checkSpamGate();
   await checkNavigation();
+  checkSidebarWiring();
   await checkDataLayer();
 
   for (const { name, ok, detail } of checks) {

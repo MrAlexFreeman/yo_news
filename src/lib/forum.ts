@@ -339,6 +339,41 @@ export async function incrementForumTopicViews(id: number): Promise<void> {
   });
 }
 
+/**
+ * The most recently active threads, for the article sidebar.
+ *
+ * Separate from {@link getRecentForumTopics} because the two have different jobs:
+ * that one lists the newest by `updatedAt` for a moderator who wants to see what
+ * happened, while this one has to fit a narrow column beside a story and so takes
+ * fewer, lighter rows. Both sort by activity, so a thread someone just answered
+ * rises either way.
+ */
+export async function getActiveForumTopics(
+  take = 3,
+): Promise<{ id: number; title: string; slug: string; replies: number; updatedAt: Date; categorySlug: string }[]> {
+  const topics = await prisma.forumTopic.findMany({
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    take,
+    select: {
+      id: true,
+      title: true,
+      slug: true,
+      updatedAt: true,
+      category: { select: { slug: true } },
+      _count: { select: { posts: true } },
+    },
+  });
+
+  return topics.map((topic) => ({
+    id: topic.id,
+    title: topic.title,
+    slug: topic.slug,
+    replies: topic._count.posts,
+    updatedAt: topic.updatedAt,
+    categorySlug: topic.category.slug,
+  }));
+}
+
 // --- moderation --------------------------------------------------------------
 
 /** Recent activity for the admin board: newest topics, newest posts. */
