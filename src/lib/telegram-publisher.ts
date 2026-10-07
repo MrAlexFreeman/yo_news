@@ -12,13 +12,20 @@
  *    messenger was slow, rate-limited, or has no token configured.
  *  - It never logs a token. Every message is prefixed `[telegram]` and carries the
  *    method name and the API's own description, which never contains the token.
+ *
+ * The API root and the proxy exist because `api.telegram.org` is not always
+ * reachable. Measured on this project's VPS: TCP 443 to that host never completes
+ * (curl reports ETIMEDOUT), so every publish failed at the connection with no
+ * Telegram error to report. The two escape hatches are an alternative base URL
+ * (a reverse proxy, a Cloudflare Worker) and an outbound proxy.
  */
 
 import { extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
 import { planTelegramPost, buildMessengerPost, cutForReading } from "@/lib/messenger-post";
 import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
 
-const TELEGRAM_API_BASE = "https://api.telegram.org";
+/** The official root. Used when no alternative is configured. */
+export const DEFAULT_TELEGRAM_API_ROOT = "https://api.telegram.org";
 
 export type TelegramArticle = {
   title: string;
@@ -33,6 +40,8 @@ export type TelegramConfig = {
   token: string;
   channelId: string;
   enabled: boolean;
+  /** Alternative Bot API root; empty means the official one. */
+  apiRoot: string;
 };
 
 export type TelegramPublishResult = {
@@ -67,10 +76,11 @@ type TelegramEnvelope = {
 export async function telegramConfig(): Promise<TelegramConfig> {
   const { getSetting } = (await import("@/lib/settings")) as typeof import("@/lib/settings");
 
-  const [token, channelId, enabled] = await Promise.all([
+  const [token, channelId, enabled, apiRoot] = await Promise.all([
     getSetting("TELEGRAM_BOT_TOKEN"),
     getSetting("TELEGRAM_CHANNEL_ID"),
     getSetting("TELEGRAM_ENABLED"),
+    getSetting("TELEGRAM_API_ROOT"),
   ]);
 
   return {
@@ -80,7 +90,81 @@ export async function telegramConfig(): Promise<TelegramConfig> {
     // default is on for Telegram: a channel that was set up and then had its token
     // pasted should syndicate without anyone also finding a checkbox.
     enabled: parseEnabled(enabled, DEFAULT_SYNDICATION_ENABLED.telegram),
+    apiRoot: apiRoot.trim(),
   };
+}
+
+/** The base the methods are appended to, with any trailing slash removed. */
+export function telegramApiBase(config: TelegramConfig): string {
+  const configured = config.apiRoot.trim();
+  return (configured || DEFAULT_TELEGRAM_API_ROOT).replace(/\/+$/, "");
+}
+
+/**
+ * The outbound proxy, from the environment only.
+ *
+ * Deliberately not a settings field, unlike the API root. A proxy URL usually carries
+ * credentials, and this project's rule for a credential is that the server-side value
+ * is the trust boundary — the same reason VK_COMMUNITY_ID is env-only. The API root is
+ * editable from /admin because it is a destination, not a secret; the proxy is a secret.
+ *
+ * Empty means no proxy, which is the normal case.
+ */
+export function telegramProxy(): string {
+  return process.env.TELEGRAM_PROXY?.trim() ?? "";
+}
+
+/**
+ * One HTTP call, through the proxy when one is configured.
+ *
+ * Two things here are measured rather than assumed, and both were wrong in the
+ * obvious implementation:
+ *
+ *  1. The dispatcher cannot be handed to the global `fetch`. Passing a `ProxyAgent`
+ *     from the top-level `undici` package to Node's global fetch fails with
+ *     `UND_ERR_INVALID_ARG`, because the global is a different undici instance and
+ *     rejects a dispatcher built by another one. So the proxied path uses
+ *     `undici.fetch` from the same import that built the agent.
+ *  2. A fresh `ProxyAgent` per call would open a new pool each time. The agent is
+ *     cached by URL, which is the documented usage and keeps this process from
+ *     accumulating sockets.
+ *
+ * Both paths return a standard `Response` with the same shape, so callers do not know
+ * which one ran.
+ */
+type UndiciModule = {
+  fetch: (url: string, init?: RequestInit & { dispatcher?: unknown }) => Promise<Response>;
+  ProxyAgent: new (url: string) => { close?: () => Promise<void> };
+};
+
+let undiciModule: Promise<UndiciModule> | null = null;
+const proxyAgents = new Map<string, unknown>();
+
+async function loadUndici(): Promise<UndiciModule> {
+  undiciModule ??= import("undici") as unknown as Promise<UndiciModule>;
+  return undiciModule;
+}
+
+async function telegramFetch(url: string, init: RequestInit): Promise<Response> {
+  const proxy = telegramProxy();
+  if (!proxy) return fetch(url, init);
+
+  const undici = await loadUndici();
+  let dispatcher = proxyAgents.get(proxy);
+  if (!dispatcher) {
+    dispatcher = new undici.ProxyAgent(proxy);
+    proxyAgents.set(proxy, dispatcher);
+  }
+
+  return undici.fetch(url, { ...init, dispatcher });
+}
+
+/** Test-only: drops cached agents so a suite can switch proxies between cases. */
+export function resetTelegramProxyCache(): void {
+  for (const agent of proxyAgents.values()) {
+    void (agent as { close?: () => Promise<void> }).close?.();
+  }
+  proxyAgents.clear();
 }
 
 /**
@@ -89,23 +173,25 @@ export async function telegramConfig(): Promise<TelegramConfig> {
  * The settings service is `server-only`, so importing it eagerly would make this
  * module unimportable from a test that stubs `fetch`. Same arrangement as
  * `setVkTokenSource`: the production path installs the settings lookup, tests leave it.
+ *
+ * The default is the environment rather than `telegramConfig`, and it has to be: it
+ * must be reachable from a plain Node process where `@/lib/settings` throws on import.
+ * A default that only worked in production would make every unit test of this module
+ * inject its own config.
  */
-let configSource: () => Promise<TelegramConfig> = async () => {
-  // The default is the environment, not the settings table, for the same reason
-  // `resetVkTokenSource` is: it must be reachable from a plain Node process where
-  // `@/lib/settings` throws on import. Calling `telegramConfig` here would work in
-  // production and break every unit test that does not inject its own config.
-  const token = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
-  const channelId = process.env.TELEGRAM_CHANNEL_ID?.trim() ?? "";
+function envTelegramConfig(): TelegramConfig {
   return {
-    token,
-    channelId,
+    token: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "",
+    channelId: process.env.TELEGRAM_CHANNEL_ID?.trim() ?? "",
     enabled: parseEnabled(
       process.env.TELEGRAM_ENABLED ?? "",
       DEFAULT_SYNDICATION_ENABLED.telegram,
     ),
+    apiRoot: process.env.TELEGRAM_API_ROOT?.trim() ?? "",
   };
-};
+}
+
+let configSource: () => Promise<TelegramConfig> = async () => envTelegramConfig();
 
 /** Points the publisher at the settings table. Called once, from the action. */
 export function setTelegramConfigSource(
@@ -116,16 +202,7 @@ export function setTelegramConfigSource(
 
 /** Test-only: restores the environment-based lookup. */
 export function resetTelegramConfigSource(): void {
-  setTelegramConfigSource(
-    async () => ({
-      token: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "",
-      channelId: process.env.TELEGRAM_CHANNEL_ID?.trim() ?? "",
-      enabled: parseEnabled(
-        process.env.TELEGRAM_ENABLED ?? "",
-        DEFAULT_SYNDICATION_ENABLED.telegram,
-      ),
-    }),
-  );
+  setTelegramConfigSource(async () => envTelegramConfig());
 }
 
 /**
@@ -157,14 +234,22 @@ export function isTelegramUnreachable(error: unknown): boolean {
   ].some((needle) => text.includes(needle));
 }
 
-/** The sentence an operator needs, in place of a bare "fetch failed". */
-export const TELEGRAM_UNREACHABLE_HINT =
-  "Telegram недоступен с этого сервера: соединение с api.telegram.org не устанавливается.";
+/**
+ * The sentence an operator needs, in place of a bare "fetch failed".
+ *
+ * Host-neutral on purpose. It used to name api.telegram.org, which was accurate while
+ * that was the only address this code could use and is wrong now that the API root is
+ * configurable: a failure against a reverse proxy would have blamed a host that was
+ * never contacted. Callers that know the address append it.
+ */
+export const TELEGRAM_UNREACHABLE_HINT = "Telegram недоступен: соединение не устанавливается.";
 
 /** Turns a caught error into the sentence the editor sees. */
-export function describeTelegramError(error: unknown): string {
-  if (isTelegramUnreachable(error)) return TELEGRAM_UNREACHABLE_HINT;
-  return error instanceof Error ? error.message : "сетевая ошибка Telegram";
+export function describeTelegramError(error: unknown, apiBase?: string): string {
+  if (!isTelegramUnreachable(error)) {
+    return error instanceof Error ? error.message : "сетевая ошибка Telegram";
+  }
+  return apiBase ? `${TELEGRAM_UNREACHABLE_HINT} Адрес: ${apiBase}` : TELEGRAM_UNREACHABLE_HINT;
 }
 
 /**
@@ -179,10 +264,11 @@ async function callTelegram<T>(
   token: string,
   method: string,
   init: { json?: unknown; form?: FormData },
+  apiRoot: string,
 ): Promise<T> {
-  const url = `${TELEGRAM_API_BASE}/bot${token}/${method}`;
+  const url = `${apiRoot}/bot${token}/${method}`;
 
-  const response = await fetch(url, {
+  const response = await telegramFetch(url, {
     method: "POST",
     ...(init.form
       ? { body: init.form }
@@ -233,22 +319,32 @@ async function sendPhoto(
   form.append("photo", new Blob([bytes], { type: contentType }), `cover${extensionFor(contentType) ?? ".jpg"}`);
   if (caption) form.append("caption", caption);
 
-  const sent = await callTelegram<TelegramEnvelope>(config.token, "sendPhoto", { form });
+  const sent = await callTelegram<TelegramEnvelope>(
+    config.token,
+    "sendPhoto",
+    { form },
+    telegramApiBase(config),
+  );
   return sent.result?.message_id != null ? String(sent.result.message_id) : null;
 }
 
 /** Sends the text on its own. */
 async function sendMessage(config: TelegramConfig, text: string): Promise<string | null> {
-  const sent = await callTelegram<TelegramEnvelope>(config.token, "sendMessage", {
-    json: {
-      chat_id: config.channelId,
-      text,
-      parse_mode: "HTML",
-      // The post already ends with its own credit line. Telegram's automatic preview
-      // card would render that URL a second time, below it, as a separate block.
-      disable_web_page_preview: true,
+  const sent = await callTelegram<TelegramEnvelope>(
+    config.token,
+    "sendMessage",
+    {
+      json: {
+        chat_id: config.channelId,
+        text,
+        parse_mode: "HTML",
+        // The post already ends with its own credit line. Telegram's automatic preview
+        // card would render that URL a second time, below it, as a separate block.
+        disable_web_page_preview: true,
+      },
     },
-  });
+    telegramApiBase(config),
+  );
   return sent.result?.message_id != null ? String(sent.result.message_id) : null;
 }
 
@@ -351,7 +447,7 @@ export async function publishArticleToTelegram(
       ...(warning ? { warning } : {}),
     };
   } catch (error) {
-    const message = describeTelegramError(error);
+    const message = describeTelegramError(error, await safeApiBase());
     console.warn(`[telegram] публикация не выполнена: ${message}`);
     return { ok: false, error: message };
   }
@@ -376,7 +472,7 @@ export async function sendTelegramTestMessage(
     );
     return { ok: true, message: id ? `Сообщение отправлено, id ${id}.` : "Сообщение отправлено." };
   } catch (error) {
-    const message = describeTelegramError(error);
+    const message = describeTelegramError(error, telegramApiBase(config));
     console.warn(`[telegram] тестовая отправка не удалась: ${message}`);
     return { ok: false, error: message };
   }
@@ -387,15 +483,19 @@ export async function sendTelegramTestMessage(
  * only wants to know whether the token itself is valid.
  *
  * `getMe` is the standard choice: it returns the bot's own name, costs nothing, and
- * does not post anything into a channel.
+ * does not post anything into a channel. It goes through the same API root and proxy
+ * as a publish, so a token that works here works there.
  */
 export async function checkTelegramToken(
-  token: string,
+  config: TelegramConfig,
 ): Promise<{ ok: boolean; message: string }> {
-  if (!token.trim()) return { ok: false, message: "Токен не задан." };
+  const token = config.token.trim();
+  if (!token) return { ok: false, message: "Токен не задан." };
+
+  const base = telegramApiBase(config);
 
   try {
-    const response = await fetch(`${TELEGRAM_API_BASE}/bot${token.trim()}/getMe`, {
+    const response = await telegramFetch(`${base}/bot${token}/getMe`, {
       signal: AbortSignal.timeout(15_000),
     });
     const parsed = (await response.json().catch(() => null)) as TelegramEnvelope | null;
@@ -403,23 +503,127 @@ export async function checkTelegramToken(
     if (!response.ok || parsed?.ok === false) {
       return {
         ok: false,
-        message: `Telegram отклонил токен: ${parsed?.description ?? `HTTP ${response.status}`}`,
+        // The address is named here too, not only on the network-error path: a 404 from
+        // a reverse proxy that forwards nothing looks exactly like a rejected token, and
+        // "который адрес спросили" is the first thing an operator needs to know.
+        message: `Telegram отклонил токен: ${parsed?.description ?? `HTTP ${response.status}`} (адрес: ${base})`,
       };
     }
 
     const name = (parsed?.result as { username?: string } | undefined)?.username;
     return {
       ok: true,
-      message: name ? `Токен принят, бот @${name}.` : "Токен принят, Telegram отвечает.",
+      message: name
+        ? `Токен принят, бот @${name} (${describeApiRoot(base)}).`
+        : `Токен принят, Telegram отвечает (${describeApiRoot(base)}).`,
     };
   } catch (error) {
     if (isTelegramUnreachable(error)) {
-      return { ok: false, message: TELEGRAM_UNREACHABLE_HINT };
+      return { ok: false, message: `${TELEGRAM_UNREACHABLE_HINT} Адрес: ${base}` };
     }
     return {
       ok: false,
-      message: `Не удалось обратиться к Telegram: ${
+      message: `Не удалось обратиться к Telegram (${base}): ${
         error instanceof Error ? error.message : "сетевая ошибка"
+      }`,
+    };
+  }
+}
+
+/**
+ * The API base, resolved without failing.
+ *
+ * Only for composing an error message: if the settings lookup itself is what failed,
+ * the message must still be produced rather than the reporter throwing.
+ */
+async function safeApiBase(): Promise<string> {
+  try {
+    return telegramApiBase(await configSource());
+  } catch {
+    return DEFAULT_TELEGRAM_API_ROOT;
+  }
+}
+
+/**
+ * Names the endpoint in a way that tells the official root apart from a stand-in.
+ *
+ * Worth the few lines: "Telegram отвечает" is ambiguous once the API root is
+ * configurable — a reverse proxy answering 200 to everything would read as success.
+ */
+export function describeApiRoot(base: string): string {
+  return base === DEFAULT_TELEGRAM_API_ROOT ? "официальный адрес" : `свой адрес ${base}`;
+}
+
+export type TelegramPingResult = {
+  ok: boolean;
+  /** The URL that was actually requested, after the root was resolved. */
+  url: string;
+  /** Real HTTP status of the response, or null when the request never completed. */
+  status: number | null;
+  /** Round-trip time in milliseconds. */
+  ms: number;
+  /** Whether the request went through a proxy. */
+  viaProxy: boolean;
+  message: string;
+};
+
+/**
+ * Reaches the configured API root and reports what came back.
+ *
+ * Deliberately a plain GET of the root with no token: this answers "can this host talk
+ * to that endpoint at all", which is the question that failed on this project's VPS,
+ * and it answers it without sending a credential. A 404 or a 401 from Telegram is a
+ * *success* here and is reported as reachable — the point is that something answered.
+ *
+ * The response time is measured around the request, so a proxy that silently drops the
+ * connection shows up as a long duration followed by an error rather than as silence.
+ */
+export async function pingTelegramEndpoint(
+  config: TelegramConfig,
+): Promise<TelegramPingResult> {
+  const base = telegramApiBase(config);
+  const url = `${base}/`;
+  const viaProxy = telegramProxy().length > 0;
+  const started = Date.now();
+
+  try {
+    const response = await telegramFetch(url, {
+      method: "GET",
+      // Read-only and cacheable in no way that matters; don't let a CDN in front of a
+      // reverse proxy answer from cache and make a dead upstream look healthy.
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const ms = Date.now() - started;
+
+    return {
+      ok: true,
+      url,
+      status: response.status,
+      ms,
+      viaProxy,
+      message: `Эндпоинт ответил HTTP ${response.status} за ${ms} мс${
+        viaProxy ? " (через прокси)" : ""
+      }.`,
+    };
+  } catch (error) {
+    const ms = Date.now() - started;
+
+    const reason = isTelegramUnreachable(error)
+      ? TELEGRAM_UNREACHABLE_HINT
+      : error instanceof Error
+        ? error.message
+        : "сетевая ошибка";
+
+    return {
+      ok: false,
+      url,
+      status: null,
+      ms,
+      viaProxy,
+      message: `Эндпоинт недоступен (${url}): ${reason}${
+        viaProxy ? " Прокси задан в TELEGRAM_PROXY." : ""
       }`,
     };
   }

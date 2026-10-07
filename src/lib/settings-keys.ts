@@ -37,6 +37,7 @@ export const ALLOWED_KEYS = [
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_CHANNEL_ID",
   "TELEGRAM_ENABLED",
+  "TELEGRAM_API_ROOT",
   "MAX_BOT_TOKEN",
   "MAX_CHAT_ID",
   "MAX_ENABLED",
@@ -60,9 +61,10 @@ export const FIELD_BY_NAME: Record<string, SettingKey> = {
  * `token` is an opaque credential and gets the length and charset rules the API
  * keys do. `destination` is a chat or channel reference — "@eartnews", "-100…",
  * or a bare numeric id — so a charset that forbids "@" and "-" would reject every
- * value Telegram actually uses. `flag` is the literal "true"/"false".
+ * value Telegram actually uses. `flag` is the literal "true"/"false". `url` is an
+ * absolute https endpoint, for the Telegram API root.
  */
-export type SyndicationFieldKind = "token" | "destination" | "flag";
+export type SyndicationFieldKind = "token" | "destination" | "flag" | "url";
 
 export type SyndicationField = {
   key: SettingKey;
@@ -73,6 +75,7 @@ export const SYNDICATION_FIELDS = {
   telegramBotToken: { key: "TELEGRAM_BOT_TOKEN", kind: "token" },
   telegramChannelId: { key: "TELEGRAM_CHANNEL_ID", kind: "destination" },
   telegramEnabled: { key: "TELEGRAM_ENABLED", kind: "flag" },
+  telegramApiRoot: { key: "TELEGRAM_API_ROOT", kind: "url" },
   maxBotToken: { key: "MAX_BOT_TOKEN", kind: "token" },
   maxChatId: { key: "MAX_CHAT_ID", kind: "destination" },
   maxEnabled: { key: "MAX_ENABLED", kind: "flag" },
@@ -117,6 +120,52 @@ const DESTINATION_PATTERN = /^@?-?[A-Za-z0-9_.-]+$/;
 const MAX_DESTINATION_LENGTH = 100;
 
 /**
+ * What an API root may be, and the four things it may not.
+ *
+ * The value becomes the host every Telegram request is sent to — *including the one
+ * carrying the bot token*. So this is the one field in the settings table that can
+ * be used to exfiltrate a stored credential rather than merely misuse it: an editor
+ * who cannot read the token (it is masked and never sent to the browser) can point
+ * this at their own server and read the token out of the request that follows.
+ * Documented here because it is the reason the field is https-only and rejects
+ * credentials, and the reason the report says an operator may prefer to pin it in
+ * `.env` and not expose it.
+ *
+ * The rules:
+ *   - absolute https URL only. A plaintext http root would put the bot token on the
+ *     wire; the single exception is loopback, where a local nginx reverse proxy is a
+ *     legitimate deployment and the traffic never leaves the host.
+ *   - no userinfo. `https://user:pass@host` would put a credential in this stored
+ *     value, in the page that renders it, and in every error message that echoes a URL.
+ *   - no query, no fragment: a request path is appended to this value.
+ */
+export function validateApiRoot(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "Ожидается полный URL, например https://api.telegram.org";
+  }
+
+  const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname);
+
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+    return "Разрешён только https. Исключение — localhost для локального прокси.";
+  }
+  if (parsed.username || parsed.password) {
+    return "URL не должен содержать логин и пароль.";
+  }
+  if (parsed.search || parsed.hash) {
+    return "URL не должен содержать параметры или якорь — к нему добавляется путь запроса.";
+  }
+  if (value.length > 200) {
+    return "Слишком длинный адрес.";
+  }
+
+  return null;
+}
+
+/**
  * The literal spellings a flag accepts.
  *
  * Only these two. "1", "yes" and "да" are accepted on the way *in* by
@@ -155,6 +204,10 @@ export function validateSyndicationField(
     return (FLAG_VALUES as readonly string[]).includes(trimmed)
       ? null
       : "Ожидается true или false.";
+  }
+
+  if (field.kind === "url") {
+    return validateApiRoot(trimmed);
   }
 
   if (field.kind === "destination") {

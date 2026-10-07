@@ -35,6 +35,7 @@ import {
   maskSecret,
   parseEnabled,
   toView,
+  validateApiRoot,
   validateSyndicationField,
 } from "../src/lib/settings-keys";
 import {
@@ -48,11 +49,17 @@ import {
 } from "../src/lib/max-publisher";
 import {
   TELEGRAM_UNREACHABLE_HINT,
+  DEFAULT_TELEGRAM_API_ROOT,
+  describeApiRoot,
   describeTelegramError,
   isTelegramUnreachable,
+  pingTelegramEndpoint,
   publishArticleToTelegram,
   resetTelegramConfigSource,
+  resetTelegramProxyCache,
   setTelegramConfigSource,
+  telegramApiBase,
+  telegramProxy,
 } from "../src/lib/telegram-publisher";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -761,8 +768,10 @@ check(
 check(
   "Telegram: в сообщении редактору сказано, куда смотреть",
   describeTelegramError(new Error("ETIMEDOUT")) === TELEGRAM_UNREACHABLE_HINT &&
-    TELEGRAM_UNREACHABLE_HINT.includes("api.telegram.org"),
-  TELEGRAM_UNREACHABLE_HINT.slice(0, 60),
+    describeTelegramError(new Error("ETIMEDOUT"), "https://tg.example.com").includes(
+      "https://tg.example.com",
+    ),
+  `${TELEGRAM_UNREACHABLE_HINT} (с адресом при наличии)`,
 );
 
 check(
@@ -819,6 +828,7 @@ setTelegramConfigSource(async () => ({
   token: "123456789:AAHvalid",
   channelId: "",
   enabled: true,
+  apiRoot: "",
 }));
 setMaxConfigSource(async () => ({ token: "есть-токен", chatId: "", enabled: true }));
 
@@ -839,6 +849,7 @@ setTelegramConfigSource(async () => ({
   token: "123456789:AAHvalid",
   channelId: "@eartnews",
   enabled: false,
+  apiRoot: "",
 }));
 const switchedOff = await publishArticleToTelegram(draftArticle);
 check(
@@ -855,6 +866,204 @@ check(
   "Telegram: падение чтения настроек не пробивает наружу",
   settingsDown.ok === false && (settingsDown.error ?? "").includes("настройки недоступны"),
   "ошибка поймана, а не выброшена",
+);
+
+/*
+  The API root, and why it exists.
+
+  Measured on the production VPS: TCP 443 to api.telegram.org never completes, so every
+  publish failed with no Telegram error to report. The escape hatch is an alternative
+  base URL, and these assertions are about the two ways it can go wrong: a trailing
+  slash producing a doubled path, and a value that is not a root at all.
+*/
+check(
+  "Telegram: пустой адрес API даёт официальный корень",
+  telegramApiBase({ token: "", channelId: "", enabled: true, apiRoot: "" }) ===
+    DEFAULT_TELEGRAM_API_ROOT,
+  DEFAULT_TELEGRAM_API_ROOT,
+);
+
+check(
+  "Telegram: завершающие слэши в своём адресе не дают двойного пути",
+  telegramApiBase({
+    token: "",
+    channelId: "",
+    enabled: true,
+    apiRoot: "https://tg.example.com///",
+  }) === "https://tg.example.com",
+  telegramApiBase({
+    token: "",
+    channelId: "",
+    enabled: true,
+    apiRoot: "https://tg.example.com///",
+  }),
+);
+
+check(
+  "Telegram: свой адрес подменяет официальный и это видно в подписи",
+  describeApiRoot("https://tg.example.com").includes("tg.example.com") &&
+    describeApiRoot(DEFAULT_TELEGRAM_API_ROOT).includes("официальный"),
+  `${describeApiRoot("https://tg.example.com")} / ${describeApiRoot(DEFAULT_TELEGRAM_API_ROOT)}`,
+);
+
+/*
+  The URL validator is a security boundary rather than a convenience. This value becomes
+  the host every Telegram request is sent to — *including the one carrying the bot
+  token* — so an editor who cannot read the token can still point it at their own server
+  and harvest it.
+*/
+check(
+  "Адрес API: https принимается",
+  validateApiRoot("https://api.telegram.org") === null &&
+    validateApiRoot("https://tg.example.com/proxy") === null,
+  "в том числе с путём",
+);
+
+check(
+  "Адрес API: http отклоняется, кроме localhost",
+  validateApiRoot("http://api.telegram.org") !== null &&
+    validateApiRoot("http://example.com") !== null &&
+    validateApiRoot("http://localhost:8080") === null &&
+    validateApiRoot("http://127.0.0.1:8080") === null,
+  "локальный nginx reverse proxy разрешён",
+);
+
+check(
+  "Адрес API: логин и пароль в URL отклоняются",
+  validateApiRoot("https://user:pass@tg.example.com") !== null,
+  "иначе учетка попала бы в настройки, в страницу и в логи ошибок",
+);
+
+check(
+  "Адрес API: параметры и якорь отклоняются",
+  validateApiRoot("https://tg.example.com/?x=1") !== null &&
+    validateApiRoot("https://tg.example.com/#x") !== null,
+  "к значению дописывается путь запроса",
+);
+
+check(
+  "Адрес API: относительный или мусорный адрес отклоняется",
+  validateApiRoot("api.telegram.org") !== null &&
+    validateApiRoot("/proxy") !== null &&
+    validateApiRoot("не url") !== null &&
+    validateApiRoot("ftp://example.com") !== null,
+  "нужен абсолютный https",
+);
+
+check(
+  "Адрес API: пусто — не ошибка, а возврат к официальному",
+  validateSyndicationField(SYNDICATION_FIELDS.telegramApiRoot, "") === null,
+  "очистка разрешена",
+);
+
+check(
+  "Адрес API: поле объявлено в настройках как url",
+  SYNDICATION_FIELDS.telegramApiRoot.key === "TELEGRAM_API_ROOT" &&
+    SYNDICATION_FIELDS.telegramApiRoot.kind === "url",
+  "telegramApiRoot -> TELEGRAM_API_ROOT",
+);
+
+/*
+  Proxy resolution. TELEGRAM_PROXY is env-only on purpose — a proxy URL usually carries
+  credentials, and this project's rule is that a credential's server-side value is the
+  trust boundary. What can be asserted without a proxy to talk to is that the switch
+  reads the environment and that a request through a dead proxy fails rather than
+  silently going direct.
+*/
+const originalProxy = process.env.TELEGRAM_PROXY;
+delete process.env.TELEGRAM_PROXY;
+check("Прокси: без переменной прокси нет", telegramProxy() === "", "прямое соединение");
+process.env.TELEGRAM_PROXY = "http://127.0.0.1:3128";
+check("Прокси: значение читается из окружения", telegramProxy() === "http://127.0.0.1:3128", telegramProxy());
+resetTelegramProxyCache();
+delete process.env.TELEGRAM_PROXY;
+
+/*
+  The decisive proxy test, and it needs a local listener to be decisive.
+
+  "The request failed" proves nothing on its own: it would also fail with no proxy at
+  all. So a throwaway HTTP server is started on an ephemeral port and asked for twice —
+  once directly, which must succeed, and once through a proxy pointed at a closed port,
+  which must fail. Only a dispatcher that is actually used can turn a working request
+  into a failed one.
+*/
+const { createServer } = await import("node:http");
+
+const listener = createServer((_request, response) => {
+  response.writeHead(200, { "Content-Type": "application/json" });
+  response.end(JSON.stringify({ ok: true }));
+});
+
+await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+const listenerPort = (listener.address() as { port: number }).port;
+const localRoot = `http://127.0.0.1:${listenerPort}`;
+
+try {
+  const direct = await pingTelegramEndpoint({
+    token: "",
+    channelId: "",
+    enabled: true,
+    apiRoot: localRoot,
+  });
+  check(
+    "Прокси: без прокси локальный эндпоинт отвечает 200",
+    direct.ok && direct.status === 200 && !direct.viaProxy,
+    direct.message.slice(0, 110),
+  );
+
+  // Same endpoint, same code path, only the proxy differs. A closed port stands in for
+  // a proxy that accepts nothing.
+  process.env.TELEGRAM_PROXY = "http://127.0.0.1:1";
+  resetTelegramProxyCache();
+
+  const proxied = await pingTelegramEndpoint({
+    token: "",
+    channelId: "",
+    enabled: true,
+    apiRoot: localRoot,
+  });
+  check(
+    "Прокси: через мёртвый прокси тот же запрос НЕ проходит напрямую",
+    proxied.ok === false && proxied.status === null && proxied.viaProxy,
+    proxied.message.slice(0, 130),
+  );
+} finally {
+  delete process.env.TELEGRAM_PROXY;
+  resetTelegramProxyCache();
+  await new Promise<void>((resolve) => listener.close(() => resolve()));
+  if (originalProxy !== undefined) process.env.TELEGRAM_PROXY = originalProxy;
+}
+
+/*
+  The ping itself, against a host that cannot be reached. The reachable case is covered
+  above by the local listener, so nothing here depends on the open internet — which
+  matters, because api.telegram.org is unreachable from both machines this project runs
+  on and a check that needed it would always be red.
+*/
+const pingUnreachable = await pingTelegramEndpoint({
+  token: "",
+  channelId: "",
+  enabled: true,
+  apiRoot: "https://127.0.0.1:9",
+});
+check(
+  "Пинг: недоступный эндпоинт даёт ошибку, а не исключение",
+  pingUnreachable.ok === false && pingUnreachable.status === null && pingUnreachable.ms >= 0,
+  pingUnreachable.message.slice(0, 110),
+);
+
+check(
+  "Пинг: измеряет время ответа и сообщает его",
+  pingUnreachable.ms >= 0 && Number.isFinite(pingUnreachable.ms),
+  `${pingUnreachable.ms} мс`,
+);
+
+check(
+  "Пинг: сообщает, что учётные данные не отправлялись",
+  // The ping sends no token: the question is whether the host can reach the endpoint,
+  // and it must be answerable before a token exists.
+  pingUnreachable.url === "https://127.0.0.1:9/",
+  pingUnreachable.url,
 );
 
 resetTelegramConfigSource();

@@ -4,7 +4,9 @@ import { getSetting } from "@/lib/settings";
 import { checkMaxToken, sendMaxTestMessage, type MaxConfig } from "@/lib/max-publisher";
 import {
   checkTelegramToken,
+  pingTelegramEndpoint,
   sendTelegramTestMessage,
+  telegramProxy,
   type TelegramConfig,
 } from "@/lib/telegram-publisher";
 
@@ -13,9 +15,14 @@ export const runtime = "nodejs";
 /**
  * "Тестовая отправка" for the syndication settings.
  *
- * Two levels, because an editor who cannot get a post out has two different possible
- * faults and one button cannot tell them apart:
+ * Three levels, because an editor who cannot get a post out has three different
+ * possible faults and one button cannot tell them apart:
  *
+ *  - `mode: "ping"` reaches the API root and reports the HTTP status and the response
+ *    time. No token is sent, so it answers "can this host talk to that endpoint at
+ *    all" — the question that actually failed in production, where TCP 443 to
+ *    api.telegram.org never completes. A 404 from Telegram counts as success here:
+ *    the point is that something answered.
  *  - `mode: "token"` calls the cheapest authenticated endpoint and posts nothing.
  *    This is what "is my token valid" means, and it costs nothing.
  *  - `mode: "message"` actually posts to the channel. A valid token with the wrong
@@ -26,10 +33,10 @@ export const runtime = "nodejs";
  * what was just pasted, before saving it. Under /api/admin/, so Basic Auth applies;
  * `POST` requires JSON so a cross-origin form cannot drive this.
  *
- * Unlike the VK settings test, this one really does publish something when asked to,
- * because the destination is a channel and there is no way to prove a chat id works
- * without writing to it. The text says so on its face and `mode` is explicit, so no
- * button fires it by accident.
+ * Unlike the VK settings test, `message` really does publish something, because the
+ * destination is a channel and there is no way to prove a chat id works without
+ * writing to it. The text says so on its face and `mode` is explicit, so no button
+ * fires it by accident.
  */
 
 type Messenger = "telegram" | "max";
@@ -46,7 +53,13 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: { messenger?: unknown; mode?: unknown; token?: unknown; destination?: unknown };
+  let body: {
+    messenger?: unknown;
+    mode?: unknown;
+    token?: unknown;
+    destination?: unknown;
+    apiRoot?: unknown;
+  };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -61,15 +74,38 @@ export async function POST(request: Request) {
     );
   }
 
-  // Anything other than an explicit "message" stays a read-only check, so a client
-  // that forgets the field cannot accidentally publish.
-  const mode = body.mode === "message" ? "message" : "token";
+  // Anything other than an explicit mode stays a read-only check, so a client that
+  // forgets the field cannot accidentally publish.
+  const mode =
+    body.mode === "message" ? "message" : body.mode === "ping" ? "ping" : "token";
 
   const typedToken = typeof body.token === "string" ? body.token.trim() : "";
   const typedDestination = typeof body.destination === "string" ? body.destination.trim() : "";
+  const typedApiRoot = typeof body.apiRoot === "string" ? body.apiRoot.trim() : "";
 
   const tokenKey = messenger === "telegram" ? "TELEGRAM_BOT_TOKEN" : "MAX_BOT_TOKEN";
   const destinationKey = messenger === "telegram" ? "TELEGRAM_CHANNEL_ID" : "MAX_CHAT_ID";
+
+  // The ping needs neither a token nor a channel: it is about the endpoint, and
+  // requiring a credential to test connectivity would make the button useless exactly
+  // when someone is trying to find out whether the endpoint works before pasting one.
+  if (mode === "ping") {
+    if (messenger !== "telegram") {
+      return NextResponse.json(
+        { error: "Проверка эндпоинта есть только для Telegram." },
+        { status: 400 },
+      );
+    }
+
+    const config: TelegramConfig = {
+      token: "",
+      channelId: "",
+      enabled: true,
+      apiRoot: typedApiRoot || (await getSetting("TELEGRAM_API_ROOT")),
+    };
+
+    return NextResponse.json({ ...(await pingTelegramEndpoint(config)), mode });
+  }
 
   const token = typedToken || (await getSetting(tokenKey));
   const destination = typedDestination || (await getSetting(destinationKey));
@@ -83,7 +119,14 @@ export async function POST(request: Request) {
 
   if (mode === "token") {
     const outcome =
-      messenger === "telegram" ? await checkTelegramToken(token) : await checkMaxToken(token);
+      messenger === "telegram"
+        ? await checkTelegramToken({
+            token,
+            channelId: destination,
+            enabled: true,
+            apiRoot: typedApiRoot || (await getSetting("TELEGRAM_API_ROOT")),
+          })
+        : await checkMaxToken(token);
     return NextResponse.json({ ...outcome, mode });
   }
 
@@ -96,7 +139,12 @@ export async function POST(request: Request) {
 
   const config: TelegramConfig | MaxConfig =
     messenger === "telegram"
-      ? { token, channelId: destination, enabled: true }
+      ? {
+          token,
+          channelId: destination,
+          enabled: true,
+          apiRoot: typedApiRoot || (await getSetting("TELEGRAM_API_ROOT")),
+        }
       : { token, chatId: destination, enabled: true };
 
   /*
@@ -110,5 +158,8 @@ export async function POST(request: Request) {
       ? await sendTelegramTestMessage(config as TelegramConfig)
       : await sendMaxTestMessage(config as MaxConfig);
 
-  return NextResponse.json({ ...outcome, mode });
+  // Reported so the UI can say whether the request left through a proxy — the answer
+  // changes the interpretation of a failure, and the proxy is env-only so the page
+  // cannot otherwise know.
+  return NextResponse.json({ ...outcome, mode, viaProxy: telegramProxy().length > 0 });
 }

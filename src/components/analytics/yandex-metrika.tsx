@@ -95,7 +95,17 @@ export function YandexMetrika() {
         *inline* script: nothing is fetched from mc.yandex.ru here. The snippet is a few
         hundred bytes that define `ym` and hand the actual tag.js load to the loader it
         creates, which is asynchronous anyway.
+
+        Next warns that this strategy belongs in `pages/_document.js`. That rule predates
+        the App Router — there is no `_document` here — and the measured behaviour above
+        is what matters: the block is emitted into the served HTML from this layout, and
+        in the browser `window.Ya._metrika.counters` registers the counter and the
+        pageview is sent. The warning is suppressed deliberately rather than left to
+        reappear unexplained in every lint run.
       */}
+      {/* eslint-disable-next-line @next/next/no-before-interactive-script-outside-document --
+          see the note above: measured to work from an App Router layout, and the
+          documented alternative loses the tag from the server-rendered HTML. */}
       <Script id="yandex-metrika" strategy="beforeInteractive">
         {metrikaSnippet(id, YANDEX_METRIKA_WEBVISOR)}
       </Script>

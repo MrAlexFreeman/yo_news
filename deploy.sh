@@ -36,6 +36,11 @@
 # Usage: bash deploy.sh [--skip-pull]
 #   PM2_APP  overrides the process name (default: uartnews)
 #   PM2_SKIP_PULL=1 is the same as --skip-pull
+#   SKIP_CA_SETUP=1 skips installing the Russian Trusted CA and reloads directly.
+#                   For a host that cannot reach gu-st.ru or already has the anchor.
+#
+# The process is started from ecosystem.config.cjs, not by name, so the environment it
+# declares — NODE_EXTRA_CA_CERTS above all — actually reaches the process.
 
 set -euo pipefail
 
@@ -82,12 +87,94 @@ npx prisma migrate deploy
 echo "==> building (NODE_OPTIONS=$NODE_OPTIONS_VALUE)"
 NODE_OPTIONS="$NODE_OPTIONS_VALUE" npm run build
 
+echo "==> trusting the Ministry of Digital Development CA (for MAX)"
+# MAX is served with a certificate from the Russian Trusted CA, which is in neither
+# Node's bundled store nor Ubuntu's ca-certificates. Without this every MAX call fails
+# at the TLS handshake, before a request is sent.
+#
+# Downloaded WITHOUT -k. gu-st.ru presents a certificate that this host already
+# trusts, so disabling verification here would be a hole opened for no reason — and it
+# is the one download where a man in the middle would be handing us the trust anchor.
+# deploy.sh then verifies the downloaded root against the chain MAX itself serves, so a
+# substituted file cannot pass: a wrong root does not verify MAX's leaf.
+if [ "${SKIP_CA_SETUP:-0}" = "1" ]; then
+  echo "    skipped (SKIP_CA_SETUP=1)"
+else
+  CA_DIR=/usr/local/share/ca-certificates
+  mkdir -p "$CA_DIR"
+
+  RUSSIAN_CA_ROOT_URL="https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt"
+  RUSSIAN_CA_SUB_URL="https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt"
+
+  if [ -f "$CA_DIR/russian_trusted_root_ca.crt" ] && [ -f "$CA_DIR/russian_trusted_sub_ca.crt" ]; then
+    echo "    certificates already installed"
+  else
+    curl -s --fail -o "$CA_DIR/russian_trusted_root_ca.crt" "$RUSSIAN_CA_ROOT_URL" \
+      || { echo "WARNING: could not fetch the Russian Trusted Root CA; MAX will stay unreachable" >&2; }
+    curl -s --fail -o "$CA_DIR/russian_trusted_sub_ca.crt" "$RUSSIAN_CA_SUB_URL" \
+      || { echo "WARNING: could not fetch the Russian Trusted Sub CA" >&2; }
+    update-ca-certificates 2>&1 | tail -3
+  fi
+
+  # The check that makes the download trustworthy: the installed root must verify the
+  # exact certificate chain the MAX server presents.
+  echo "    verifying the installed root against the live MAX chain"
+  if timeout 30 bash -c 'exec 3<>/dev/tcp/platform-api2.max.ru/443' 2>/dev/null; then
+    openssl s_client -showcerts -connect platform-api2.max.ru:443 \
+      -servername platform-api2.max.ru </dev/null 2>/dev/null \
+      | awk '/BEGIN CERT/,/END CERT/' > /tmp/max-chain.pem || true
+
+    if [ -s /tmp/max-chain.pem ]; then
+      # Split the chain into leaf and intermediate.
+      awk 'BEGIN{n=1} /BEGIN CERT/{f="/tmp/max-cert-" n ".pem"} {print > f} /END CERT/{n++}' /tmp/max-chain.pem
+      ROOT="$CA_DIR/russian_trusted_root_ca.crt"
+      LEAF=/tmp/max-cert-1.pem
+      MID=/tmp/max-cert-2.pem
+
+      if [ -f "$LEAF" ] && [ -f "$MID" ]; then
+        if openssl verify -CAfile "$ROOT" -untrusted "$MID" "$LEAF" >/dev/null 2>&1; then
+          echo "    OK: the installed root verifies the live MAX chain"
+        else
+          echo "ERROR: the installed root does NOT verify the live MAX chain." >&2
+          echo "       Refusing to continue with an unverified trust anchor." >&2
+          rm -f /tmp/max-chain.pem /tmp/max-cert-*.pem
+          exit 1
+        fi
+      fi
+      rm -f /tmp/max-chain.pem /tmp/max-cert-*.pem
+    fi
+  else
+    echo "    (platform-api2.max.ru is not reachable from here; skipped)"
+  fi
+fi
+
 echo "==> reloading pm2 process '$APP_NAME'"
-pm2 reload "$APP_NAME" --update-env
+# Through the ecosystem file rather than by name, so the environment it declares —
+# including NODE_EXTRA_CA_CERTS — is applied. A bypass leaves the file and the running
+# process able to disagree, which is the state that made this take a manual restart to
+# notice.
+if [ -f ecosystem.config.cjs ]; then
+  PM2_APP="$APP_NAME" pm2 startOrReload ecosystem.config.cjs --update-env
+  # Saved so the environment survives a reboot: PM2 restores a process from its dump,
+  # not from this file, and an unsaved env is gone after the machine comes back.
+  pm2 save >/dev/null 2>&1 || true
+else
+  pm2 reload "$APP_NAME" --update-env
+fi
 
 sleep 8
 if ! pm2 list --no-color | grep -q "$APP_NAME"; then
   echo "ERROR: pm2 process '$APP_NAME' is not listed after reload." >&2
+  pm2 list --no-color >&2 || true
+  exit 1
+fi
+
+# Exactly one. `pm2 startOrReload` on a name that was created outside the ecosystem file
+# can end up with two processes of the same name, and the symptom is not an error — it
+# is two `next start` processes racing for port 3000, one of them serving the old build.
+RUNNING=$(pm2 list --no-color | grep -c "$APP_NAME" || true)
+if [ "$RUNNING" -ne 1 ]; then
+  echo "ERROR: expected exactly one '$APP_NAME' process, found $RUNNING." >&2
   pm2 list --no-color >&2 || true
   exit 1
 fi

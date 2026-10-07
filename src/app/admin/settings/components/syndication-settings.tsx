@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Loader2, Plug, Send, X } from "lucide-react";
+import { Activity, Check, Loader2, Plug, Send, X } from "lucide-react";
 import { useCallback, useState } from "react";
 
 import type { SettingView } from "@/lib/settings-keys";
@@ -27,6 +27,8 @@ type Entry = {
   token: SettingView;
   destination: string;
   enabled: boolean;
+  /** Telegram only: alternative Bot API root. Empty means the official address. */
+  apiRoot?: string;
 };
 
 export type SyndicationState = Record<Messenger, Entry>;
@@ -43,6 +45,8 @@ type BlockProps = {
   tokenField: string;
   destinationField: string;
   enabledField: string;
+  apiRootField?: string;
+  apiRootPlaceholder?: string;
   /** Where the token comes from, for the "how do I get it" panel. */
   instructions?: { steps: string[]; linkLabel?: string; link?: string };
 };
@@ -59,6 +63,8 @@ const BLOCKS: BlockProps[] = [
     tokenField: "telegramBotToken",
     destinationField: "telegramChannelId",
     enabledField: "telegramEnabled",
+    apiRootField: "telegramApiRoot",
+    apiRootPlaceholder: "https://api.telegram.org",
     instructions: {
       steps: [
         "Напишите @BotFather и отправьте /newbot — это создаёт бота.",
@@ -90,12 +96,13 @@ const BLOCKS: BlockProps[] = [
   },
 ];
 
-type TestState = { ok: boolean; message: string } | null;
+type TestState = { ok: boolean; message: string; status?: number | null; ms?: number } | null;
 
 export function SyndicationSettings({ initial }: { initial: SyndicationState }) {
   const [state, setState] = useState<SyndicationState>(initial);
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [destinations, setDestinations] = useState<Record<string, string>>({});
+  const [apiRoots, setApiRoots] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [enabled, setEnabled] = useState<Record<Messenger, boolean>>({
     telegram: initial.telegram.enabled,
@@ -129,18 +136,26 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
       // Always sent: unlike the others this one has a meaningful "off" value, and an
       // unchecked box that stayed unchecked would make the toggle impossible to turn off.
       body[block.enabledField] = String(enabled[block.messenger]);
+
+      // Sent even when empty, because clearing the API root is a legitimate action
+      // that must fall back to the official address rather than being ignored.
+      if (block.apiRootField) {
+        body[block.apiRootField] = apiRoots[block.messenger] ?? state[block.messenger].apiRoot ?? "";
+      }
     }
 
     return body;
-  }, [tokens, destinations, enabled]);
+  }, [tokens, destinations, enabled, apiRoots, state]);
 
   async function save() {
     const body = payload();
-    const touched = Object.keys(tokens).some((name) => tokens[name]?.trim()) ||
-      Object.keys(destinations).some((name) => destinations[name]?.trim());
+    const touched =
+      Object.keys(tokens).some((name) => tokens[name]?.trim()) ||
+      Object.keys(destinations).some((name) => destinations[name]?.trim()) ||
+      Object.keys(apiRoots).some((name) => (apiRoots[name] ?? "").trim());
 
     if (!touched) {
-      setFormError("Введите токен или канал — галочки сохраняются всегда.");
+      setFormError("Введите токен, канал или адрес API — галочки сохраняются всегда.");
       setSaved(null);
       return;
     }
@@ -172,6 +187,7 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
       setSaved("Настройки интеграций сохранены и применяются при следующей публикации.");
       setTokens({});
       setDestinations({});
+      setApiRoots({});
 
       /*
         Adopt the state the server re-read after the write. Only it knows whether an
@@ -185,6 +201,7 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
             token: next.telegram.token,
             destination: next.telegram.destination,
             enabled: next.telegram.enabled,
+            apiRoot: next.telegram.apiRoot ?? "",
           },
           max: {
             token: next.max.token,
@@ -239,13 +256,15 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
   }
 
   /**
-   * Two buttons rather than one, because the two questions differ.
+   * Three buttons rather than one, because the three questions differ.
    *
+   * "Проверить адрес" only reaches the endpoint — no token is sent, and a 404 counts as
+   * success, because the question is whether this host can talk to that address at all.
    * "Проверить токен" costs nothing and posts nothing. "Отправить в канал" really does
    * publish a short test note, which is the only way to find out that the channel id is
    * wrong — but it must be asked for explicitly, so it is a separate control.
    */
-  async function test(messenger: Messenger, mode: "token" | "message") {
+  async function test(messenger: Messenger, mode: "ping" | "token" | "message") {
     const key = `${messenger}:${mode}`;
     setTesting((current) => ({ ...current, [key]: key }));
     setTests((current) => ({ ...current, [key]: null }));
@@ -253,6 +272,8 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
     try {
       const destination =
         destinations[messenger]?.trim() || state[messenger].destination || "";
+      const apiRoot =
+        (apiRoots[messenger] ?? state[messenger].apiRoot ?? "").trim();
 
       const response = await fetch("/api/admin/syndication/test", {
         method: "POST",
@@ -262,16 +283,28 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
           mode,
           token: tokens[messenger]?.trim() ?? "",
           destination,
+          apiRoot,
         }),
       });
-      const result = (await response.json()) as { ok?: boolean; message?: string; error?: string };
+      const result = (await response.json()) as {
+        ok?: boolean;
+        message?: string;
+        error?: string;
+        status?: number | null;
+        ms?: number;
+      };
 
       setTests((current) => ({
         ...current,
         [key]:
           result.ok === undefined
             ? { ok: false, message: result.error ?? "Проверка не удалась." }
-            : { ok: Boolean(result.ok), message: result.message ?? "" },
+            : {
+                ok: Boolean(result.ok),
+                message: result.message ?? "",
+                status: result.status ?? null,
+                ms: result.ms,
+              },
       }));
     } catch (error) {
       setTests((current) => ({
@@ -304,6 +337,7 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
           const entry = state[name];
           const typed = tokens[name] ?? "";
           const destination = destinations[name] ?? "";
+          const apiRoot = apiRoots[name] ?? entry.apiRoot ?? "";
           const isShown = revealed[name] ?? false;
 
           return (
@@ -421,6 +455,56 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
                 </p>
               </div>
 
+              {/*
+                The API root is Telegram-only, and it lives below the channel rather than
+                above it because it is the field nobody needs until something breaks.
+              */}
+              {block.apiRootField ? (
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor={block.apiRootField}
+                    className="text-sm font-medium text-neutral-700"
+                  >
+                    Кастомный API URL / Reverse Proxy
+                  </label>
+                  <input
+                    id={block.apiRootField}
+                    type="text"
+                    value={apiRoot}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) =>
+                      setApiRoots((all) => ({ ...all, [name]: event.target.value }))
+                    }
+                    placeholder={state[name].apiRoot || block.apiRootPlaceholder}
+                    aria-invalid={Boolean(errors[block.apiRootField])}
+                    className={cn(
+                      "w-full rounded-md border px-3 py-2 font-mono text-sm outline-none",
+                      "placeholder:text-neutral-400 focus:ring-2",
+                      errors[block.apiRootField]
+                        ? "border-red-400 bg-red-50 focus:ring-red-200"
+                        : "border-neutral-300 bg-white focus:border-neutral-500 focus:ring-neutral-200",
+                    )}
+                  />
+                  {errors[block.apiRootField] ? (
+                    <p role="alert" className="text-xs text-red-600">
+                      {errors[block.apiRootField]}
+                    </p>
+                  ) : null}
+                  <p className="text-xs text-neutral-500">
+                    Адрес Bot API. Пусто — официальный{" "}
+                    <span className="font-mono">https://api.telegram.org</span>. Нужен,
+                    когда прямой адрес недоступен с сервера: укажите свой reverse proxy
+                    или Cloudflare Worker, который проксирует на api.telegram.org.
+                    Только https; путь запроса добавляется сюда автоматически.
+                  </p>
+                  <p className="text-xs text-amber-700">
+                    Внимание: сюда уходит и токен бота. Указывайте только адрес, которому
+                    доверяете, — на чужом сервере токен сможет прочитать его владелец.
+                  </p>
+                </div>
+              ) : null}
+
               <label
                 htmlFor={block.enabledField}
                 className="flex cursor-pointer items-center gap-2 text-sm text-neutral-700 hover:text-neutral-900"
@@ -440,6 +524,22 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
               <p className="pl-6 text-xs text-neutral-500">{block.hint}</p>
 
               <div className="flex flex-wrap items-center gap-2 pt-1">
+                {block.apiRootField ? (
+                  <button
+                    type="button"
+                    onClick={() => void test(name, "ping")}
+                    disabled={testing[`${name}:ping`] != null || saving}
+                    className="flex items-center gap-1.5 rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-60"
+                  >
+                    {testing[`${name}:ping`] ? (
+                      <Loader2 className="size-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Activity className="size-4" aria-hidden />
+                    )}
+                    Проверить адрес
+                  </button>
+                ) : null}
+
                 <button
                   type="button"
                   onClick={() => void test(name, "token")}
@@ -502,6 +602,41 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
                   </p>
                 ) : null}
               </div>
+
+              {/*
+                The endpoint check reports the two numbers the task asks for as a badge
+                rather than only inside the sentence: an editor comparing two candidate
+                proxies wants to see "HTTP 404 · 88 мс" at a glance, and a green tick with
+                prose is easy to misread as "the bot works".
+              */}
+              {block.apiRootField && tests[`${name}:ping`] ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {tests[`${name}:ping`]!.status != null ? (
+                    <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-mono text-xs text-neutral-800">
+                      HTTP {tests[`${name}:ping`]!.status}
+                    </span>
+                  ) : null}
+                  {typeof tests[`${name}:ping`]!.ms === "number" ? (
+                    <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-mono text-xs text-neutral-800">
+                      {tests[`${name}:ping`]!.ms} мс
+                    </span>
+                  ) : null}
+                  <p
+                    role="status"
+                    className={cn(
+                      "flex items-start gap-1.5 text-xs",
+                      tests[`${name}:ping`]!.ok ? "text-green-700" : "text-red-600",
+                    )}
+                  >
+                    {tests[`${name}:ping`]!.ok ? (
+                      <Check className="mt-px size-3.5 shrink-0" aria-hidden />
+                    ) : (
+                      <X className="mt-px size-3.5 shrink-0" aria-hidden />
+                    )}
+                    {tests[`${name}:ping`]!.message}
+                  </p>
+                </div>
+              ) : null}
 
               {block.instructions ? (
                 <details className="rounded-sm border border-neutral-200 bg-white">

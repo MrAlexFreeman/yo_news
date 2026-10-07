@@ -47,6 +47,8 @@ type State = {
     token: ReturnType<typeof toView>;
     destination: string;
     enabled: boolean;
+    /** Alternative Bot API root; empty means the official one. */
+    apiRoot: string;
   };
   max: {
     token: ReturnType<typeof toView>;
@@ -66,6 +68,7 @@ async function buildState(): Promise<State> {
         resolved.TELEGRAM_ENABLED.value,
         DEFAULT_SYNDICATION_ENABLED.telegram,
       ),
+      apiRoot: resolved.TELEGRAM_API_ROOT.value,
     },
     max: {
       token: toView(resolved.MAX_BOT_TOKEN),

@@ -1290,19 +1290,20 @@ function checkSettingsPrimitives() {
 
   /*
     The allowlist grew from three keys to nine when messenger auto-posting landed, and
-    the four API-key names are asserted by name because they are the ones the existing
-    routes read. The six messenger keys are asserted below instead, since they are
+    the API-key names are asserted by name because they are the ones the existing
+    routes read. The messenger keys are asserted below instead, since they are
     reached through SYNDICATION_FIELDS.
   */
   check(
-    "Настройки: allowlist содержит девять ключей",
-    ALLOWED_KEYS.length === 9 &&
+    "Настройки: allowlist содержит десять ключей",
+    ALLOWED_KEYS.length === 10 &&
       isAllowedKey("DEEPSEEK_API_KEY") &&
       isAllowedKey("DEEPINFRA_API_KEY") &&
       isAllowedKey("VK_ACCESS_TOKEN") &&
       isAllowedKey("TELEGRAM_BOT_TOKEN") &&
       isAllowedKey("TELEGRAM_CHANNEL_ID") &&
       isAllowedKey("TELEGRAM_ENABLED") &&
+      isAllowedKey("TELEGRAM_API_ROOT") &&
       isAllowedKey("MAX_BOT_TOKEN") &&
       isAllowedKey("MAX_CHAT_ID") &&
       isAllowedKey("MAX_ENABLED"),
@@ -1350,7 +1351,10 @@ function checkSettingsPrimitives() {
     Object.values(SYNDICATION_FIELDS).every(
       (field) =>
         isAllowedKey(field.key) &&
-        (field.kind === "token" || field.kind === "destination" || field.kind === "flag"),
+        (field.kind === "token" ||
+          field.kind === "destination" ||
+          field.kind === "flag" ||
+          field.kind === "url"),
     ),
     Object.values(SYNDICATION_FIELDS)
       .map((field) => `${field.key}:${field.kind}`)
