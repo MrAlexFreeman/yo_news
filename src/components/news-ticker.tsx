@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 
 import { RubricLabel } from "@/components/article-card";
 import { formatTime, groupByDay, plural } from "@/lib/date";
@@ -127,6 +128,21 @@ export function NewsTicker({ articles, now }: NewsTickerProps) {
           ))}
         </ol>
       )}
+
+      {/*
+        The rail is deliberately short — it is a summary beside the hero, not the
+        archive — so it has to say where the rest of the list is, or a reader has no
+        way past the eight stories they can see. The link lives inside the section it
+        belongs to rather than in the page, so it cannot be dropped from the column
+        without also dropping the list.
+      */}
+      <Link
+        href="/news"
+        className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-accent-ink hover:underline"
+      >
+        Вся лента новостей
+        <ArrowRight className="size-3" aria-hidden />
+      </Link>
     </section>
   );
 }

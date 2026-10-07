@@ -251,3 +251,30 @@ export async function countCategoryArticles(categoryId: string): Promise<number>
     where: { status: "published", categoryId },
   });
 }
+
+/**
+ * One page of every published story, for the /news archive.
+ *
+ * Separate from {@link getPublishedArticles} rather than a `skip` option on it: that
+ * one is called from the homepage for "the newest N", where an offset would be a
+ * silently wrong argument, and every existing call site passes a bare count. The pair
+ * mirrors `getCategoryArticles`/`countCategoryArticles` so the archive reads like the
+ * rubric pages rather than like a special case.
+ */
+export async function getPublishedArticlesPage(
+  take: number,
+  skip: number,
+): Promise<ArticleListItem[]> {
+  return prisma.article.findMany({
+    where: { status: "published" },
+    orderBy: BY_FRESHNESS,
+    take,
+    skip,
+    select: LIST_FIELDS,
+  });
+}
+
+/** How many stories the /news archive has to paginate through. */
+export async function countPublishedArticles(): Promise<number> {
+  return prisma.article.count({ where: { status: "published" } });
+}

@@ -1,8 +1,10 @@
 import { ArticleCard } from "@/components/article-card";
+import { ForumTopicsBlock } from "@/components/forum-topics";
 import { Logo } from "@/components/logo";
 import { NewsTicker } from "@/components/news-ticker";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { SectionGrid } from "@/components/section-grid";
+import { getActiveForumTopics } from "@/lib/forum";
 import {
   getHeroArticle,
   getPublishedArticles,
@@ -16,11 +18,26 @@ import {
  */
 export const revalidate = 300;
 
-const TICKER_COUNT = 12;
+/*
+  The rail is a summary, not the archive: eight is what a reader will actually scan
+  beside the hero. The rest of the list is one click away under "Вся лента новостей".
+  It used to be twelve, which pushed the subscribe card far enough down that nobody
+  reached it.
+*/
+const TICKER_COUNT = 8;
+/**
+ * One more than the count above, because the hero is subtracted from the feed
+ * afterwards. Without the spare row a fresh exclusive hero — which is also the
+ * newest story — would cost the rail a line and it would show seven rows instead of
+ * eight.
+ */
+const TICKER_FETCH = TICKER_COUNT + 1;
 const RAIL_COUNT = 4;
 const SECTION_SIZE = 4;
 /** Stories in "Другие события дня". Four fill the 2×2 grid exactly. */
 const DAY_CARD_COUNT = 4;
+/** Threads in "Обсуждают на форуме". Four fills the column without running long. */
+const TOPIC_COUNT = 4;
 
 export default async function HomePage() {
   /*
@@ -29,12 +46,13 @@ export default async function HomePage() {
     else on the page — hero, ticker, rail and all nine rubric grids included — and
     those are only known after the first four queries resolve.
   */
-  const [hero, ticker, sections, rail, dayPool] = await Promise.all([
+  const [hero, ticker, sections, rail, dayPool, topics] = await Promise.all([
     getHeroArticle(),
-    getPublishedArticles(TICKER_COUNT),
+    getPublishedArticles(TICKER_FETCH),
     getSectionsWithArticles(SECTION_SIZE, 9),
     getPublishedArticles(RAIL_COUNT + 8),
-    getPublishedArticles(TICKER_COUNT + RAIL_COUNT + 60),
+    getPublishedArticles(TICKER_FETCH + RAIL_COUNT + 60),
+    getActiveForumTopics(TOPIC_COUNT),
   ]);
 
   const heroId = hero?.id;
@@ -101,7 +119,14 @@ export default async function HomePage() {
                   </h2>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     {dayItems.map((article) => (
-                      <ArticleCard key={article.id} article={article} variant="compact" />
+                      <ArticleCard
+                        key={article.id}
+                        article={article}
+                        variant="compact"
+                        // These slots are half the width of the page, so the rail's 80px
+                        // square reads as a stamp rather than as a picture of the story.
+                        preview="lg"
+                      />
                     ))}
                   </div>
                 </section>
@@ -120,16 +145,31 @@ export default async function HomePage() {
           )}
         </div>
 
-        {/* Right column: the live ticker, then the syndication block.
+        {/* Right column: the live ticker, the forum, then the syndication block.
 
-            Both are in normal flow with `space-y-6` between them, and the ticker no
-            longer pins itself — a sticky feed painted over the block below it, which
+            All three are in normal flow with `space-y-6` between them, and the ticker
+            no longer pins itself — a sticky feed painted over the block below it, which
             read as the subscribe card sitting on top of the headlines. */}
         <div className="space-y-6">
           <NewsTicker
             articles={tickerItems.slice(0, TICKER_COUNT)}
             now={new Date()}
           />
+
+          {/*
+            Between the feed and the subscribe card, and not after it: the subscribe
+            block is the last thing a reader should meet on this page. The forum sits
+            where the reader is already looking — the same two blocks the article
+            sidebar carries, so the site's conversations are visible from the front
+            page and not only from inside a story.
+          */}
+          <ForumTopicsBlock
+            topics={topics}
+            heading="Обсуждают на форуме"
+            headingId="home-forum"
+            accented
+          />
+
           <SubscribeBlock />
         </div>
       </div>

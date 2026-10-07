@@ -339,8 +339,19 @@ export async function incrementForumTopicViews(id: number): Promise<void> {
   });
 }
 
+/** One row of the "active threads" list, as the sidebar and the homepage render it. */
+export type ActiveForumTopic = {
+  id: number;
+  title: string;
+  slug: string;
+  /** Post count, shown as a badge. */
+  replies: number;
+  updatedAt: Date;
+  categorySlug: string;
+};
+
 /**
- * The most recently active threads, for the article sidebar.
+ * The most recently active threads, for the article sidebar and the homepage.
  *
  * Separate from {@link getRecentForumTopics} because the two have different jobs:
  * that one lists the newest by `updatedAt` for a moderator who wants to see what
@@ -350,7 +361,7 @@ export async function incrementForumTopicViews(id: number): Promise<void> {
  */
 export async function getActiveForumTopics(
   take = 3,
-): Promise<{ id: number; title: string; slug: string; replies: number; updatedAt: Date; categorySlug: string }[]> {
+): Promise<ActiveForumTopic[]> {
   const topics = await prisma.forumTopic.findMany({
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take,

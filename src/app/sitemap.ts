@@ -44,6 +44,14 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       changeFrequency: "hourly",
       priority: 1,
     },
+    {
+      // The full archive, which the homepage's "Вся лента новостей" link points at.
+      // Its deeper pages are noindex by design and so are left out here too.
+      url: absoluteUrl("/news"),
+      lastModified: new Date(),
+      changeFrequency: "hourly",
+      priority: 0.8,
+    },
     ...categories.map((category) => ({
       url: absoluteUrl(`/category/${category.slug}`),
       changeFrequency: "hourly" as const,

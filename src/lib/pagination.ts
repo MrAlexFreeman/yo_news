@@ -33,6 +33,17 @@ export function forumPageHref(categorySlug: string, page: number): string {
     : `/forum/${categorySlug}/page/${page}`;
 }
 
+/**
+ * Same shape, for the full news archive.
+ *
+ * The archive is what the homepage's "Вся лента новостей" link points at, so page one
+ * has to be the bare `/news`: a link to `/news/page/1` would be a second URL for the
+ * same list and would compete with it in search.
+ */
+export function newsPageHref(page: number): string {
+  return page <= 1 ? "/news" : `/news/page/${page}`;
+}
+
 /** Parses a path segment like "3" into a page number, defaulting to 1. */
 export function parsePageSegment(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? "1", 10);
