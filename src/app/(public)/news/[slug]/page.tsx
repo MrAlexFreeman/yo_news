@@ -132,7 +132,10 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     3,
   );
 
-  const forumSection = forumSectionForArticle(article.category?.slug ?? null);
+  const forumSection = forumSectionForArticle({
+    rubricSlug: article.category?.slug ?? null,
+    tags: article.tags.map((entry) => entry.tag.name),
+  });
 
   const timestamp = article.publishedAt ?? article.createdAt;
 

@@ -271,6 +271,8 @@ async function main() {
   if (savedToken === undefined) delete process.env.VK_ACCESS_TOKEN;
   else process.env.VK_ACCESS_TOKEN = savedToken;
 
+  await checkCoverImageReads();
+
   console.log("VK publisher\n");
   for (const { name, ok, detail } of checks) {
     console.log(`${ok ? "OK  " : "FAIL"} ${name} — ${detail.slice(0, 110)}`);
@@ -279,6 +281,121 @@ async function main() {
   const failed = checks.filter((c) => !c.ok);
   console.log(`\n${checks.length - failed.length}/${checks.length} проверок пройдено`);
   process.exitCode = failed.length > 0 ? 1 : 0;
+}
+
+/**
+ * Covers for the cover-image reader: the case that was broken.
+ *
+ * The publisher used to `fetch()` whatever sat in the article row. Uploads live
+ * outside `public/` and are stored as `/uploads/<name>`, so Node refused the relative
+ * URL outright — "Failed to parse URL from /uploads/…" — and every repost since then
+ * went out with no picture, one warning line per post. The regression that matters is
+ * that a relative path now resolves to real bytes; the rest guards the boundaries of
+ * the disk read, which is new attack surface the HTTP fetch did not have.
+ *
+ * Fixtures are written into the project's own upload directory and removed in a
+ * `finally`, under a name that cannot collide with an editor's upload.
+ */
+import { writeFile, rm } from "node:fs/promises";
+import path from "node:path";
+
+import { readCoverImage } from "../src/lib/vk-publisher";
+import { UPLOAD_DIR } from "../src/lib/upload-dir";
+
+const FIXTURE_PREFIX = "yn-vk-cover-check";
+
+const IMAGE_FIXTURES = [
+  {
+    name: `${FIXTURE_PREFIX}.webp`,
+    bytes: Buffer.from([0x52, 0x49, 0x46, 0x46, 0x46, 0x57, 0x45, 0x42, 0x50]),
+    type: "image/webp",
+  },
+  {
+    name: `${FIXTURE_PREFIX}.png`,
+    bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    type: "image/png",
+  },
+  {
+    name: `${FIXTURE_PREFIX}.jpg`,
+    bytes: Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+    type: "image/jpeg",
+  },
+];
+
+async function checkCoverImageReads() {
+  const written: string[] = [];
+
+  try {
+    for (const fixture of IMAGE_FIXTURES) {
+      const target = path.join(UPLOAD_DIR, fixture.name);
+      await writeFile(target, fixture.bytes);
+      written.push(target);
+    }
+    // A file that is not an image, and one that is outside the upload directory: the
+    // second is the boundary the disk read must not cross.
+    const notImage = path.join(UPLOAD_DIR, `${FIXTURE_PREFIX}.txt`);
+    await writeFile(notImage, "not an image");
+    written.push(notImage);
+
+    const outside = path.join(UPLOAD_DIR, "..", `${FIXTURE_PREFIX}.json`);
+    await writeFile(outside, "{}");
+    written.push(outside);
+
+    for (const fixture of IMAGE_FIXTURES) {
+      const result = await readCoverImage(`/uploads/${fixture.name}`);
+      check(
+        `Обложка с диска: /uploads/${fixture.name} читается`,
+        Buffer.from(result.bytes).equals(fixture.bytes),
+        `${result.bytes.byteLength} байт, ${result.contentType}`,
+      );
+      check(
+        `Обложка с диска: content-type ${fixture.type}`,
+        result.contentType === fixture.type,
+        result.contentType,
+      );
+    }
+
+    // The regression itself. This input used to throw a URL parse error.
+    let relativeMessage = "";
+    try {
+      await readCoverImage(`/uploads/${IMAGE_FIXTURES[0]!.name}`);
+    } catch (error) {
+      relativeMessage = (error as Error).message;
+    }
+    check(
+      "Обложка: относительный путь больше не даёт ошибку разбора URL",
+      !/Failed to parse URL/.test(relativeMessage),
+      relativeMessage || "ошибки нет",
+    );
+
+    const rejected: [string, string, string][] = [
+      ["несуществующий файл", `/uploads/${FIXTURE_PREFIX}-net.webp`, "ENOENT"],
+      [
+        "выход за каталог загрузок",
+        `/uploads/../${FIXTURE_PREFIX}.json`,
+        "escapes",
+      ],
+      ["не изображение", `/uploads/${FIXTURE_PREFIX}.txt`, "supported image format"],
+    ];
+
+    for (const [label, input, expected] of rejected) {
+      let message = "";
+      try {
+        await readCoverImage(input);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      check(
+        `Обложка отклонена: ${label}`,
+        message.includes(expected),
+        message.slice(0, 100) || "ошибки не было",
+      );
+    }
+  } finally {
+    for (const target of written) {
+      await rm(target, { force: true }).catch(() => {});
+    }
+  }
 }
 
 main().catch((error) => {

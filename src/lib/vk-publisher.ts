@@ -8,6 +8,9 @@
  * call fails, the post still goes out as text with a link.
  */
 
+import { readFile } from "node:fs/promises";
+
+import { contentTypeFor, resolveUploadPath } from "@/lib/upload-dir";
 import type { getSetting as GetSetting } from "@/lib/settings";
 
 const VK_API_BASE = "https://api.vk.com/method";
@@ -183,6 +186,82 @@ export function buildPostText(article: VkArticle): string {
   return lead ? `${article.title}\n\n${lead}\n\n${link}` : `${article.title}\n\n${link}`;
 }
 
+/** Where an uploaded file lives, given the `/uploads/...` value stored on an article. */
+const UPLOAD_URL_PREFIX = "/uploads/";
+
+/**
+ * The bytes of a cover image, plus what VK should be told they are.
+ *
+ * Three cases, and they are not interchangeable:
+ *
+ * 1. `/uploads/<name>` — read from disk. This is the case that was broken: `fetch()`
+ *    in Node rejects a relative URL outright ("Failed to parse URL from /uploads/…"),
+ *    so every repost since uploads moved out of `public/` went out with no picture at
+ *    all, and the only trace was a warning in the error log that reads like noise.
+ *
+ *    Reading the file is also the right call rather than building an absolute URL and
+ *    fetching it: it avoids a request from the server to itself through nginx on every
+ *    publish, and it does not depend on the public hostname being resolvable from
+ *    inside the process — which is not true on every host.
+ *
+ * 2. `http(s)://…` — fetched. A cover may legitimately live somewhere else, and there
+ *    is nothing to read from disk for it.
+ *
+ * 3. Any other relative path — a file Next serves from `public/`, say. Resolved
+ *    against the site URL, which is the only way Node can fetch it.
+ */
+export async function readCoverImage(
+  coverImage: string,
+): Promise<{ bytes: ArrayBuffer; contentType: string }> {
+  const trimmed = coverImage.trim();
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    const response = await fetch(trimmed, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      throw new Error(`cover image fetch failed with HTTP ${response.status}`);
+    }
+    const contentType = response.headers.get("content-type") ?? "image/jpeg";
+    return { bytes: await response.arrayBuffer(), contentType };
+  }
+
+  if (trimmed.startsWith(UPLOAD_URL_PREFIX)) {
+    // `resolveUploadPath` is the same guard the /uploads route uses: it rejects a path
+    // that would escape UPLOAD_DIR, so a stored value cannot be used to read an
+    // arbitrary file off the server.
+    const target = resolveUploadPath(trimmed.slice(UPLOAD_URL_PREFIX.length));
+    if (!target) {
+      throw new Error("cover image path escapes the upload directory");
+    }
+
+    const contentType = contentTypeFor(target);
+    if (!contentType) {
+      throw new Error("cover image is not a supported image format");
+    }
+
+    // Copied into a fresh ArrayBuffer rather than handed over as a Node Buffer: a
+    // Buffer is a view onto a pool, and `Blob` will not accept a view whose buffer
+    // may be a SharedArrayBuffer. The file is small and this happens once per post.
+    const file = await readFile(target);
+    return {
+      bytes: Uint8Array.from(file).buffer,
+      contentType,
+    };
+  }
+
+  // Case 3. Made absolute here rather than at the call site so every caller of
+  // `readCoverImage` gets the same behaviour.
+  const response = await fetch(`${siteUrl()}${trimmed.startsWith("/") ? trimmed : `/${trimmed}`}`, {
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new Error(`cover image fetch failed with HTTP ${response.status}`);
+  }
+  const contentType = response.headers.get("content-type") ?? "image/jpeg";
+  return { bytes: await response.arrayBuffer(), contentType };
+}
+
 /**
  * Uploads the cover image and returns the `photo` attachment id.
  *
@@ -199,13 +278,18 @@ async function uploadCoverImage(
     photo: string;
   }>("photos.getWallUploadServer", { group_id: communityId });
 
-  const image = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
-  if (!image.ok) {
-    throw new Error(`cover image fetch failed with HTTP ${image.status}`);
-  }
+  const { bytes, contentType } = await readCoverImage(imageUrl);
 
   const form = new FormData();
-  form.append("photo", new Blob([await image.arrayBuffer()]), "cover.jpg");
+  // The filename keeps the real extension and the blob carries the real type. Both
+  // were hardcoded to "cover.jpg" before, which meant a WebP cover was uploaded
+  // claiming to be a JPEG — VK accepts it, and then serves a file whose bytes
+  // disagree with its extension.
+  form.append(
+    "photo",
+    new Blob([bytes], { type: contentType }),
+    `cover${extensionFor(contentType) ?? ".jpg"}`,
+  );
   form.append("server", uploadServer.upload_url);
   form.append("photo", uploadServer.photo);
   form.append("hash", uploadServer.photo);
@@ -235,6 +319,20 @@ async function uploadCoverImage(
   );
 
   return saved.photo ?? null;
+}
+
+/** The extension that goes with a content type, for the multipart filename. */
+function extensionFor(contentType: string): string | null {
+  switch (contentType.split(";")[0]?.trim().toLowerCase()) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    default:
+      return null;
+  }
 }
 
 /**

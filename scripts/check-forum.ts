@@ -607,9 +607,12 @@ function checkSidebarWiring() {
   );
 
   // The real rubrics, measured from the database rather than assumed.
-  const rubrics = ["culture", "society", "politics", "incident", "sport", "tech", "economy", "science"];
+  const rubrics = [
+    "culture", "society", "politics", "incident",
+    "sport", "tech", "economy", "science",
+  ];
   const unresolved = rubrics.filter(
-    (slug) => !known.has(forumSectionForArticle(slug).slug),
+    (slug) => !known.has(forumSectionForArticle({ rubricSlug: slug }).slug),
   );
   check(
     "Сайдбар: каждая рубрика разрешается в реальный раздел",
@@ -619,29 +622,74 @@ function checkSidebarWiring() {
       : `не разрешены: ${unresolved.join(", ")}`,
   );
 
-  // An article with no rubric at all must still produce a link, not a crash.
-  const orphan = forumSectionForArticle(null);
+  // A story about a crash on the ring road is filed under «Происшествия» and is still a
+  // road story. The tags are what catch it; the rubric cannot.
+  const roadCases: [string, string[], string][] = [
+    ["ДТП", ["ДТП"], "avto-i-dorogi"],
+    ["авто", ["авто"], "avto-i-dorogi"],
+    ["Автомобили", ["Автомобили"], "avto-i-dorogi"],
+    ["транспорт", ["транспорт"], "avto-i-dorogi"],
+    ["дороги", ["дороги"], "avto-i-dorogi"],
+    ["Дорожный ремонт", ["Дорожный ремонт"], "avto-i-dorogi"],
+    ["пробки", ["пробки"], "avto-i-dorogi"],
+    ["парковки", ["парковки"], "avto-i-dorogi"],
+    ["метро", ["метро"], "avto-i-dorogi"],
+  ];
+  for (const [label, tags, expected] of roadCases) {
+    const actual = forumSectionForArticle({ rubricSlug: "incident", tags }).slug;
+    check(
+      `Сайдбар: тег «${label}» ведёт в «Авто и дороги»`,
+      actual === expected,
+      actual,
+    );
+  }
+
+  // Case folding: the CMS has no idea an editor typed ё or an uppercase letter.
+  const folded = forumSectionForArticle({ rubricSlug: "sport", tags: ["ДТП"] });
   check(
-    "Сайдбар: материал без рубрики всё равно получает раздел",
+    "Сайдбар: регистр и «ё» в теге не мешают",
+    folded.slug === "avto-i-dorogi",
+    folded.slug,
+  );
+
+  // An article with no rubric and no tags must still produce a link, not a crash.
+  const orphan = forumSectionForArticle({});
+  check(
+    "Сайдбар: материал без рубрики и тегов всё равно получает раздел",
     known.has(orphan.slug),
     `${orphan.slug} (${orphan.title})`,
   );
 
   // The button must name where it leads, or it is a leap of faith.
-  const society = forumSectionForArticle("society");
+  const society = forumSectionForArticle({ rubricSlug: "society" });
   check(
     "Сайдбар: кнопка называет раздел, в который ведёт",
-    society.title === "Городские проблемы и ЖКХ" && society.slug === "gorodskie-problemy-i-zhkh",
+    society.title === "Городские проблемы и ЖКХ" &&
+      society.slug === "gorodskie-problemy-i-zhkh",
     `${society.slug} — ${society.title}`,
   );
 
   // Everything else lands in the news section, on purpose: a reader who wants to
   // discuss a story should always land somewhere.
-  const sport = forumSectionForArticle("sport");
+  const sport = forumSectionForArticle({ rubricSlug: "sport" });
   check(
     "Сайдбар: неразмеченная рубрика идёт в «Новости и события»",
     sport.slug === "novosti-i-sobytiya",
-    `${sport.slug}`,
+    sport.slug,
+  );
+
+  // A tag list that is too eager is worse than a short one: it would quietly move
+  // stories about something the section is not about. «автомеханики» is deliberately
+  // absent from this list — it matches «авто», and correctly so, since the section is
+  // called "Авто и дороги" rather than "Дорожная безопасность".
+  const notRoads = ["авиация", "железная дорога", "IT", "кино"];
+  const leaked = notRoads.filter(
+    (tag) => forumSectionForArticle({ rubricSlug: "tech", tags: [tag] }).slug === "avto-i-dorogi",
+  );
+  check(
+    "Сайдбар: посторонние теги не уводят в «Авто и дороги»",
+    leaked.length === 0,
+    leaked.length === 0 ? `${notRoads.length} тегов проверено` : `утекли: ${leaked.join(", ")}`,
   );
 }
 
