@@ -48,6 +48,14 @@ export type SaveArticleResult = {
    * in the server console, which is why a repost that never worked went unnoticed.
    */
   vkError?: string | null;
+  /**
+   * One line per messenger about what actually happened on publication.
+   *
+   * The same reasoning as `vkError`, applied twice: a repost can fail while the save
+   * succeeds, and "nothing happened" is indistinguishable from "it worked" unless the
+   * server says which. Keyed by messenger so one does not overwrite the other.
+   */
+  messengerNotes?: Record<"telegram" | "max", string | null>;
 };
 
 /** Form state mirrored between the client inputs and the action payload. */
@@ -65,6 +73,10 @@ export type ArticleFormValues = {
   publishedAt: string;
   isDzen: boolean;
   isVk: boolean;
+  /** Repost into Telegram on first publication. */
+  isTelegram: boolean;
+  /** Repost into MAX on first publication. */
+  isMax: boolean;
   isExclusive: boolean;
   is18plus: boolean;
   /** Editorial metadata overrides; empty means "derive it on the page". */

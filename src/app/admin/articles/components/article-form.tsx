@@ -42,6 +42,7 @@ import {
   NARROW_COVER_WARNING,
   readImageDimensions,
 } from "@/lib/image-dimensions";
+import { DEFAULT_SYNDICATION_ENABLED } from "@/lib/settings-keys";
 import {
   SEO_DESCRIPTION_MAX_LENGTH,
   SEO_DESCRIPTION_SOFT_LIMIT,
@@ -142,9 +143,21 @@ type ArticleFormProps = {
    * form a "create" form, so the two modes cannot drift apart.
    */
   initial?: ArticleInitialValues;
+  /**
+   * Whether each messenger is switched on in /admin/settings.
+   *
+   * Only consulted for a new article: it is what decides whether the two messenger
+   * checkboxes start ticked, and that cannot be known in the browser — it lives in the
+   * settings table. The component never sees a token either way.
+   */
+  messengerDefaults?: { telegram: boolean; max: boolean };
 };
 
-export function ArticleForm({ categories, initial }: ArticleFormProps) {
+export function ArticleForm({
+  categories,
+  initial,
+  messengerDefaults = DEFAULT_SYNDICATION_ENABLED,
+}: ArticleFormProps) {
   const [state, formAction, pending] = useActionState(
     // useActionState passes the previous state first; the action reads FormData.
     async (_prevState: SaveArticleResult, formData: FormData) =>
@@ -195,6 +208,16 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const [publishedAt, setPublishedAt] = useState(defaultPublishedAt);
   const [isDzen, setIsDzen] = useState(initial?.isDzen ?? true);
   const [isVk, setIsVk] = useState(initial?.isVk ?? true);
+  /*
+    The two messenger boxes default to whatever the settings say is active, not to
+    `true`: a channel that has not been set up yet should not present a checked box
+    that silently does nothing. `initial` wins when editing, and the edit route is
+    where a published story arrives with both off — see `edit/page.tsx`.
+  */
+  const [isTelegram, setIsTelegram] = useState(
+    initial?.isTelegram ?? messengerDefaults.telegram,
+  );
+  const [isMax, setIsMax] = useState(initial?.isMax ?? messengerDefaults.max);
   const [isExclusive, setIsExclusive] = useState(initial?.isExclusive ?? false);
   const [is18plus, setIs18plus] = useState(initial?.is18plus ?? false);
   const [dzenExperiment, setDzenExperiment] = useState(initial?.dzenExperiment ?? false);
@@ -246,6 +269,20 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
   const busy = pending || deletePending;
 
   /**
+   * Why the two messenger boxes might be empty when the editor did not clear them.
+   *
+   * Worth a sentence rather than silence: an unchecked "Репост в Telegram" reads as a
+   * decision, and without this an editor cannot tell it apart from a story that will
+   * not syndicate because the channel was never configured.
+   */
+  const messengerHint =
+    initial?.status === "published"
+      ? "Материал уже опубликован: репост в мессенджеры не повторяется при каждом сохранении."
+      : messengerDefaults.telegram || messengerDefaults.max
+        ? "Репост уходит один раз — при первой публикации материала."
+        : "Автопостинг в мессенджеры выключен в разделе «Настройки».";
+
+  /**
    * The last known-saved field state. A successful save adopts the current
    * values, so "Отменить" always returns to what is actually on the server
    * rather than to the values this component happened to mount with.
@@ -265,6 +302,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
           publishedAt: initial.publishedAt || defaultPublishedAt,
           isDzen: initial.isDzen,
           isVk: initial.isVk,
+          isTelegram: initial.isTelegram,
+          isMax: initial.isMax,
           isExclusive: initial.isExclusive,
           is18plus: initial.is18plus,
           seoTitle: initial.seoTitle,
@@ -300,6 +339,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     publishedAt,
     isDzen,
     isVk,
+    isTelegram,
+    isMax,
     isExclusive,
     is18plus,
     seoTitle,
@@ -383,6 +424,8 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
     setPublishedAt(snapshot.publishedAt);
     setIsDzen(snapshot.isDzen);
     setIsVk(snapshot.isVk);
+    setIsTelegram(snapshot.isTelegram);
+    setIsMax(snapshot.isMax);
     setIsExclusive(snapshot.isExclusive);
     setIs18plus(snapshot.is18plus);
     setUploadError(null);
@@ -579,6 +622,16 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
         readOnly
       />
       <input type="hidden" name="tags" value={tags.join(",")} readOnly />
+      {/* The two messenger flags are mirrored for the same reason the Dzen ones are: a
+          checkbox contributes nothing when it is unchecked, and the action has to be
+          able to read "off" as a deliberate value rather than as an absent field. */}
+      <input
+        type="hidden"
+        name="isTelegram"
+        value={isTelegram ? "on" : ""}
+        readOnly
+      />
+      <input type="hidden" name="isMax" value={isMax ? "on" : ""} readOnly />
       {/* Gallery travels as JSON for the same reason the mirror exists: the
           MediaEditor lives on the "Медиа" tab and unmounts with it. */}
       <input type="hidden" name="media" value={serializeMedia(media)} readOnly />
@@ -633,6 +686,25 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
             </p>
           )
         ) : null}
+
+        {/*
+          The messenger outcomes, in the same place as the VK one and for the same
+          reason: a repost can fail while the save succeeds, so the editor needs to be
+          told which happened rather than inferring it from silence.
+        */}
+        {state.ok && state.messengerNotes
+          ? Object.entries(state.messengerNotes)
+              .filter(([, note]) => Boolean(note))
+              .map(([messenger, note]) => (
+                <p
+                  key={messenger}
+                  role="status"
+                  className="text-sm text-neutral-500"
+                >
+                  {messenger === "telegram" ? "Telegram" : "MAX"}: {note}
+                </p>
+              ))
+          : null}
       </header>
 
       {/* Editorial grid: form ~75%, attribute sidebar ~25%. */}
@@ -1104,6 +1176,15 @@ export function ArticleForm({ categories, initial }: ArticleFormProps) {
             onIsVkChange={(value) => {
               setIsVk(value);
             }}
+            isTelegram={isTelegram}
+            onIsTelegramChange={(value) => {
+              setIsTelegram(value);
+            }}
+            isMax={isMax}
+            onIsMaxChange={(value) => {
+              setIsMax(value);
+            }}
+            messengerHint={messengerHint}
             isExclusive={isExclusive}
             onIsExclusiveChange={(value) => {
               setIsExclusive(value);

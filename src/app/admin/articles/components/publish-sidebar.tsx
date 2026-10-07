@@ -15,6 +15,15 @@ type PublishSidebarProps = {
   onIsDzenChange: (value: boolean) => void;
   isVk: boolean;
   onIsVkChange: (value: boolean) => void;
+  isTelegram: boolean;
+  onIsTelegramChange: (value: boolean) => void;
+  isMax: boolean;
+  onIsMaxChange: (value: boolean) => void;
+  /**
+   * Why a messenger checkbox is off when the editor did not turn it off — shown as a
+   * note under the pair, so an empty box reads as a decision rather than a fault.
+   */
+  messengerHint?: string;
   isExclusive: boolean;
   onIsExclusiveChange: (value: boolean) => void;
   is18plus: boolean;
@@ -74,6 +83,11 @@ export function PublishSidebar({
   onIsDzenChange,
   isVk,
   onIsVkChange,
+  isTelegram,
+  onIsTelegramChange,
+  isMax,
+  onIsMaxChange,
+  messengerHint,
   isExclusive,
   onIsExclusiveChange,
   is18plus,
@@ -109,6 +123,28 @@ export function PublishSidebar({
               checked={isVk}
               onChange={onIsVkChange}
             />
+            <Checkbox
+              id="isTelegram"
+              label="Репост в Telegram"
+              checked={isTelegram}
+              onChange={onIsTelegramChange}
+            />
+            <Checkbox
+              id="isMax"
+              label="Репост в MAX"
+              checked={isMax}
+              onChange={onIsMaxChange}
+            />
+            {/*
+              A single note for both messengers rather than one each: they are
+              configured together, and two notes saying the same thing in two places is
+              noise an editor learns to skip.
+            */}
+            {messengerHint ? (
+              <p className="pl-6 pt-1 text-[11px] leading-snug text-neutral-400">
+                {messengerHint}
+              </p>
+            ) : null}
           </div>
 
           <div className="space-y-1">

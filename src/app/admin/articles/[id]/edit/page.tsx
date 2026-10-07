@@ -81,6 +81,8 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         publishedAt: true,
         isDzen: true,
         isVk: true,
+        isTelegram: true,
+        isMax: true,
         isExclusive: true,
         is18plus: true,
         tags: { select: { tag: { select: { name: true } } } },
@@ -127,6 +129,20 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         publishedAt: toMoscowInputValue(article.publishedAt),
         isDzen: article.isDzen,
         isVk: article.isVk,
+        /*
+          Both messenger boxes start empty for a story that is already live.
+
+          The stored value says "this story was syndicated", and showing it as ticked
+          would invite a save that re-sends it — which is exactly the duplicate the
+          checkbox exists to prevent. The action independently refuses to repost outside
+          the draft→published transition; this is the honest half of the same rule, so
+          the box an editor sees matches what will happen.
+
+          A draft keeps whatever was stored, because a draft has not gone out yet and
+          the flag is still the editor's decision.
+        */
+        isTelegram: article.status === "published" ? false : article.isTelegram,
+        isMax: article.status === "published" ? false : article.isMax,
         isExclusive: article.isExclusive,
         is18plus: article.is18plus,
       }}

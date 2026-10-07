@@ -28,6 +28,11 @@ import { parseTagsField, syncArticleTags } from "@/lib/tags";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { publishArticleToVk, setVkTokenSource } from "@/lib/vk-publisher";
 import { renameVkVideoForArticle } from "@/lib/vk-video";
+import {
+  publishArticleToTelegram,
+  setTelegramConfigSource,
+} from "@/lib/telegram-publisher";
+import { publishArticleToMax, setMaxConfigSource } from "@/lib/max-publisher";
 
 /** Absolute base for links handed to a third party, e.g. the VK video description. */
 function siteUrl(): string {
@@ -273,6 +278,8 @@ export async function createArticleAction(
     categoryId,
     isDzen: checkbox(formData, "isDzen"),
     isVk: checkbox(formData, "isVk"),
+    isTelegram: checkbox(formData, "isTelegram"),
+    isMax: checkbox(formData, "isMax"),
     isExclusive: checkbox(formData, "isExclusive"),
     is18plus: checkbox(formData, "is18plus"),
     videoUrl,
@@ -323,6 +330,26 @@ export async function createArticleAction(
     if (!tagSlugs.has(previous.tag.slug)) tagSlugs.add(previous.tag.slug);
   }
 
+  /*
+    The rubric name, read once and used for two things: revalidating the category page
+    below, and the closing hashtag in a messenger post. A post tagged with the rubric
+    it actually carries is what makes a channel searchable, and fetching it here rather
+    than inside each publisher keeps both of them free of database access.
+  */
+  const category = categoryId
+    ? await prisma.category.findUnique({
+        where: { id: categoryId },
+        select: { slug: true, name: true },
+      })
+    : null;
+
+  // True only on the transition into published. The messengers post a *story*, not a
+  // revision of one: reposting on every save would put the same headline in a channel
+  // each time somebody fixed a typo. The checkboxes therefore also arrive unchecked
+  // when an already-published story is opened for editing — see [id]/edit/page.tsx —
+  // but this is the guarantee, and the checkboxes are only the courtesy.
+  const enteringPublished = article.status === "published" && previousStatus !== "published";
+
   // Repost to VK when the article goes live with the flag on. Wrapped so a
   // missing token or a VK outage never rolls back the database write.
   let vkPostId: string | null = null;
@@ -353,14 +380,68 @@ export async function createArticleAction(
     }
   }
 
+  /*
+    Telegram and MAX, both on first publication only and both wrapped so nothing they
+    do can fail the save.
+
+    Sequential rather than parallel on purpose: both upload the same cover, and two
+    concurrent reads of one file from two providers is a way to make a publish slow for
+    no gain. Each call is seconds at most.
+
+    A "not configured" result is not an error to shout about. `maxEnabled` defaults to
+    off and `telegramEnabled` to on, so the common case on an install that has set up
+    neither is that one messenger is quietly skipped and the other reports what it did.
+    That distinction is preserved in the note rather than flattened into "failed".
+  */
+  const messengerNotes: Record<"telegram" | "max", string | null> = {
+    telegram: null,
+    max: null,
+  };
+
+  if (enteringPublished && (article.isTelegram || article.isMax)) {
+    const shared = {
+      title: article.title,
+      contentHtml: article.contentHtml,
+      slug: article.slug,
+      categoryName: category?.name ?? null,
+      coverImage: article.coverImage,
+    };
+
+    if (article.isTelegram) {
+      try {
+        const telegram = await publishArticleToTelegram(shared);
+        messengerNotes.telegram = telegram.ok
+          ? (telegram.summary ?? "опубликовано.")
+          : `не ушло: ${telegram.error ?? "причина неизвестна"}`;
+        if (telegram.warning) console.warn(`[telegram] ${telegram.warning}`);
+      } catch (error) {
+        messengerNotes.telegram = `необработанная ошибка: ${
+          error instanceof Error ? error.message : "неизвестная ошибка"
+        }`;
+        console.error("[telegram] необработанная ошибка репоста:", error);
+      }
+    }
+
+    if (article.isMax) {
+      try {
+        const max = await publishArticleToMax(shared);
+        messengerNotes.max = max.ok
+          ? (max.summary ?? "опубликовано.")
+          : `не ушло: ${max.error ?? "причина неизвестна"}`;
+        if (max.warning) console.warn(`[max] ${max.warning}`);
+      } catch (error) {
+        messengerNotes.max = `необработанная ошибка: ${
+          error instanceof Error ? error.message : "неизвестная ошибка"
+        }`;
+        console.error("[max] необработанная ошибка репоста:", error);
+      }
+    }
+  }
+
   // Renaming a VK video is a nice-to-have on top of a publish that has already
   // happened, so it can only ever report. Wrapped twice: the helper never throws,
   // and this catch also covers a programming error in it, because losing the
   // publish would be a far worse outcome than a video with a stale name.
-  //
-  // Only on the transition into published: re-running on every edit would rewrite
-  // an already-published video each time somebody corrected a typo.
-  const enteringPublished = article.status === "published" && previousStatus !== "published";
   let vkVideoWarning: string | undefined;
 
   if (enteringPublished) {
@@ -381,13 +462,17 @@ export async function createArticleAction(
     }
   }
 
-  // The reposter reads the token through the settings service so a token pasted in
-// /admin/settings takes effect without a restart. The source is installed here
-// rather than imported inside vk-publisher so that module stays importable from
-// the vk:check suite, which stubs VK's HTTP layer.
-setVkTokenSource();
-
-revalidatePath("/admin/articles");
+  /*
+    The three reposters read their tokens through the settings service, so a token
+    pasted in /admin/settings takes effect without a restart. The sources are installed
+    here rather than imported inside the publishers, because those modules have to stay
+    importable from a test suite that stubs the HTTP layer — and `@/lib/settings` is
+    `server-only`, which throws the moment it is loaded outside a Server Component.
+  */
+  setVkTokenSource();
+  setTelegramConfigSource();
+  setMaxConfigSource();
+  revalidatePath("/admin/articles");
   // The public storefront is statically rendered with ISR, so a newly published
   // story (or an edited one) is invisible until those paths are revalidated.
   // Without this the editor hits "Опубликовать" and sees no change on the site.
@@ -396,13 +481,7 @@ revalidatePath("/admin/articles");
   revalidatePath("/sitemap.xml");
   revalidatePath("/api/feed/dzen.xml");
 
-  if (categoryId) {
-    const category = await prisma.category.findUnique({
-      where: { id: categoryId },
-      select: { slug: true },
-    });
-    if (category) revalidatePath(`/category/${category.slug}`);
-  }
+  if (category) revalidatePath(`/category/${category.slug}`);
 
   // Tag listings show this story, so they go stale the moment it gains or loses a
   // tag — including the ones it just lost, which still list it.
@@ -437,6 +516,7 @@ revalidatePath("/admin/articles");
     vkQueued: article.status === "published" && article.isVk,
     vkPostId,
     vkError,
+    messengerNotes,
   };
 }
 

@@ -83,6 +83,17 @@ model Article {
   // Appended at the end like `dzenExperiment` above, for the same SQLite reason:
   // a column inserted among the others makes Prisma rebuild the whole table.
   deletedAt    DateTime? @map("deleted_at")
+  // Repost into Telegram / MAX on first publication. The editor's sidebar owns both.
+  //
+  // Defaulting to true matches `isDzen` and `isVk`: a story that reaches the database
+  // without an explicit decision should syndicate. What the publisher then does with
+  // the flag is the settings' business — a messenger with no token configured is
+  // skipped silently, so the default is harmless on an install that has not set one
+  // up.
+  //
+  // Appended at the end for the same SQLite reason as `deletedAt` above.
+  isTelegram   Boolean    @default(true)
+  isMax        Boolean    @default(true)
   tags        ArticleTag[]
 
   @@index([status, publishedAt])

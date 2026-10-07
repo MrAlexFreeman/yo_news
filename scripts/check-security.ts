@@ -48,9 +48,11 @@ import {
 import {
   ALLOWED_KEYS,
   FIELD_BY_NAME,
+  SYNDICATION_FIELDS,
   isAllowedKey,
   maskSecret,
   mergeSettings,
+  type SettingKey,
   type SettingsViewState,
 } from "../src/lib/settings-keys";
 import {
@@ -1286,12 +1288,24 @@ function checkSettingsPrimitives() {
     mask,
   );
 
+  /*
+    The allowlist grew from three keys to nine when messenger auto-posting landed, and
+    the four API-key names are asserted by name because they are the ones the existing
+    routes read. The six messenger keys are asserted below instead, since they are
+    reached through SYNDICATION_FIELDS.
+  */
   check(
-    "Настройки: allowlist содержит три ключа",
-    ALLOWED_KEYS.length === 3 &&
+    "Настройки: allowlist содержит девять ключей",
+    ALLOWED_KEYS.length === 9 &&
       isAllowedKey("DEEPSEEK_API_KEY") &&
       isAllowedKey("DEEPINFRA_API_KEY") &&
-      isAllowedKey("VK_ACCESS_TOKEN"),
+      isAllowedKey("VK_ACCESS_TOKEN") &&
+      isAllowedKey("TELEGRAM_BOT_TOKEN") &&
+      isAllowedKey("TELEGRAM_CHANNEL_ID") &&
+      isAllowedKey("TELEGRAM_ENABLED") &&
+      isAllowedKey("MAX_BOT_TOKEN") &&
+      isAllowedKey("MAX_CHAT_ID") &&
+      isAllowedKey("MAX_ENABLED"),
     ALLOWED_KEYS.join(", "),
   );
 
@@ -1304,12 +1318,43 @@ function checkSettingsPrimitives() {
     "проводка на месте",
   );
 
+  /*
+    Every allowed key must be reachable from exactly one field map. "At least one" is
+    the invariant that matters: a key in the allowlist that no map names can never be
+    read or written, which reads as "this setting has no UI". A key in *both* maps
+    would be validated as a token by one route and as a destination by the other, so
+    the two are counted separately here and asserted disjoint above.
+  */
+  const fieldKeys: SettingKey[] = Object.values(FIELD_BY_NAME);
+  // Annotated rather than inferred: `SYNDICATION_FIELDS` is `as const`, so without
+  // the annotation this is the six literal names rather than `SettingKey[]`, and
+  // `.includes` then refuses any key from the wider allowlist.
+  const syndicationKeys: SettingKey[] = Object.values(SYNDICATION_FIELDS).map(
+    (field) => field.key,
+  );
+
   check(
     "Настройки: у каждого разрешённого ключа есть имя поля",
-    ALLOWED_KEYS.every((key) =>
-      Object.values(FIELD_BY_NAME).includes(key),
+    ALLOWED_KEYS.every((key) => fieldKeys.includes(key) || syndicationKeys.includes(key)),
+    `${Object.keys(FIELD_BY_NAME).length} + ${syndicationKeys.length} полей на ${ALLOWED_KEYS.length} ключей`,
+  );
+
+  check(
+    "Настройки: ключ не попадает сразу в две карты полей",
+    syndicationKeys.every((key) => !fieldKeys.includes(key)),
+    `${syndicationKeys.length} мессенджерных ключей отдельно от ${fieldKeys.length} API-ключей`,
+  );
+
+  check(
+    "Настройки: у каждого мессенджерного поля верный вид значения",
+    Object.values(SYNDICATION_FIELDS).every(
+      (field) =>
+        isAllowedKey(field.key) &&
+        (field.kind === "token" || field.kind === "destination" || field.kind === "flag"),
     ),
-    `${Object.keys(FIELD_BY_NAME).length} полей на ${ALLOWED_KEYS.length} ключей`,
+    Object.values(SYNDICATION_FIELDS)
+      .map((field) => `${field.key}:${field.kind}`)
+      .join(", "),
   );
 
   // The critical negative: ADMIN_PASSWORD and DATABASE_URL must not be
