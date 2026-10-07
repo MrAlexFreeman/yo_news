@@ -154,11 +154,23 @@ echo "==> reloading pm2 process '$APP_NAME'"
 # process able to disagree, which is the state that made this take a manual restart to
 # notice.
 if [ -f ecosystem.config.cjs ]; then
-  PM2_APP="$APP_NAME" pm2 startOrReload ecosystem.config.cjs --update-env
+  # No `--update-env` here, and that is the whole point of this branch.
+  #
+  # `--update-env` merges the *calling shell's* environment over the process definition,
+  # and the shell does not carry NODE_EXTRA_CA_CERTS — so the variable this file exists to
+  # set was silently dropped, and the deploy reported success while MAX kept failing its
+  # TLS handshake. Measured: with the flag the process env held only NODE_OPTIONS; without
+  # it, the variable reaches the process and the `next start` child.
+  #
+  # Nothing needs the shell's environment: the application's own variables come from .env,
+  # which Next loads at runtime, and the two that must exist before Node boots are declared
+  # in the ecosystem file.
+  PM2_APP="$APP_NAME" pm2 startOrReload ecosystem.config.cjs
   # Saved so the environment survives a reboot: PM2 restores a process from its dump,
   # not from this file, and an unsaved env is gone after the machine comes back.
   pm2 save >/dev/null 2>&1 || true
 else
+  echo "WARNING: ecosystem.config.cjs is missing; NODE_EXTRA_CA_CERTS will not be set" >&2
   pm2 reload "$APP_NAME" --update-env
 fi
 
@@ -167,6 +179,21 @@ if ! pm2 list --no-color | grep -q "$APP_NAME"; then
   echo "ERROR: pm2 process '$APP_NAME' is not listed after reload." >&2
   pm2 list --no-color >&2 || true
   exit 1
+fi
+
+# The variable the ecosystem file exists for must actually be in the process. Checked
+# from /proc rather than from `pm2 env`, because the question is what Node sees, not
+# what PM2 believes it configured — those were different for exactly one deploy.
+if [ -f ecosystem.config.cjs ]; then
+  PID=$(pm2 pid "$APP_NAME" 2>/dev/null | head -1 || true)
+  if [ -n "${PID:-}" ] && [ -r "/proc/$PID/environ" ]; then
+    if tr '\0' '\n' < "/proc/$PID/environ" | grep -q '^NODE_EXTRA_CA_CERTS='; then
+      echo "    NODE_EXTRA_CA_CERTS is set for pid $PID"
+    else
+      echo "ERROR: NODE_EXTRA_CA_CERTS is missing from pid $PID — MAX will fail its TLS handshake." >&2
+      exit 1
+    fi
+  fi
 fi
 
 # Exactly one. `pm2 startOrReload` on a name that was created outside the ecosystem file
