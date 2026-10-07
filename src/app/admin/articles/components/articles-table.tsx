@@ -6,6 +6,7 @@ import { useState, useTransition } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 
 import { hardDeleteArticles, restoreArticles, softDeleteArticles } from "@/app/admin/articles/actions";
+import { cn } from "@/lib/utils";
 
 /**
  * The editorial table, with row selection.
@@ -56,14 +57,17 @@ export type ArticlesTableViewProps = ArticlesTableProps & {
   notice: string | null;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
-  onBulk: () => void;
+  onClear: () => void;
   /**
-   * The per-row button, told which one was pressed.
+   * A bulk action, named rather than guessed from the tab.
    *
-   * A single handler with a guessed meaning would be a trap: in the trash the row carries
-   * both "Вернуть" and "Удалить", and the two differ only in what happens to the row and
-   * whether the file on disk survives.
+   * This was one handler that branched on the tab, and the trash view gave it two buttons
+   * — "Вернуть из корзины" and "Удалить выбранные" — both wired to it. It restored either
+   * way, so a button labelled "delete" quietly undid the deletion instead of performing
+   * it. Naming the action is the only thing that tells the two apart; the markup check
+   * that should have caught it only looked for the labels.
    */
+  onBulk: (action: "trash" | "restore" | "destroy") => void;
   onRow: (id: string, action: "trash" | "restore" | "destroy") => void;
 };
 
@@ -85,23 +89,35 @@ export function ArticlesTableView({
   notice,
   onToggle,
   onToggleAll,
+  onClear,
   onBulk,
   onRow,
 }: ArticlesTableViewProps) {
   const trashed = view === "trash";
   const count = selected.size;
+  const anySelected = count > 0;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div
+      className={cn(
+        "flex flex-col gap-3",
+        /*
+          Room for the floating bar, and only while it is on screen.
+
+          Padding at the bottom extends the scroll range without moving anything above it,
+          so taking it back when the selection clears costs no scroll position — where a
+          fixed 6rem gap would sit empty under every unselected table.
+        */
+        anySelected && "pb-24",
+      )}
+    >
       {/*
-        The bulk bar. `aria-live` because the count is announced to a screen reader the
-        moment it changes, and that is the only way a non-sighted editor learns what the
-        button they are about to press is armed with.
+        The table's own controls: select-all and a pointer to where the actions will be.
+        The action buttons live in the floating bar only. Two sets of destructive buttons
+        over one selection is a hazard rather than a convenience — and the bar's count is
+        the single `aria-live` region, so a second copy would announce every tick twice.
       */}
-      <div
-        aria-live="polite"
-        className="flex flex-wrap items-center gap-3 rounded border border-neutral-300 bg-white px-3 py-2"
-      >
+      <div className="flex flex-wrap items-center gap-3 rounded border border-neutral-300 bg-white px-3 py-2">
         <label className="flex cursor-pointer items-center gap-2 text-xs text-neutral-600">
           <input
             type="checkbox"
@@ -113,44 +129,11 @@ export function ArticlesTableView({
           Выбрать все
         </label>
 
-        <span className="text-sm text-neutral-700" data-selected-count={count}>
-          {count > 0 ? `Выбрано: ${count}` : "Ничего не выбрано"}
+        <span className="text-xs text-neutral-500" data-selection-hint>
+          {anySelected
+            ? "Действия для выбранных — внизу экрана."
+            : "Отметьте строки, чтобы применить действие сразу к нескольким."}
         </span>
-
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {trashed ? (
-            <>
-              <button
-                type="button"
-                disabled={count === 0 || pending}
-                onClick={onBulk}
-                className="inline-flex items-center gap-1.5 rounded-sm border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RotateCcw className="size-3.5" aria-hidden />
-                Вернуть из корзины
-              </button>
-              <button
-                type="button"
-                disabled={count === 0 || pending}
-                onClick={onBulk}
-                className="inline-flex items-center gap-1.5 rounded-sm bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Trash2 className="size-3.5" aria-hidden />
-                Удалить выбранные
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              disabled={count === 0 || pending}
-              onClick={onBulk}
-              className="inline-flex items-center gap-1.5 rounded-sm bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Trash2 className="size-3.5" aria-hidden />
-              Удалить выбранные
-            </button>
-          )}
-        </div>
       </div>
 
       {notice ? (
@@ -307,6 +290,109 @@ export function ArticlesTableView({
           ))}
         </tbody>
       </table>
+
+      {/*
+        The floating bar.
+
+        Fixed rather than sticky because the target is the bottom of a long table: an
+        editor who ticks the last row is already there, and one who ticks the first is
+        70 rows up. `bottom-6 left-1/2 -translate-x-1/2` centres it; nothing between here
+        and the viewport has a transform or `contain`, which would make `fixed` resolve
+        against that ancestor instead and pin the bar to the table.
+
+        The bar is always mounted so it can animate, and it is hidden with `invisible`
+        rather than by unmounting. That matters for the keyboard: `opacity-0` alone leaves
+        its buttons in the tab order, so tabbing from the first row would walk through two
+        invisible controls before reaching anything. `visibility: hidden` removes them.
+
+        The count is the one `aria-live` region on the page, so a screen reader hears the
+        selection change once and knows what the button next to it is armed with.
+      */}
+      <div
+        data-bulk-bar=""
+        aria-live="polite"
+        className={cn(
+          // Centred with a translate rather than `inset-x-0` + `mx-auto`: both left and
+          // right pinned would stretch the bar to the viewport, and `w-fit` would only win
+          // because it happens to come later in the cascade.
+          "fixed bottom-6 left-1/2 z-40 w-fit max-w-[calc(100vw-2rem)] -translate-x-1/2",
+          "flex items-center gap-4 rounded-xl border border-neutral-300 bg-white px-5 py-3 shadow-2xl",
+          /*
+            Visibility is kept out of the transition on the way in, and put back on it on
+            the way out.
+
+            `transition-all` on the way in was measurably fragile: `visibility` is a
+            discrete property, so the bar's visibility depended on the transition advancing
+            — and a document the browser is not painting gets no frames, so the bar sat
+            invisible while the selection was active. Measured, not theorised: with
+            `transition-all`, ticking a row left the bar at `visibility: hidden`,
+            `opacity: 0` indefinitely in a hidden tab. So the show path animates only
+            opacity and transform and flips `visibility` at once; the hide path fades out
+            first and adds `visibility` to the transition with a delay, so it disappears
+            after the fade rather than snapping.
+          */
+          anySelected
+            ? "visible translate-y-0 opacity-100 transition-[opacity,transform] duration-200"
+            : "invisible pointer-events-none translate-y-4 opacity-0 transition-[opacity,transform,visibility] duration-200 delay-150",
+        )}
+      >
+        <span
+          className="whitespace-nowrap text-sm font-medium text-neutral-900"
+          data-selected-count={count}
+        >
+          {anySelected ? `Выбрано: ${count}` : "Ничего не выбрано"}
+        </span>
+
+        {/*
+          Clearing the selection is the way back, and it has to be a button rather than a
+          habit: the ids behind "Удалить выбранные" are no longer on screen to check
+          against.
+        */}
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={!anySelected || pending}
+          className="whitespace-nowrap rounded-sm border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Снять выбор
+        </button>
+
+        {trashed ? (
+          <>
+            <button
+              type="button"
+              disabled={!anySelected || pending}
+              onClick={() => onBulk("restore")}
+              data-bulk-action="restore"
+              className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RotateCcw className="size-3.5" aria-hidden />
+              Вернуть из корзины
+            </button>
+            <button
+              type="button"
+              disabled={!anySelected || pending}
+              onClick={() => onBulk("destroy")}
+              data-bulk-action="destroy"
+              className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Trash2 className="size-3.5" aria-hidden />
+              Удалить выбранные
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            disabled={!anySelected || pending}
+            onClick={() => onBulk("trash")}
+            data-bulk-action="trash"
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+            В корзину
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -318,7 +404,6 @@ export function ArticlesTable({ rows, view, statusLabels }: ArticlesTableProps) 
   const [pending, startTransition] = useTransition();
   const [notice, setNotice] = useState<string | null>(null);
 
-  const trashed = view === "trash";
   const allSelected = rows.length > 0 && selected.size === rows.length;
 
   function toggle(id: string) {
@@ -332,6 +417,11 @@ export function ArticlesTable({ rows, view, statusLabels }: ArticlesTableProps) 
 
   function toggleAll() {
     setSelected(allSelected ? new Set() : new Set(rows.map((row) => row.id)));
+  }
+
+  /** Backs the bar's "Снять выбор": nothing destructive, no confirmation needed. */
+  function clear() {
+    setSelected(new Set());
   }
 
   /**
@@ -355,11 +445,18 @@ export function ArticlesTable({ rows, view, statusLabels }: ArticlesTableProps) 
   /*
     The confirmations live here rather than in the markup, so the markup stays a pure
     function of props and can be rendered — and checked — outside a browser.
-  */
-  function bulk() {
-    const count = selected.size;
 
-    if (trashed) {
+    Three separate branches, each with its own wording, because the three actions cost the
+    editor different things: one is reversible, one is reversible, one is neither. A single
+    shared prompt would have to be worded so weakly that it stops warning about the case it
+    exists for.
+  */
+  function bulk(action: "trash" | "restore" | "destroy") {
+    const count = selected.size;
+    const subject =
+      count === 1 ? "материал" : `материалы (${count})`;
+
+    if (action === "restore") {
       if (
         !window.confirm(
           count === 1
@@ -370,6 +467,18 @@ export function ArticlesTable({ rows, view, statusLabels }: ArticlesTableProps) 
         return;
       }
       run(() => restoreArticles([...selected]));
+      return;
+    }
+
+    if (action === "destroy") {
+      if (
+        !window.confirm(
+          `Удалить ${subject} навсегда? Это необратимо: материалы, их файлы обложек и метки будут удалены без возможности восстановления.`,
+        )
+      ) {
+        return;
+      }
+      run(() => hardDeleteArticles([...selected]));
       return;
     }
 
@@ -431,6 +540,7 @@ export function ArticlesTable({ rows, view, statusLabels }: ArticlesTableProps) 
       notice={notice}
       onToggle={toggle}
       onToggleAll={toggleAll}
+      onClear={clear}
       onBulk={bulk}
       onRow={single}
     />

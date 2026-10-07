@@ -68,6 +68,7 @@ function renderTable(
       notice: null,
       onToggle: () => {},
       onToggleAll: () => {},
+      onClear: () => {},
       onBulk: () => {},
       onRow: () => {},
     }),
@@ -656,20 +657,148 @@ function checkMarkup() {
     picked.includes("Выбрано: 1"),
     "одна строка выбрана",
   );
+
+  /*
+    The floating bar.
+
+    Asserted on the classes that make it float and centre itself, because a bar that renders
+    but sits in the flow has failed the one thing it was built for — and `renderToStaticMarkup`
+    cannot run a layout, so the class list is the only evidence available here. The live
+    viewport measurement is the browser's job and lives in the deploy notes.
+  */
+  const barOf = (html: string) => html.match(/<div data-bulk-bar[^>]*>/)?.[0] ?? "";
+  const missing = (bar: string, wanted: string[]) => {
+    const classes = (/class="([^"]*)"/.exec(bar)?.[1] ?? "").split(/\s+/);
+    // Class names carry regex metacharacters — `transition-[opacity,transform]` is full of
+    // them — so they are compared as plain strings rather than turned into a pattern.
+    return wanted.filter((token) => !classes.includes(token));
+  };
+
+  const placement = missing(barOf(active), [
+    "fixed",
+    "bottom-6",
+    "left-1/2",
+    "-translate-x-1/2",
+    "z-40",
+  ]);
   check(
-    "Разметка: кнопка массового удаления есть",
-    active.includes("Удалить выбранные"),
-    "подпись на месте",
+    "Панель: закреплена снизу и по центру",
+    barOf(active) !== "" && placement.length === 0,
+    placement.length === 0
+      ? "fixed bottom-6 left-1/2 -translate-x-1/2 z-40"
+      : `не хватает: ${placement.join(", ")}`,
   );
+  check(
+    "Панель: счётчик объявлен живой областью",
+    /aria-live="polite"/.test(barOf(active)),
+    "aria-live на панели",
+  );
+
+  /*
+    Hidden, not merely transparent.
+
+    `opacity-0` leaves the buttons in the tab order, so tabbing from the first row would
+    walk through three invisible controls before anything else. `visibility: hidden` is
+    what takes them out, and `pointer-events-none` stops a stray click on the empty bar.
+  */
+  const hiddenClasses = missing(barOf(active), ["invisible", "pointer-events-none", "opacity-0"]);
+  check(
+    "Панель: без выбора скрыта через visibility, а не только прозрачностью",
+    hiddenClasses.length === 0,
+    hiddenClasses.length === 0
+      ? "вне области нажатия и вне порядка обхода"
+      : `не хватает: ${hiddenClasses.join(", ")}`,
+  );
+  const shownMissing = missing(barOf(picked), ["visible", "translate-y-0", "opacity-100"]);
+  check(
+    "Панель: с выбором видима и проявляется",
+    shownMissing.length === 0 && !/\binvisible\b/.test(barOf(picked)),
+    shownMissing.length === 0
+      ? "видима при выборе"
+      : `не хватает: ${shownMissing.join(", ")}`,
+  );
+  check(
+    "Панель: анимируется, но видимость не зависит от хода перехода",
+    // The show path must not include `visibility` in the transition: that property is
+    // discrete, so a document the browser is not painting would leave the bar invisible
+    // while a selection was active. Measured that way before this was fixed.
+    missing(barOf(picked), ["transition-[opacity,transform]", "duration-200"]).length === 0 &&
+      !/transition-[^"]*visibility/.test(
+        /class="([^"]*)"/.exec(barOf(picked))?.[1] ?? "",
+      ),
+    "на показе анимируются только прозрачность и сдвиг",
+  );
+  check(
+    "Панель: при исчезновении видимость гаснет после затухания",
+    missing(barOf(active), ["transition-[opacity,transform,visibility]", "delay-150"]).length === 0,
+    "visibility в переходе и задержка 150 мс",
+  );
+  check(
+    "Панель: есть «Снять выбор»",
+    active.includes("Снять выбор"),
+    "кнопка сброса на месте",
+  );
+
+  /*
+    The regression that started this.
+
+    The trash view offers two bulk buttons and they were both wired to one handler that
+    restored, so "Удалить выбранные" undid the deletion instead of performing it. React
+    strips `onClick` from static markup, so the wiring cannot be read off the HTML — hence
+    the explicit `data-bulk-action` contract, which can be. These checks pin label to
+    action: a button's text and what it does must not be able to drift apart.
+  */
+  const bulkButton = (html: string, label: string) =>
+    new RegExp(`data-bulk-action="([a-z]+)"[^>]*>(?:(?!</button>).)*${label}`, "s").exec(html) ??
+    new RegExp(`${label}(?:(?!</button>).)*data-bulk-action="([a-z]+)"`, "s").exec(html);
+
+  check(
+    "Панель: «В корзину» в активном списке ведёт в корзину, а не куда-то ещё",
+    bulkButton(picked, "В корзину")?.[1] === "trash",
+    `data-bulk-action="${bulkButton(picked, "В корзину")?.[1] ?? "нет"}"`,
+  );
+  check(
+    "Панель: «Вернуть из корзины» ведёт во восстановление",
+    bulkButton(bin, "Вернуть из корзины")?.[1] === "restore",
+    `data-bulk-action="${bulkButton(bin, "Вернуть из корзины")?.[1] ?? "нет"}"`,
+  );
+  check(
+    "Панель: «Удалить выбранные» в корзине ведёт в безвозвратное удаление",
+    bulkButton(bin, "Удалить выбранные")?.[1] === "destroy",
+    `data-bulk-action="${bulkButton(bin, "Удалить выбранные")?.[1] ?? "нет"}"`,
+  );
+  check(
+    "Панель: в корзине ровно два массовых действия — восстановление и удаление",
+    (bin.match(/data-bulk-action="/g) ?? []).length === 2,
+    `${(bin.match(/data-bulk-action="/g) ?? []).length} кнопки`,
+  );
+  check(
+    "Панель: в активном списке одно массовое действие",
+    (active.match(/data-bulk-action="/g) ?? []).length === 1,
+    `${(active.match(/data-bulk-action="/g) ?? []).length} кнопка`,
+  );
+
+  check(
+    "Разметка: место под панель резервируется только при выборе",
+    active.includes("pb-24") === false && picked.includes("pb-24"),
+    "без выбора отступа нет, с выбором есть",
+  );
+  check(
+    "Разметка: кнопки массовых действий не дублируются над таблицей",
+    (active.match(/data-bulk-action="/g) ?? []).length ===
+      (active.match(/<table/g) ?? []).length,
+    "по одному комплекту, в плавающей панели",
+  );
+  check(
+    "Разметка: живая область на странице ровно одна",
+    (active.match(/aria-live=/g) ?? []).length === 1,
+    `${(active.match(/aria-live=/g) ?? []).length} штука`,
+  );
+
   check(
     "Разметка: одиночная кнопка переносит в корзину",
     (active.match(/В корзину/g) ?? []).length >= rows.length,
     "по кнопке на строку",
-  );
-  check(
-    "Разметка: в корзине вместо удаления — восстановление",
-    bin.includes("Вернуть из корзины") && bin.includes("Вернуть"),
-    "обе кнопки на месте",
   );
   check(
     "Разметка: безвозвратное удаление сказано словом «навсегда»",
