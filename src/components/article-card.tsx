@@ -170,7 +170,15 @@ export function ArticleCard({
 
     return (
       <article className="group flex gap-3 py-3">
-        <div className={cn("relative shrink-0 overflow-hidden bg-paper-dim", thumb.box)}>
+        {/*
+          `self-start` is load-bearing, not decoration. The card is a flex row and
+          flex items stretch across the cross axis by default, so the thumbnail was
+          being pulled to the height of the text column beside it — 80 wide and 86 tall
+          in practice, which silently defeats `aspect-square` and makes the crop
+          something other than the square it asks for. Opting out of the stretch lets
+          the box keep the height its ratio implies.
+        */}
+        <div className={cn("relative shrink-0 self-start overflow-hidden bg-paper-dim", thumb.box)}>
           <Cover article={article} sizes={thumb.sizes} className="transition-transform duration-300 group-hover:scale-105" />
         </div>
         <div className="min-w-0">

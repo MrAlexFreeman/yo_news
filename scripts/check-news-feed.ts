@@ -243,6 +243,11 @@ function checkCompactPreview() {
     "group-hover на заголовке",
   );
   check(
+    "Превью: коробка не растягивается флексом — квадрат остаётся квадратом",
+    sm.includes("self-start") && lg.includes("self-start"),
+    "self-start на обеих коробках",
+  );
+  check(
     "Превью: увеличенный размер не утёк в ленту «Читайте сейчас»",
     !render("sm").includes("sm:w-28"),
     "у «Читайте сейчас» остался sm по умолчанию",
