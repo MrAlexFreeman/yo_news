@@ -17,6 +17,7 @@ import {
   ListOrdered,
   Quote,
   Table as TableIcon,
+  TextQuote,
   Underline as UnderlineIcon,
   Video,
 } from "lucide-react";
@@ -25,9 +26,15 @@ import { useEffect, useId, useRef, useState } from "react";
 import { editorExtensions } from "@/app/admin/articles/components/editor-extensions";
 import { editorBodyHtml } from "@/app/admin/articles/components/editor-output";
 import {
+  InsertImageDialog,
+} from "@/app/admin/articles/components/insert-image-dialog";
+import { insertFigureAtCaret } from "@/app/admin/articles/components/article-figure-node";
+import { insertQuoteSourceAtCaret } from "@/app/admin/articles/components/article-quote";
+import {
   LinkDialog,
   type LinkRequest,
 } from "@/app/admin/articles/components/link-dialog";
+import type { MediaItem } from "@/lib/article-media";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { cn } from "@/lib/utils";
 
@@ -35,9 +42,9 @@ import { cn } from "@/lib/utils";
  * One toolbar control.
  *
  * Most map straight onto an editor command and report their own pressed state.
- * The three that need more than a keystroke — link, video, image — name an
- * `opens` target instead, because a URL prompt and a searchable article picker do
- * not fit in a command.
+ * The ones that need more than a keystroke — link, video, image, source — name an
+ * `opens` target instead, because a URL prompt, a file picker and a searchable
+ * article picker do not fit in a command.
  */
 type ToolbarAction = {
   label: string;
@@ -46,7 +53,7 @@ type ToolbarAction = {
     isActive: (editor: Editor) => boolean;
     run: (editor: Editor) => void;
   };
-  opens?: "link" | "video" | "image";
+  opens?: "link" | "video" | "figure" | "quoteSource";
 };
 
 const ALIGNMENTS: { label: string; icon: typeof AlignLeft; value: string }[] = [
@@ -120,6 +127,14 @@ const GROUPS: ToolbarAction[][] = [
         run: (editor) => editor.chain().focus().toggleBlockquote().run(),
       },
     },
+    {
+      // Adds the attribution line inside the quotation the caret is in. Not a toggle:
+      // a citation either gets a source or it does not, and pressing again would add a
+      // second one rather than remove the first.
+      label: "Источник цитаты",
+      icon: TextQuote,
+      opens: "quoteSource",
+    },
   ],
   ALIGNMENTS.map(({ label, icon, value }) => ({
     label,
@@ -169,7 +184,7 @@ const GROUPS: ToolbarAction[][] = [
       opens: "link",
     },
     { label: "Видео", icon: Video, opens: "video" },
-    { label: "Изображение", icon: ImageIcon, opens: "image" },
+    { label: "Вставить фото в текст", icon: ImageIcon, opens: "figure" },
   ],
 ];
 
@@ -199,6 +214,10 @@ type ContentEditorProps = {
   value: string;
   onChange: (value: string) => void;
   error?: string;
+  /** Gallery of the article being edited, so a photo can be reused without re-uploading. */
+  media?: MediaItem[];
+  /** Cover of the article being edited, offered in the same list. */
+  coverImage?: string;
 };
 
 /**
@@ -217,10 +236,17 @@ type ContentEditorProps = {
  * alone. `scripts/check-editor-ui.ts` round-trips the real corpus through the real
  * extensions and fails if anything shrinks.
  */
-export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
+export function ContentEditor({
+  value,
+  onChange,
+  error,
+  media = [],
+  coverImage = "",
+}: ContentEditorProps) {
   const labelId = useId();
   const [toolbarError, setToolbarError] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
+  const [imageOpen, setImageOpen] = useState(false);
 
   // The last HTML this editor handed up. An incoming `value` that matches it is
   // our own change coming back from React, and re-applying it would reset the
@@ -363,17 +389,6 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
       .run();
   }
 
-  function insertImage(editorInstance: NonNullable<typeof editor>) {
-    const answer = window.prompt(
-      "Адрес изображения (например /uploads/файл.webp):",
-      "/uploads/",
-    );
-    if (!answer?.trim()) return;
-
-    setToolbarError(null);
-    editorInstance.chain().focus().setImage({ src: answer.trim() }).run();
-  }
-
   function applyAction(action: ToolbarAction) {
     if (!editor) return;
 
@@ -388,8 +403,20 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
       setLinkOpen(true);
     } else if (action.opens === "video") {
       insertVideo(editor);
-    } else if (action.opens === "image") {
-      insertImage(editor);
+    } else if (action.opens === "figure") {
+      setToolbarError(null);
+      setImageOpen(true);
+    } else if (action.opens === "quoteSource") {
+      // The only toolbar action that can be unavailable. Said out loud rather than
+      // shown disabled: a greyed-out button explains nothing, and the reason — the
+      // caret is not in a quotation — is one sentence.
+      if (insertQuoteSourceAtCaret(editor)) {
+        setToolbarError(null);
+      } else {
+        setToolbarError(
+          "Источник добавляется внутрь цитаты: сначала выделите абзац и нажмите «Цитата».",
+        );
+      }
     }
   }
 
@@ -471,7 +498,7 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
       <p className="text-xs text-neutral-400">
         Форматирование видно сразу, как на сайте. «Ссылка» (или Ctrl+K) открывает
         окно с поиском по опубликованным новостям, «Видео» спросит адрес ролика,
-        «Изображение» — адрес файла в /uploads.
+        «Вставить фото в текст» поставит картинку в то место, где стоит курсор.
       </p>
 
       {linkOpen ? (
@@ -479,6 +506,20 @@ export function ContentEditor({ value, onChange, error }: ContentEditorProps) {
           initialLabel={linkLabel(editor)}
           onApply={applyLink}
           onClose={() => setLinkOpen(false)}
+        />
+      ) : null}
+
+      {imageOpen && editor ? (
+        <InsertImageDialog
+          html={value}
+          media={media}
+          coverImage={coverImage}
+          onClose={() => setImageOpen(false)}
+          onInsert={({ src, alt, caption }) => {
+            insertFigureAtCaret(editor, src, alt, caption);
+            setImageOpen(false);
+            setToolbarError(null);
+          }}
         />
       ) : null}
 

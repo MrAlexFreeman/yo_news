@@ -17,6 +17,7 @@ import {
   LONG_READING_BODY_LIMIT,
   LONG_READING_THRESHOLD,
   MAX_MESSAGE_LIMIT,
+  MESSENGER_QUOTE_PREFIX,
   TELEGRAM_CAPTION_LIMIT,
   TELEGRAM_MESSAGE_LIMIT,
   buildMessengerPost,
@@ -525,6 +526,128 @@ check(
   "MAX: не разделён на два сообщения, в отличие от Telegram",
   planMaxPost({ text: paragraph(2500), url: "u" }).text.length === 2500,
   "одним сообщением до 4000",
+);
+
+// --- quotations and pictures in a post ----------------------------------------
+
+/*
+  A quotation has to be recognisable as one.
+
+  The body is escaped into plain text before it is sent, so the `<blockquote>` element
+  is gone by then, and Telegram and MAX do not accept the same set of tags — sending a
+  tag one of them rejects loses the whole message. A character prefix is understood by
+  both, survives being forwarded, and costs one glyph.
+*/
+const quotedText = htmlToPlainText(
+  "<blockquote><p>Это цитата.</p><p><cite>— Иван Петров</cite></p></blockquote>",
+);
+
+check(
+  "Цитата: текст открывается знаком цитаты",
+  quotedText.startsWith(MESSENGER_QUOTE_PREFIX.trim()),
+  JSON.stringify(quotedText),
+);
+
+check(
+  "Цитата: каждый абзац цитаты помечен",
+  htmlToPlainText("<blockquote><p>Первый.</p><p>Второй.</p></blockquote>")
+    .split("\n\n")
+    .every((line) => line.startsWith(MESSENGER_QUOTE_PREFIX.trim())),
+  JSON.stringify(htmlToPlainText("<blockquote><p>Первый.</p><p>Второй.</p></blockquote>")),
+);
+
+check(
+  "Цитата: источник не получает знак цитаты",
+  quotedText.includes("— Иван Петров") &&
+    !quotedText.includes(`${MESSENGER_QUOTE_PREFIX.trim()} — Иван Петров`),
+  JSON.stringify(quotedText),
+);
+
+check(
+  "Цитата: текст, не являющийся цитатой, знака не получает",
+  !htmlToPlainText("<p>Обычный абзац.</p>").includes(MESSENGER_QUOTE_PREFIX.trim()),
+  JSON.stringify(htmlToPlainText("<p>Обычный абзац.</p>")),
+);
+
+/*
+  A picture inside the body must not take the post down, and must not spend characters
+  on markup the messenger would reject. The caption stays because it is text the writer
+  wrote; the image itself has nowhere to go in a text message and is dropped softly.
+*/
+const withFigure = htmlToPlainText(
+  `<p>До фото.</p><figure class="article-figure"><img src="/uploads/a.webp" alt="Описание"><figcaption>Подпись к фото</figcaption></figure><p>После фото.</p>`,
+);
+
+check(
+  "Картинка в тексте: тег не попадает в текст сообщения",
+  !/<img|<figure|<figcaption/i.test(withFigure),
+  JSON.stringify(withFigure),
+);
+
+check(
+  "Картинка в тексте: подпись сохраняется",
+  withFigure.includes("Подпись к фото"),
+  JSON.stringify(withFigure),
+);
+
+check(
+  "Картинка в тексте: порядок текста не нарушен",
+  withFigure.indexOf("До фото") < withFigure.indexOf("Подпись к фото") &&
+    withFigure.indexOf("Подпись к фото") < withFigure.indexOf("После фото"),
+  JSON.stringify(withFigure),
+);
+
+check(
+  "Картинка в тексте: alt-текст не подставляется вместо отсутствующей подписи",
+  !htmlToPlainText(
+    `<p>Текст.</p><figure class="article-figure"><img src="/uploads/a.webp" alt="Служебное описание"></figure>`,
+  ).includes("Служебное описание"),
+  JSON.stringify(
+    htmlToPlainText(
+      `<p>Текст.</p><figure class="article-figure"><img src="/uploads/a.webp" alt="Служебное описание"></figure>`,
+    ),
+  ),
+);
+
+check(
+  "Картинка в абзаце не разрывает предложение пробелом-артефактом",
+  htmlToPlainText(`<p>до <img src="/uploads/a.webp" alt="a"> после</p>`) === "до после",
+  JSON.stringify(htmlToPlainText(`<p>до <img src="/uploads/a.webp" alt="a"> после</p>`)),
+);
+
+/*
+  The whole post, with both, and the length boundary still respected: a quotation adds
+  a character per paragraph, and the cut has to keep landing under the ceiling.
+*/
+const postWithQuoteAndFigure = buildMessengerPost({
+  title: "Заголовок",
+  contentHtml: `<p>Первый абзац.</p><figure class="article-figure"><img src="/uploads/a.webp" alt="x"><figcaption>Подпись</figcaption></figure><blockquote><p>Цитата.</p><p><cite>— Источник</cite></p></blockquote><p>Последний абзац.</p>`,
+  slug: "s",
+  categoryName: "Общество",
+  siteUrl: SITE,
+});
+
+check(
+  "Пост: цитата и подпись доходят до текста сообщения",
+  postWithQuoteAndFigure.text.includes(MESSENGER_QUOTE_PREFIX.trim()) &&
+    postWithQuoteAndFigure.text.includes("Подпись") &&
+    postWithQuoteAndFigure.text.includes("— Источник"),
+  postWithQuoteAndFigure.text.slice(0, 220),
+);
+
+check(
+  "Пост: разметка редактора не просачивается в сообщение",
+  !/<figure|<img|<figcaption|<blockquote|<cite/i.test(postWithQuoteAndFigure.text),
+  "только <b> у заголовка",
+);
+
+check(
+  "Пост: обрезка длинного текста с цитатой остаётся под лимитом",
+  planMaxPost({
+    text: postWithQuoteAndFigure.text.repeat(20),
+    url: `${SITE}/news/s`,
+  }).text.length < MAX_MESSAGE_LIMIT,
+  `${planMaxPost({ text: postWithQuoteAndFigure.text.repeat(20), url: "u" }).text.length} < ${MAX_MESSAGE_LIMIT}`,
 );
 
 // --- settings validation ------------------------------------------------------

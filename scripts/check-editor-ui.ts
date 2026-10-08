@@ -22,6 +22,12 @@ import { ArticleGallery } from "../src/components/article-gallery";
 import { SubscribeBlock } from "../src/components/subscribe-block";
 import { ArticleVideo } from "../src/components/article-video";
 import {
+  insertFigureAtCaret,
+} from "../src/app/admin/articles/components/article-figure-node";
+import {
+  insertQuoteSourceAtCaret,
+} from "../src/app/admin/articles/components/article-quote";
+import {
   MetrikaNoScript,
   isValidMetrikaId,
   metrikaSnippet,
@@ -923,6 +929,7 @@ const TOOLBAR_LABELS = [
   "Заголовок H2",
   "Заголовок H3",
   "Цитата",
+  "Источник цитаты",
   "Выравнивание по левому краю",
   "Выравнивание по центру",
   "Выравнивание по правому краю",
@@ -932,7 +939,7 @@ const TOOLBAR_LABELS = [
   "Таблица",
   "Ссылка (Ctrl+K)",
   "Видео",
-  "Изображение",
+  "Вставить фото в текст",
 ];
 for (const label of TOOLBAR_LABELS) {
   check(
@@ -1111,6 +1118,55 @@ const ROUND_TRIPS: RoundTrip[] = [
       /<iframe[^>]*src="https:\/\/vk\.com\/video_ext\.php\?oid=-123&amp;id=456&amp;no_next=1&amp;autoplay=0"/,
     ],
   },
+  {
+    name: "фото с подписью",
+    html: `<figure class="article-figure"><img src="/uploads/foto.webp" alt="Фото"><figcaption class="article-figure__caption">Подпись к фото</figcaption></figure>`,
+    // The class is what the stylesheet hangs the spacing and the rounding on, so losing
+    // it would leave a picture with no margin and a caption indistinguishable from the
+    // body text.
+    mustKeep: [
+      /<figure class="article-figure">/,
+      /<img[^>]*src="\/uploads\/foto\.webp"/,
+      /<figcaption class="article-figure__caption">Подпись к фото<\/figcaption>/,
+    ],
+    mustRender: [
+      /<figure class="article-figure">/,
+      /<img[^>]*src="\/uploads\/foto\.webp"/,
+      /<figcaption class="article-figure__caption">Подпись к фото<\/figcaption>/,
+    ],
+  },
+  {
+    name: "фото без подписи",
+    // The shape the dialog produces when the caption field is left empty. The empty
+    // `figcaption` has to survive: it is the only place to click to write one later.
+    html: `<figure class="article-figure"><img src="/uploads/foto.webp" alt="Фото"><figcaption class="article-figure__caption"></figcaption></figure>`,
+    mustKeep: [
+      /<figure class="article-figure">/,
+      /<figcaption class="article-figure__caption">/,
+    ],
+    mustRender: [/<img[^>]*src="\/uploads\/foto\.webp"/],
+  },
+  {
+    name: "цитата с источником",
+    html: `<blockquote><p>Это цитата.</p><p><cite class="article-quote__source">— Иван Петров</cite></p></blockquote>`,
+    // `<cite>` is the part that used to be lost: the blockquote's content model is
+    // blocks, so the source was rewritten to `<p>— Иван Петров</p>` on the first save.
+    mustKeep: [
+      /<blockquote>/,
+      /<p>Это цитата\.<\/p>/,
+      /<cite class="article-quote__source">— Иван Петров<\/cite>/,
+    ],
+    mustRender: [
+      /<blockquote>/,
+      /<cite class="article-quote__source">— Иван Петров<\/cite>/,
+    ],
+  },
+  {
+    name: "цитата без источника",
+    html: `<blockquote><p>Просто цитата без подписи.</p></blockquote>`,
+    mustKeep: [/<blockquote><p>Просто цитата без подписи\.<\/p><\/blockquote>/],
+    mustRender: [/<blockquote>/],
+  },
 ];
 
 /**
@@ -1203,9 +1259,198 @@ async function runRoundTrips() {
   );
   blank.destroy();
 
+  checkFigureInsertion(make);
+  checkQuoteMarkup(make);
   runCommands(make);
   await runMountedEditor();
   report();
+}
+
+/**
+ * Inserting a photo at the caret.
+ *
+ * The two failures this guards are both invisible in a screenshot and obvious to a
+ * writer: the caret ending up *inside* the caption, so the next sentence becomes part
+ * of the caption, and a stray empty paragraph left between the picture and the text
+ * that followed it, which publishes as a blank line. Both were measured against a real
+ * editor before the insertion helper was written, and both are what the obvious
+ * one-liner produces.
+ */
+/** The editor type, resolved from the package rather than imported at module load. */
+type TipTapEditor = import("@tiptap/core").Editor;
+
+function checkFigureInsertion(make: (content: string) => TipTapEditor) {
+  const cases: { label: string; html: string; caret: number }[] = [
+    { label: "в конец абзаца", html: "<p>Абзац.</p>", caret: 7 },
+    { label: "между абзацами", html: "<p>Первый.</p><p>Второй.</p>", caret: 8 },
+    { label: "в середину абзаца", html: "<p>Целиком абзац.</p>", caret: 8 },
+    { label: "в пустой документ", html: "<p></p>", caret: 1 },
+  ];
+
+  for (const testCase of cases) {
+    const editor = make(testCase.html);
+    editor.commands.setTextSelection(testCase.caret);
+
+    insertFigureAtCaret(editor, "/uploads/check.webp", "Фото", "Подпись");
+
+    const inserted = editorBodyHtml(editor);
+    const caretParent = editor.state.selection.$from.parent.type.name;
+
+    check(
+      `Вставка фото (${testCase.label}): картинка с подписью на месте`,
+      /<figure class="article-figure">/.test(inserted) &&
+        /<img[^>]*src="\/uploads\/check\.webp"[^>]*alt="Фото"/.test(inserted) &&
+        /<figcaption class="article-figure__caption">Подпись<\/figcaption>/.test(inserted),
+      inserted,
+    );
+
+    check(
+      `Вставка фото (${testCase.label}): курсор встаёт под картинкой, а не в подписи`,
+      caretParent === "paragraph",
+      `курсор в <${caretParent}>`,
+    );
+
+    // Type, and check the character landed below the picture rather than in the caption.
+    editor.chain().focus().insertContent("ДАЛЬШЕ").run();
+    const typed = editorBodyHtml(editor);
+
+    check(
+      `Вставка фото (${testCase.label}): набранный текст уходит под фото`,
+      typed.indexOf("ДАЛЬШЕ") > typed.indexOf("</figure>") &&
+        !/ПодписьДАЛЬШЕ/.test(typed),
+      typed,
+    );
+
+    check(
+      `Вставка фото (${testCase.label}): нет висячего пустого абзаца`,
+      !/<\/figure><p><\/p>/.test(typed),
+      /<\/figure><p><\/p>/.test(typed) ? "есть <p></p> сразу под фигурой" : "чисто",
+    );
+
+    editor.destroy();
+  }
+
+  // The empty-caption case, which is what the dialog produces when the field is left
+  // blank: the caption element must still be there to click into.
+  const noCaption = make("<p>Текст.</p>");
+  noCaption.commands.setTextSelection(6);
+  insertFigureAtCaret(noCaption, "/uploads/check.webp", "Фото", "   ");
+  const withoutCaption = editorBodyHtml(noCaption);
+  check(
+    "Вставка фото: пустая подпись оставляет место, куда её вписать",
+    /<figcaption class="article-figure__caption"><\/figcaption>/.test(withoutCaption) &&
+      !/Подпись/.test(withoutCaption),
+    withoutCaption,
+  );
+  noCaption.destroy();
+
+  // A picture inserted into an existing quotation must not escape it. Nothing in the
+  // code prevents this and the schema decides, so the outcome is recorded rather than
+  // assumed.
+  const insideQuote = make("<blockquote><p>Цитата</p></blockquote>");
+  insideQuote.commands.setTextSelection(4);
+  insertFigureAtCaret(insideQuote, "/uploads/check.webp", "Фото", "Подпись");
+  const quoted = editorBodyHtml(insideQuote);
+  check(
+    "Вставка фото: картинка внутри цитаты остаётся внутри цитаты",
+    /<blockquote>[\s\S]*<figure class="article-figure">[\s\S]*<\/blockquote>/.test(quoted),
+    quoted,
+  );
+  insideQuote.destroy();
+}
+
+/**
+ * The quotation markup, and the attribution that used to be lost.
+ *
+ * The toolbar's own «Цитата» command is exercised in `runCommands`; what is checked
+ * here is the part that cannot be seen from the button — that a `<cite>` inside a
+ * blockquote survives the schema, and that the source line is only offered inside a
+ * quotation.
+ */
+function checkQuoteMarkup(make: (content: string) => TipTapEditor) {
+  const source =
+    '<blockquote><p>Цитата.</p><p><cite class="article-quote__source">— Источник</cite></p></blockquote>';
+  const sanitized = sanitizeArticleHtml(source);
+
+  check(
+    "Цитата: источник доходит до витрины как <cite>",
+    /<cite[^>]*>— Источник<\/cite>/.test(sanitized),
+    sanitized,
+  );
+
+  check(
+    "Цитата: класс источника переживает санитайзер",
+    /<cite class="article-quote__source">/.test(sanitized),
+    sanitized.slice(0, 170),
+  );
+
+  // The classes the caption and the figure carry are what the stylesheet selects on.
+  // Asserted on the sanitiser output because a class stripped here would leave the
+  // element unstyled on the live page with nothing else to notice it.
+  const figure =
+    '<figure class="article-figure"><img src="/uploads/a.webp" alt="Фото"><figcaption class="article-figure__caption">Подпись</figcaption></figure>';
+  const renderedFigure = sanitizeArticleHtml(figure);
+  check(
+    "Фото: классы фигуры и подписи переживают санитайзер",
+    /<figure class="article-figure">/.test(renderedFigure) &&
+      /<figcaption class="article-figure__caption">/.test(renderedFigure),
+    renderedFigure.slice(0, 170),
+  );
+  check(
+    "Фото: data-URI в src по-прежнему вырезается",
+    !/src="data:image/i.test(
+      sanitizeArticleHtml(
+        '<figure class="article-figure"><img src="data:image/png;base64,AAAA" alt="x"></figure>',
+      ),
+    ),
+    "защита не ослаблена вместе с расширением списка",
+  );
+
+  /*
+    «Источник цитаты»: what the button does, and the one case where it refuses.
+
+    The refusal matters as much as the insertion — the action puts a paragraph inside a
+    blockquote, and running it with the caret in an ordinary paragraph would split the
+    sentence and leave a stray attributed line in the middle of the article.
+  */
+  const insideQuote = make("<blockquote><p>Цитата.</p></blockquote>");
+  insideQuote.commands.setTextSelection(5);
+  const added = insertQuoteSourceAtCaret(insideQuote);
+  const withSource = editorBodyHtml(insideQuote);
+
+  check(
+    "Цитата: «Источник цитаты» добавляет строку внутрь цитаты",
+    added &&
+      /<blockquote>[\s\S]*<p><cite class="article-quote__source">— <\/cite><\/p>[\s\S]*<\/blockquote>/.test(
+        withSource,
+      ),
+    withSource,
+  );
+
+  check(
+    "Цитата: источник вставляется с тире и готов к набору",
+    withSource.includes("— ") && insideQuote.state.selection.$from.parent.type.name === "paragraph",
+    withSource,
+  );
+
+  // Type the attribution and check the mark carries it.
+  insideQuote.chain().focus().insertContent("Пётр Иванов").run();
+  check(
+    "Цитата: набранный источник остаётся внутри <cite>",
+    /<cite class="article-quote__source">— Пётр Иванов<\/cite>/.test(editorBodyHtml(insideQuote)),
+    editorBodyHtml(insideQuote),
+  );
+  insideQuote.destroy();
+
+  const outsideQuote = make("<p>Обычный абзац.</p>");
+  outsideQuote.commands.setTextSelection(5);
+  const refused = insertQuoteSourceAtCaret(outsideQuote);
+  check(
+    "Цитата: вне цитаты источник не вставляется",
+    refused === false && editorBodyHtml(outsideQuote) === "<p>Обычный абзац.</p>",
+    editorBodyHtml(outsideQuote),
+  );
+  outsideQuote.destroy();
 }
 
 /**

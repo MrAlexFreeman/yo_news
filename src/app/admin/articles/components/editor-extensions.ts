@@ -7,6 +7,11 @@ import Underline from "@tiptap/extension-underline";
 import StarterKit from "@tiptap/starter-kit";
 
 import { VideoEmbed } from "@/app/admin/articles/components/video-embed-node";
+import {
+  ArticleFigure,
+  ArticleFigcaption,
+} from "@/app/admin/articles/components/article-figure-node";
+import { Cite } from "@/app/admin/articles/components/article-quote";
 
 /**
  * How a link looks in the editor.
@@ -85,6 +90,13 @@ export function editorExtensions() {
     // inline: false keeps an image a block of its own; allowBase64: false because
     // the body is stored HTML and a data URI would bloat the article row.
     Image.configure({ inline: false, allowBase64: false }),
+    // The picture-with-caption block, and its caption. Registered after Image so the
+    // image node exists when the figure's content expression is resolved.
+    ArticleFigcaption,
+    ArticleFigure,
+    // The attribution mark, so `<cite>` survives a round trip instead of being
+    // flattened into a paragraph.
+    Cite,
     TextAlign.configure({
       types: ["heading", "paragraph", "image"],
       alignments: ["left", "center", "right", "justify"],

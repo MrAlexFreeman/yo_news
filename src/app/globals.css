@@ -168,6 +168,24 @@ body {
   min-height: 1.5em;
 }
 
+/* The empty caption, on the editing surface only.
+   An empty `figcaption` is not `:empty`: ProseMirror puts a
+   `<br class="ProseMirror-trailingBreak">` inside every empty text block, which is how
+   it keeps the caret somewhere. Measured, because the obvious `:empty` selector matches
+   nothing and the hint would simply never appear. The pseudo-element disappears the
+   moment there is real text, so it cannot be selected, copied or saved. */
+.tiptap .article-figure figcaption:has(> br.ProseMirror-trailingBreak)::before {
+  content: "Подпись к фото (необязательно)";
+  color: var(--color-ink-soft);
+  opacity: 0.55;
+}
+
+/* A click target for that hint: without a height the caption is a line of zero size and
+   there is nothing to aim at. */
+.tiptap .article-figure figcaption {
+  min-height: 1.5em;
+}
+
 /* A reader's message. Not `.prose` and not `.article-body` on purpose: this is the
    one place on the site where the words came from a stranger, so it gets its own
    small vocabulary — seven text tags and no attributes. Quotes are set in the
@@ -189,15 +207,22 @@ body {
   margin-bottom: 0.35em;
 }
 
-/* Quotes. `border-yo` rather than a raw Tailwind amber: `--color-yo` is this
+/* Quotes. `--color-yo` rather than a raw Tailwind amber: `--color-yo` is this
    publication's orange, and a palette literal here would be the one rule on the page
-   not driven by the theme — it would not follow a brand change. The wash is the same
+   not driven by the theme - it would not follow a brand change. The wash is the same
    orange at 5%, which is what a soft tint looks like on paper.
    Italic replaces the roman face this rule used to force: a quoted passage is someone
-   else's words, and italic is how the body says so. */
+   else's words, and italic is how the body says so.
+
+   The leading is set here rather than inherited. A quotation is set off from the flow
+   in every other way - a rule, a wash, a different face - and running it at the same
+   line spacing as the surrounding paragraphs made the block read as if it had simply
+   been tinted. 1.9 against the body's 1.75 is enough to be felt and not enough to
+   look like a different article. */
 .article-body blockquote {
   font-family: var(--font-lora), Georgia, serif;
   font-style: italic;
+  line-height: 1.9;
   border-left: 4px solid var(--color-yo);
   background-color: color-mix(in srgb, var(--color-yo) 5%, transparent);
   border-radius: 0 4px 4px 0;
@@ -206,13 +231,73 @@ body {
   color: var(--color-ink-soft);
 }
 
+.article-body blockquote p {
+  line-height: inherit;
+}
+
 .article-body blockquote p:last-child {
   margin-bottom: 0;
 }
 
+/* The opening quotation mark, drawn rather than typed.
+   A `::before` cannot be selected or copied, so it never ends up duplicated into the
+   stored HTML the way a typed « would when an editor pastes the paragraph elsewhere.
+   The glyph is the Russian low-9 form, which is the one that opens a quotation in this
+   language.
+
+   Two escapes rather than `"\201E "`, and that is not a style choice: a space after a
+   hex escape is consumed as the escape's terminator, so `"\201E "` renders as a bare
+   quote with nothing after it. Measured on the built stylesheet. `\00a0` is a
+   no-break space, which keeps the mark attached to the first word as a bonus. */
+.article-body blockquote > p:first-child::before {
+  content: "\201E\00a0";
+  color: var(--color-yo);
+  font-weight: 700;
+}
+
+/* The attribution. `<cite>` is phrasing content, so it lives inside a paragraph and
+   gets its own line from a block display rather than from a block element - which is
+   what the task's markup reached for, and which the schema cannot hold. */
+.article-body .article-quote__source {
+  display: block;
+  margin-top: 0.5rem;
+  font-family: var(--font-inter), sans-serif;
+  font-style: normal;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-ink-soft);
+}
+
+/* A picture inside the body, with its caption.
+   The spacing lives here rather than in utility classes on the element: Tailwind emits
+   the classes it finds in *source files*, so a class that exists only in a database row
+   was never generated and does nothing. Everything an article body needs is styled
+   through `.article-body` for that reason, and this is part of it. */
+.article-body figure.article-figure {
+  margin: 1.5rem 0;
+}
+
+.article-body figure.article-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
+}
+
+/* Selected by the class the markup carries, with the plain element selector beside it
+   as a fallback for a figure that predates the class. Stating the class means the
+   attribute in the database is load-bearing rather than decorative: an edit that
+   dropped it would change the rendering, which is what makes it worth asserting on. */
+.article-body .article-figure__caption,
 .article-body figure figcaption {
   font-family: var(--font-inter), sans-serif;
   font-size: 0.8125rem;
+  font-style: italic;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--color-ink-soft);
+  margin-top: 0.5rem;
 }
 
 /* Video embeds. The iframe needs an aspect ratio so the player reserves its

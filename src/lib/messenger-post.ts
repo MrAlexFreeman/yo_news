@@ -54,7 +54,39 @@ const READING_NOTICE = "📖 Полный текст расследования 
  * `<li>` itself introduces, and listing `</li>` here as well would put a blank line
  * between consecutive items — which reads as two one-item lists.
  */
-const BLOCK_END = /<\/(?:p|div|section|article|h[1-6]|blockquote|ul|ol|tr|figure|figcaption|pre)\s*>/gi;
+const BLOCK_END =
+  /<\/(?:p|div|section|article|h[1-6]|blockquote|ul|ol|tr|figure|figcaption|pre)\s*>/gi;
+
+/** A whole quotation, captured so its shape can be preserved instead of flattened. */
+const BLOCKQUOTE = /<blockquote\b[^>]*>([\s\S]*?)<\/blockquote\s*>/gi;
+
+/**
+ * A paragraph that holds nothing but the attribution of a quotation.
+ *
+ * Tolerant of the wrapping `<p>` because the split in `quoteAsText` leaves each block
+ * starting at its opening tag: the attribution arrives as `<p><cite>— Иван Петров</cite>`,
+ * not as a bare `<cite>`.
+ */
+const ATTRIBUTION_ONLY =
+  /^\s*(?:<p\b[^>]*>)?\s*<cite\b[^>]*>[\s\S]*?<\/cite\s*>\s*(?:<\/p\s*>)?\s*$/i;
+
+/** A figure, whose caption survives but whose image does not. */
+const FIGURE_OPEN = /<figure\b[^>]*>/gi;
+
+/**
+ * Opens every quoted paragraph.
+ *
+ * Telegram's `parse_mode: HTML` and MAX's `format: "html"` accept a small, and
+ * *different*, vocabulary of tags — Telegram understands `<blockquote>`, MAX does not
+ * document it — and the same post string is sent to both, so emitting a tag one of them
+ * rejects would lose the whole message rather than the quotation. A character prefix is
+ * understood everywhere and survives being forwarded, quoted in a reply, or copied out
+ * of the app, none of which a tag would.
+ *
+ * The glyph is a low-9 double quote, which is what opens a quotation in Russian, and it
+ * is followed by a space so the text does not touch it.
+ */
+export const MESSENGER_QUOTE_PREFIX = "„ ";
 
 /** Tags that mean a hard line break rather than a paragraph break. */
 const LINE_BREAK = /<br\s*\/?>/gi;
@@ -123,6 +155,34 @@ function safeFromCodePoint(code: number): string {
 }
 
 /**
+ * A quotation as text: every quoted paragraph opened with a marker, the attribution
+ * left alone.
+ *
+ * The attribution is recognised by being a paragraph that holds nothing but a `<cite>`.
+ * It must not get the quotation marker — "„ — Иван Петров" would read as though the
+ * speaker had said the dash and their own name. The dash itself is already part of the
+ * inserted text, so nothing is added here.
+ */
+function quoteAsText(inner: string): string {
+  const blocks = inner
+    .split(/<\/p\s*>|<br\s*\/?>/i)
+    .map((block) => block.trim())
+    .filter((block) => block.length > 0);
+
+  const lines = blocks.map((block) => {
+    const text = htmlToPlainText(block);
+    if (!text) return "";
+    // A block that is only an attribution keeps its own line and no marker.
+    return ATTRIBUTION_ONLY.test(block) ? text : `${MESSENGER_QUOTE_PREFIX}${text}`;
+  });
+
+  const quoted = lines.filter(Boolean).join("\n\n");
+  // Blank lines on both sides so the quotation stands apart from the article's own
+  // paragraphs, the same way the rule and the wash do on the page.
+  return `\n\n${quoted}\n\n`;
+}
+
+/**
  * Editor HTML to plain text, with paragraphs and line breaks kept.
  *
  * `plainTextPreview` in `article-html.ts` collapses every run of whitespace, which is
@@ -132,8 +192,14 @@ function safeFromCodePoint(code: number): string {
 export function htmlToPlainText(html: string): string {
   if (!html || !html.trim()) return "";
 
-  let text = html.replace(DROPPED_CONTENT, " ");
+  // Quotations are lifted out first, because the block stripping below is exactly what
+  // destroys them: a `<blockquote>` becomes an ordinary paragraph break and the reader
+  // of a Telegram post has no way to tell a quotation from the article's own words.
+  const withQuotes = html.replace(BLOCKQUOTE, (_, inner: string) => quoteAsText(inner));
+
+  let text = withQuotes.replace(DROPPED_CONTENT, " ");
   text = text.replace(LIST_ITEM, "\n• ");
+  text = text.replace(FIGURE_OPEN, "\n\n");
   text = text.replace(BLOCK_END, "\n\n");
   text = text.replace(STANDALONE_BREAK, "\n\n");
   text = text.replace(LINE_BREAK, "\n");

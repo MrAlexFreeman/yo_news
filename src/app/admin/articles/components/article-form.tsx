@@ -824,6 +824,8 @@ export function ArticleForm({
                     setContentHtml(value);
                   }}
                   error={errors.contentHtml}
+                  media={media}
+                  coverImage={coverImage}
                 />
 
                 <ArticlePreview
