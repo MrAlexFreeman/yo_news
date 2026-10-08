@@ -29,6 +29,7 @@ import {
   planMaxPost,
   planTelegramPost,
   readingNotice,
+  shortPhotoCaption,
   toHashtag,
 } from "../src/lib/messenger-post";
 import {
@@ -366,29 +367,45 @@ check(
 );
 
 /*
-  The split shape is the one the task specifies and the only one Telegram allows: the
-  cover goes out on its own, because `sendPhoto` refuses a caption over 1024, and the
-  text follows as a separate message.
+  The split shape: the cover carries a short caption — headline and link — because the
+  whole post does not fit under 1024, and the text follows as its own message. Both
+  halves are asserted, because "a picture with nothing on it" was the reported fault.
 */
-const mediumPlan = planTelegramPost(
-  { text: paragraph(2500), url: `${SITE}/news/srednyaya` },
-  { hasCover: true },
-);
+const mediumPost = buildMessengerPost({
+  title: "Средняя новость",
+  contentHtml: `<p>${paragraph(2500)}</p>`,
+  slug: "srednyaya",
+  categoryName: "Общество",
+  siteUrl: SITE,
+});
+const mediumPlan = planTelegramPost(mediumPost, { hasCover: true });
 
 check(
-  "Telegram: 1025..4000 — обложка отдельным шагом, текст вторым",
+  "Telegram: 1025..4000 — обложка с краткой подписью",
   mediumPlan.mode === "split" &&
     mediumPlan.steps.length === 2 &&
     mediumPlan.steps[0]?.kind === "photo" &&
-    mediumPlan.steps[0]?.caption === null &&
-    mediumPlan.steps[1]?.kind === "text",
-  `${mediumPlan.mode}, шагов: ${mediumPlan.steps.length}`,
+    typeof mediumPlan.steps[0].caption === "string" &&
+    mediumPlan.steps[0].caption.includes("<b>Средняя новость</b>") &&
+    mediumPlan.steps[0].caption.includes(`${SITE}/news/srednyaya`),
+  mediumPlan.steps[0]?.kind === "photo"
+    ? JSON.stringify(mediumPlan.steps[0].caption)
+    : "нет шага с фото",
 );
 
 check(
-  "Telegram: текст в разделённом виде не обрезан",
+  "Telegram: краткая подпись помещается в лимит подписи",
+  mediumPlan.steps[0]?.kind === "photo" &&
+    (mediumPlan.steps[0].caption?.length ?? Infinity) <= TELEGRAM_CAPTION_LIMIT,
+  `${
+    mediumPlan.steps[0]?.kind === "photo" ? mediumPlan.steps[0].caption?.length : "?"
+  } <= ${TELEGRAM_CAPTION_LIMIT}`,
+);
+
+check(
+  "Telegram: после обложки идёт полный текст, а не подпись",
   mediumPlan.steps[1]?.kind === "text" &&
-    mediumPlan.steps[1].text.length === 2500 &&
+    mediumPlan.steps[1].text === mediumPost.text &&
     !mediumPlan.truncated,
   `${mediumPlan.steps[1]?.kind === "text" ? mediumPlan.steps[1].text.length : "?"} символов`,
 );
@@ -398,6 +415,16 @@ check(
   (mediumPlan.steps[1]?.kind === "text" ? mediumPlan.steps[1].text.length : Infinity) <=
     TELEGRAM_MESSAGE_LIMIT,
   `<= ${TELEGRAM_MESSAGE_LIMIT}`,
+);
+
+const handmadePlan = planTelegramPost(
+  { text: paragraph(2500), url: `${SITE}/news/s` },
+  { hasCover: true },
+);
+check(
+  "Telegram: без исходной строки подпись не выдумывается",
+  handmadePlan.steps[0]?.kind === "photo" && handmadePlan.steps[0].caption === null,
+  "пост, собранный вручную, остаётся без подписи, а не с мусором",
 );
 
 check(
@@ -833,6 +860,13 @@ try {
       calls[0]?.method === "sendPhoto" &&
       calls[1]?.method === "sendMessage",
     `${calls.length} запрос(ов): ${calls.map((call) => call.method).join(", ")}`,
+  );
+
+  check(
+    "Мок: у фото длинного поста есть краткая подпись, а не пусто",
+    (calls[0]?.form?.get("caption") as string | null) ===
+      shortPhotoCaption(expectedPost(longArticle)),
+    JSON.stringify(calls[0]?.form?.get("caption") ?? null).slice(0, 120),
   );
 
   check(

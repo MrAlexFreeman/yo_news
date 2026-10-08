@@ -436,7 +436,7 @@ export function cutForReading(post: MessengerPost): string {
 }
 
 export type TelegramStep =
-  /** `sendPhoto`. `caption` is null when the text goes in a following message. */
+  /** `sendPhoto`. `caption` is the short caption, or null when there is nothing to put there. */
   | { kind: "photo"; caption: string | null }
   | { kind: "text"; text: string };
 
@@ -455,20 +455,46 @@ export type PlanOptions = {
 };
 
 /**
+ * The short caption a cover carries when the whole post does not fit under it: the bold
+ * headline and the source link, and nothing else.
+ *
+ * The brief names this as the first of the two allowed shapes for a long post, and it is
+ * the one that keeps the picture from being bare — the fault an editor actually reported.
+ * The full text still follows as its own message or messages; the caption is there so the
+ * photo stands on its own if that second send is ever the thing that fails.
+ *
+ * The headline is `text`'s first block because that is how `buildMessengerPost` assembles
+ * it. The source line is found by its prefix rather than taken as the last block, so a
+ * post with no body still works. Returns null when either is missing — a hand-built
+ * `MessengerPost`, as some tests use — or when the result would itself exceed the caption
+ * ceiling, in which case the cover goes out uncaptioned rather than rejected.
+ */
+export function shortPhotoCaption(post: MessengerPost): string | null {
+  const blocks = post.text.split("\n\n");
+  const headline = blocks[0] ?? "";
+  const source = blocks.find((block) => block.startsWith(`${SOURCE_PREFIX}:`)) ?? "";
+  if (!headline || !source) return null;
+
+  const caption = `${headline}\n\n${source.split("\n")[0]}`;
+  return caption.length <= TELEGRAM_CAPTION_LIMIT ? caption : null;
+}
+
+/**
  * Decides how a post reaches Telegram.
  *
  * Four shapes, from Telegram's own limits:
  *
  *  - up to `TELEGRAM_CAPTION_LIMIT`: one `sendPhoto` with the text as the caption.
  *    A single message is what a reader wants and what the channel's preview shows.
- *  - above that, up to `LONG_READING_THRESHOLD`: the cover on its own, then the
- *    text as a separate `sendMessage`. Telegram rejects a photo whose caption
- *    exceeds 1024 characters, so the split is the only way to keep the cover.
+ *  - above that, up to `LONG_READING_THRESHOLD`: the cover with the short caption
+ *    (headline and link), then the text as a separate `sendMessage`. Telegram rejects a
+ *    photo whose caption exceeds 1024 characters, so the whole text cannot go under it.
  *  - above that, while the text still fits in `TELEGRAM_MAX_MESSAGES` chunks of
- *    `TELEGRAM_MESSAGE_LIMIT`: the cover, then the whole text as those chunks, split
- *    on paragraph boundaries. This is what "the full text" means for a long story.
- *  - past that: the cover, then the cut teaser pointing at the site, because a post
- *    that has become five messages is no longer a post.
+ *    `TELEGRAM_MESSAGE_LIMIT`: the same cover and short caption, then the whole text as
+ *    those chunks, split on paragraph boundaries. This is what "the full text" means for
+ *    a long story.
+ *  - past that: the cover and short caption, then the cut teaser pointing at the site,
+ *    because a post that has become five messages is no longer a post.
  *
  * Without a cover there is no `sendPhoto` to carry a caption, so a short post still
  * goes out as a plain message rather than as an empty photo.
@@ -491,7 +517,7 @@ export function planTelegramPost(
   }
 
   const steps: TelegramStep[] = [];
-  if (hasCover) steps.push({ kind: "photo", caption: null });
+  if (hasCover) steps.push({ kind: "photo", caption: shortPhotoCaption(post) });
 
   if (length <= LONG_READING_THRESHOLD) {
     steps.push({ kind: "text", text: post.text });
