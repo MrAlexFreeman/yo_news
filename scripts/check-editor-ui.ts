@@ -1275,10 +1275,113 @@ async function runRoundTrips() {
   checkFigureInsertion(make);
   checkQuoteMarkup(make);
   checkArticleMedia();
+  checkPreviewFidelity();
   runCommands(make);
   await runMountedEditor();
   await checkSidebarInsertion();
   report();
+}
+
+/**
+ * The preview panel against the public page.
+ *
+ * Measured in a browser, side by side, on the same body: every computed value that
+ * decides how a figure and a quotation look — margin, radius, display, caption
+ * alignment and slant, the quote's border, slant and leading, the opening mark and the
+ * attribution's own line — is identical between the preview and the live article. The
+ * reason is structural rather than a coincidence of matching numbers, and that is what
+ * is asserted here: both put the body inside the same `.article-body` container, and
+ * every rule that styles those elements is scoped under it.
+ *
+ * Asserting the structure rather than the numbers means this keeps holding when the
+ * stylesheet changes, which a table of pixel values would not.
+ */
+function checkPreviewFidelity() {
+  const body = [
+    '<figure class="article-figure"><img src="/uploads/a.webp" alt="Фото"><figcaption class="article-figure__caption">Подпись</figcaption></figure>',
+    '<blockquote><p>Цитата.</p><p><cite class="article-quote__source">— Источник</cite></p></blockquote>',
+  ].join("");
+
+  const previewHtml = renderToStaticMarkup(
+    createElement(ArticlePreview as never, { html: body, open: true, onToggle: () => {} }),
+  );
+
+  check(
+    "Предпросмотр: тело обёрнуто в тот же .article-body, что на сайте",
+    /class="article-body[^"]*prose/.test(previewHtml),
+    (previewHtml.match(/class="article-body[^"]*"/) ?? ["нет"])[0],
+  );
+
+  check(
+    "Предпросмотр: фигура и цитата доходят до разметки предпросмотра",
+    previewHtml.includes('class="article-figure"') &&
+      previewHtml.includes('class="article-figure__caption"') &&
+      previewHtml.includes('class="article-quote__source"'),
+    previewHtml.slice(0, 200),
+  );
+
+  check(
+    "Предпросмотр: идёт через тот же санитайзер, что и страница",
+    // The hook strips a `javascript:` href; the preview has to do it too, because the
+    // preview is the last place an editor looks before publishing.
+    !renderToStaticMarkup(
+      createElement(ArticlePreview as never, {
+        html: '<p><a href="javascript:alert(1)">клик</a></p>',
+        open: true,
+        onToggle: () => {},
+      }),
+    ).includes("javascript:"),
+    "опасная ссылка не проходит",
+  );
+
+  checkPreviewCssScoping();
+}
+
+/**
+ * Every rule that styles a figure, a caption or a quotation is scoped under
+ * `.article-body` — the one class the preview and the article page share.
+ */
+function checkPreviewCssScoping() {
+  const css = readFileSync(
+    fileURLToPath(new URL("../src/app/globals.css", import.meta.url)),
+    "utf8",
+  );
+
+  // Split into `selector { … }` pairs and look at the selector side. Simple, and enough
+  // for a stylesheet whose figure and quotation rules sit at the top level.
+  const rules = (css.match(/[^{}]+\{[^}]*\}/g) ?? []).map((rule) => ({
+    selector: rule.slice(0, rule.indexOf("{")),
+    body: rule.slice(rule.indexOf("{")),
+  }));
+
+  const scoped = (token: string) =>
+    rules.some(
+      (rule) => rule.selector.includes(".article-body") && rule.selector.includes(token),
+    );
+
+  for (const token of [
+    "figure.article-figure",
+    ".article-figure__caption",
+    ".article-quote__source",
+    "blockquote",
+  ]) {
+    check(
+      `Стили: «${token}» объявлен под .article-body`,
+      scoped(token),
+      "селектор привязан к .article-body — общий класс предпросмотра и страницы",
+    );
+  }
+
+  check(
+    "Стили: увеличенный интерлиньяж цитаты привязан к .article-body",
+    rules.some(
+      (rule) =>
+        rule.selector.includes(".article-body") &&
+        rule.selector.includes("blockquote") &&
+        /line-height:\s*1\.9/.test(rule.body),
+    ),
+    "line-height: 1.9",
+  );
 }
 
 /**
@@ -1821,6 +1924,36 @@ function checkQuoteMarkup(make: (content: string) => TipTapEditor) {
     editorBodyHtml(insideQuote),
   );
   insideQuote.destroy();
+
+  /*
+    The order a writer actually works in: select the paragraph, press «Цитата», then
+    press «Источник цитаты» — with the selection still live.
+
+    This is the check the browser pass earned. Every earlier call to the action used a
+    bare caret, and the implementation of the day inserted at the *selection range*,
+    which replaces it: the quotation's own text was destroyed and only the attribution
+    was left behind. Nothing in the suite could see it because nothing had a selection
+    when it called the function.
+  */
+  const stillSelected = make("<blockquote><p>Цитата целиком.</p></blockquote>");
+  stillSelected.commands.setTextSelection({ from: 2, to: 16 });
+  const addedOverSelection = insertQuoteSourceAtCaret(stillSelected);
+  const afterSelection = editorBodyHtml(stillSelected);
+
+  check(
+    "Цитата: источник не стирает выделенный текст цитаты",
+    addedOverSelection &&
+      afterSelection.includes("Цитата целиком.") &&
+      afterSelection.includes(">— </cite>"),
+    afterSelection,
+  );
+
+  check(
+    "Цитата: источник встаёт после цитаты, а не вместо неё",
+    afterSelection.indexOf("Цитата целиком.") < afterSelection.indexOf("cite"),
+    afterSelection,
+  );
+  stillSelected.destroy();
 
   const outsideQuote = make("<p>Обычный абзац.</p>");
   outsideQuote.commands.setTextSelection(5);

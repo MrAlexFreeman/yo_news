@@ -49,35 +49,55 @@ export const Cite = Mark.create({
 export function insertQuoteSourceAtCaret(editor: QuoteEditor): boolean {
   if (!editor.isActive("blockquote")) return false;
 
-  const { from, to } = editor.state.selection;
+  /*
+    Where the line goes: at the end of the quotation, not at the caret.
+
+    Two measurable failures led here.
+
+    The first version inserted at the selection range, which *replaces* whatever is
+    selected. Pressing «Цитата» and then «Источник цитаты» — the obvious order — left the
+    quotation's own text destroyed and only the attribution behind it, because the
+    selection was still the range the quote was made from. Found in the browser pass,
+    not by a unit test: every check called the function with a bare caret.
+
+    The second version inserted at the caret and then had to go and find where the
+    inserted paragraph had landed, because `insertContent` at a text position splits the
+    paragraph and leaves the selection in the remainder. Appending at the end of the
+    enclosing blockquote removes the search: the position is known before the call, and
+    the attribution belongs last by definition — it is a signature under the quotation,
+    not an interruption in the middle of it.
+  */
+  const { $from } = editor.state.selection;
+
+  let quoteDepth = -1;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    if ($from.node(depth).type.name === "blockquote") {
+      quoteDepth = depth;
+      break;
+    }
+  }
+  if (quoteDepth === -1) return false;
+
+  // Just inside the closing token of the blockquote, i.e. after its last child.
+  const endOfQuote = $from.after(quoteDepth) - 1;
 
   editor
     .chain()
     .focus()
-    .insertContentAt(
-      { from, to },
-      {
-        type: "paragraph",
-        content: [{ type: "text", marks: [{ type: "cite" }], text: QUOTE_SOURCE_PREFIX }],
-      },
-    )
+    .insertContentAt(endOfQuote, {
+      type: "paragraph",
+      content: [{ type: "text", marks: [{ type: "cite" }], text: QUOTE_SOURCE_PREFIX }],
+    })
     .run();
 
-  /*
-    The caret has to be moved to the end of the line just inserted.
-
-    `insertContent` at a text position splits the paragraph and leaves the selection in
-    the *remainder*, not in the inserted block — so typing carried on in the middle of
-    the quotation and the attribution stayed empty. Measured: with the caret in "Цит|ата."
-    the source line appeared correctly and the next characters landed in "…ата.",
-    outside the `<cite>` and after the split.
-  */
+  // The caret has to end up after the dash, inside the new paragraph, or the writer's
+  // next characters land somewhere else entirely.
   const { doc } = editor.state;
 
-  let end = -1;
+  let caret = -1;
   doc.descendants((node, pos) => {
-    if (end !== -1) return false;
-    if (node.type.name !== "paragraph" || pos + node.nodeSize - 1 < to) return true;
+    if (caret !== -1) return false;
+    if (node.type.name !== "paragraph" || pos + node.nodeSize - 1 < endOfQuote) return true;
 
     let cited = false;
     node.descendants((child) => {
@@ -89,13 +109,13 @@ export function insertQuoteSourceAtCaret(editor: QuoteEditor): boolean {
     });
 
     if (cited) {
-      end = pos + node.nodeSize - 1;
+      caret = pos + node.nodeSize - 1;
       return false;
     }
     return true;
   });
 
-  if (end !== -1) editor.commands.setTextSelection(end);
+  if (caret !== -1) editor.commands.setTextSelection(caret);
 
   return true;
 }
