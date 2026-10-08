@@ -2,9 +2,11 @@
 
 import { ExternalLink, Inbox, Loader2, PenLine, RefreshCw, Undo2, X } from "lucide-react";
 import { useState, useTransition } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   ignoreFeedItemAction,
+  openFeedItemAction,
   restoreFeedItemAction,
   syncFeedAction,
 } from "@/app/admin/feed/actions";
@@ -17,9 +19,11 @@ import { cn } from "@/lib/utils";
  * hide it, or — in the hidden tab — put it back. Nothing else, because the point of the
  * screen is to get through a morning's wire quickly.
  *
- * Hiding is a form submit rather than a fetch: it is a state change with a server
- * round trip already available, and a `<form>` means it works with the keyboard and
- * without JavaScript, which is the same reason the article list uses one.
+ * Opening a draft and hiding are form submits rather than links or fetches, because both
+ * write on the server. A form action is a POST, and Next checks its origin, so a
+ * cross-origin page cannot drive either one — which is what the Next guide on data
+ * security asks for instead of a side-effecting GET. Each shows a wait while it runs:
+ * opening a draft fetches the source article, so its click is not instant.
  */
 
 export type FeedRow = {
@@ -37,6 +41,23 @@ type FeedListProps = {
   rows: FeedRow[];
   view: "new" | "ignored";
 };
+
+/**
+ * The submit button for a form wired straight to a Server Action.
+ *
+ * It has to be a child of the `<form>`: `useFormStatus` reads the pending state of the
+ * form it is rendered inside, and that is the only way to show a wait for an action
+ * passed as `action={serverAction}`. Opening a draft fetches the source article, so the
+ * wait is real and a button that looks inert for two seconds invites a second click.
+ */
+function PendingSubmit({ className, children }: { className: string; children: React.ReactNode }) {
+  const { pending } = useFormStatus();
+  return (
+    <button type="submit" disabled={pending} className={className}>
+      {children}
+    </button>
+  );
+}
 
 export function FeedList({ rows, view }: FeedListProps) {
   const [syncing, startSync] = useTransition();
@@ -137,13 +158,13 @@ export function FeedList({ rows, view }: FeedListProps) {
                 <div className="flex shrink-0 items-center gap-2">
                   {view === "new" ? (
                     <>
-                      <a
-                        href={`/admin/articles/new?feed=${encodeURIComponent(row.id)}`}
-                        className="flex items-center gap-1.5 rounded-sm border border-neutral-300 px-2.5 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
-                      >
-                        <PenLine className="size-3.5" aria-hidden />
-                        Создать материал
-                      </a>
+                      <form action={openFeedItemAction}>
+                        <input type="hidden" name="id" value={row.id} />
+                        <PendingSubmit className="flex items-center gap-1.5 rounded-sm border border-neutral-300 px-2.5 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-60">
+                          <PenLine className="size-3.5" aria-hidden />
+                          Создать материал
+                        </PendingSubmit>
+                      </form>
 
                       <form
                         action={(formData) => {
@@ -192,8 +213,8 @@ export function FeedList({ rows, view }: FeedListProps) {
       {view === "new" && rows.length > 0 ? (
         <p className="flex items-center gap-1.5 text-xs text-neutral-400">
           <Inbox className="size-3.5" aria-hidden />
-          «Создать материал» открывает форму с текстом источника — дальше там кнопка
-          рерайта через DeepSeek.
+          «Создать материал» подтягивает полный текст статьи и открывает форму с ним —
+          дальше там кнопка рерайта через DeepSeek.
         </p>
       ) : null}
     </div>

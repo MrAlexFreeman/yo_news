@@ -69,6 +69,12 @@ export default async function NewArticlePage({ searchParams }: PageParams) {
     editor works from the source rather than from an empty page. The text goes in
     unchanged — the rewriter is a button, not an automatic step, because nothing should
     be published that nobody has read.
+
+    Only reads here, never fetches: the full text was already written over the teaser by
+    the action behind «Создать материал» (`openFeedItemAction` → `ensureFullText`), which
+    is why this page can stay a plain render. A visit to this URL without that action —
+    a refresh, a bookmark — shows whatever is stored, which is the story after the first
+    open and the teaser before it.
   */
   const item = feed
     ? await prisma.newsFeedItem.findUnique({

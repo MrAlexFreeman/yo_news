@@ -28,15 +28,16 @@ function check(name: string, ok: boolean, detail: string) {
 }
 
 /**
- * The sync module's source, read rather than imported.
+ * The transport module's source, read rather than imported.
  *
- * `feed-sync.ts` is `server-only` and reaches Prisma, so the suite cannot import it —
- * which is the guard working as intended. The user agent is a constant in there and the
- * one property worth asserting about it is its character range, and that is readable
- * from the file.
+ * `wire-fetch.ts` is `server-only` and reaches the network, so the suite cannot import
+ * it — which is the guard working as intended. The user agent is a constant in there and
+ * the one property worth asserting about it is its character range, and that is readable
+ * from the file. It moved here from `feed-sync.ts` when the full-text fetcher began
+ * sharing it.
  */
-const feedSyncSource = readFileSync(
-  fileURLToPath(new URL("../src/lib/feed-sync.ts", import.meta.url)),
+const wireFetchSource = readFileSync(
+  fileURLToPath(new URL("../src/lib/wire-fetch.ts", import.meta.url)),
   "utf8",
 );
 
@@ -393,7 +394,7 @@ check(
   this constant carried a Russian tail and every sync failed that way. Asserted here
   because nothing else would notice until the desk was empty.
 */
-const userAgent = /const USER_AGENT = "([^"]*)"/.exec(feedSyncSource)?.[1] ?? "";
+const userAgent = /const USER_AGENT = "([^"]*)"/.exec(wireFetchSource)?.[1] ?? "";
 
 check(
   "Ленты: User-Agent только из ASCII",

@@ -28,15 +28,17 @@
     "ui:check": "tsx --env-file=.env scripts/check-editor-ui.ts",
     "forum:check": "tsx --env-file=.env scripts/check-forum.ts",
     "home:check": "tsx --env-file=.env scripts/check-news-feed.ts",
-    "check": "npm run encoding:check && npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run messenger:check && npm run suggest:check && npm run ui:check && npm run forum:check && npm run home:check && npm run trash:check && npm run article:media && npm run multipart:check",
+    "check": "npm run encoding:check && npm run typecheck && npm run lint && npm run feed:check && npm run vk:check && npm run checks:security && npm run messenger:check && npm run suggest:check && npm run extract:check && npm run ui:check && npm run forum:check && npm run home:check && npm run trash:check && npm run article:media && npm run multipart:check",
     "postinstall": "prisma generate",
     "trash:check": "tsx --env-file=.env scripts/check-trash.mts",
     "article:media": "tsx --env-file=.env scripts/check-article-media.mts",
     "encoding:check": "tsx --env-file=.env scripts/check-encoding.mts",
     "messenger:check": "tsx scripts/check-messengers.mts",
-    "suggest:check": "tsx --env-file=.env scripts/check-feed.mts"
+    "suggest:check": "tsx --env-file=.env scripts/check-feed.mts",
+    "extract:check": "tsx scripts/check-extract.mts"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@prisma/adapter-better-sqlite3": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "@tailwindcss/typography": "^0.5.20",
@@ -54,6 +56,7 @@
     "clsx": "^2.1.1",
     "dotenv": "^18.0.5",
     "isomorphic-dompurify": "^4.4.0",
+    "jsdom": "^30.1.2",
     "lucide-react": "^1.49.0",
     "next": "16.3.8",
     "react": "19.2.8",
@@ -72,7 +75,6 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
-    "jsdom": "^30.1.1",
     "prisma": "^7.10.0",
     "tailwindcss": "^4",
     "typescript": "^5"
