@@ -21,6 +21,7 @@ import {
   canSetDzenExperiment,
   resolveDzenExperiment,
 } from "@/lib/dzen-experiment";
+import { takeFeedItem } from "@/lib/feed-store";
 import { prisma } from "@/lib/prisma";
 import { saveMessage } from "@/lib/save-message";
 import { slugify } from "@/lib/slugify";
@@ -325,9 +326,28 @@ export async function createArticleAction(
     where: { articles: { some: { articleId: article.id } } },
     select: { slug: true },
   });
+
   const tagSlugs = new Set(attachedTags.map((tag) => tag.slug));
   for (const previous of existing?.tags ?? []) {
     if (!tagSlugs.has(previous.tag.slug)) tagSlugs.add(previous.tag.slug);
+  }
+
+  /*
+    The wire item this draft came from is marked as taken, so «Предложка» stops
+    offering it. Wrapped and guarded: a failure here would cost the editor the article
+    they just wrote, and the worst case without it is an item appearing twice on a list.
+
+    Only on create, and only from NEW — opening a hidden item and writing a story from it
+    is not a reason to move it out of the hidden tab.
+  */
+  const feedId = str(formData, "feedId");
+  if (feedId && !id) {
+    try {
+      await takeFeedItem(feedId);
+      revalidatePath("/admin/feed");
+    } catch (error) {
+      console.warn("[feed] не удалось отметить инфоповод как использованный", error);
+    }
   }
 
   /*

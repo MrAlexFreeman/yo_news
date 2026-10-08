@@ -46,6 +46,7 @@ import {
 } from "@/lib/article-media";
 import { appendFigureHtml } from "@/lib/article-figure";
 import { AI_GENERATED_SOURCE } from "@/lib/photo-sources";
+import { RewritePanel } from "@/app/admin/articles/components/rewrite-panel";
 import { canSetDzenExperiment } from "@/lib/dzen-experiment";
 import {
   DZEN_MIN_CARD_WIDTH,
@@ -161,12 +162,29 @@ type ArticleFormProps = {
    * settings table. The component never sees a token either way.
    */
   messengerDefaults?: { telegram: boolean; max: boolean };
+  /**
+   * Headline and body to start from, for a draft opened from «Предложка».
+   *
+   * Deliberately not `initial`: that prop means "editing an article that exists", and
+   * it puts the form into update mode with an id the save will try to write to. A wire
+   * item is not an article — it is text that should be in the fields of a *new* one.
+   */
+  prefill?: { title: string; contentHtml: string };
+  /**
+   * The wire item this draft came from, when it was opened from /admin/feed.
+   *
+   * Carried through a hidden field so the save can mark the item as taken — the desk's
+   * new list should stop offering something that is already being written.
+   */
+  feedId?: string;
 };
 
 export function ArticleForm({
   categories,
   initial,
   messengerDefaults = DEFAULT_SYNDICATION_ENABLED,
+  prefill,
+  feedId = "",
 }: ArticleFormProps) {
   const [state, formAction, pending] = useActionState(
     // useActionState passes the previous state first; the action reads FormData.
@@ -187,10 +205,12 @@ export function ArticleForm({
   );
 
   const [tab, setTab] = useState<TabId>("material");
-  const [title, setTitle] = useState(initial?.title ?? "");
+  const [title, setTitle] = useState(initial?.title ?? prefill?.title ?? "");
   const [subtitle, setSubtitle] = useState(initial?.subtitle ?? "");
   const [lead, setLead] = useState(initial?.lead ?? "");
-  const [contentHtml, setContentHtml] = useState(initial?.contentHtml ?? "");
+  const [contentHtml, setContentHtml] = useState(
+    initial?.contentHtml ?? prefill?.contentHtml ?? "",
+  );
   const [coverImage, setCoverImage] = useState(initial?.coverImage ?? "");
   const [photoAuthor, setPhotoAuthor] = useState(initial?.photoAuthor ?? "");
   const [photoSource, setPhotoSource] = useState(initial?.photoSource ?? "");
@@ -637,6 +657,9 @@ export function ArticleForm({
         submission fail with "not focusable".
       */}
       <input type="hidden" name="publishedAt" value={publishedAt} readOnly />
+      {/* The wire item this draft came from, so the save can mark it taken. Only
+          present when the form was opened from «Предложка». */}
+      {feedId ? <input type="hidden" name="feedId" value={feedId} readOnly /> : null}
       <input type="hidden" name="title" value={title} readOnly />
       <input type="hidden" name="subtitle" value={subtitle} readOnly />
       <input type="hidden" name="lead" value={lead} readOnly />
@@ -795,6 +818,30 @@ export function ArticleForm({
           <div className="space-y-5 border border-neutral-300 border-t-0 bg-white p-5">
             {tab === "material" ? (
               <>
+                {/*
+                  Above the fields it fills, because the whole gesture is "take this wire
+                  item and turn it into a draft": pressing it and watching the headline
+                  and body appear below is the flow, and a button that filled fields the
+                  editor had already scrolled past would be a mystery.
+                */}
+                <RewritePanel
+                  feedId={feedId}
+                  currentTitle={title}
+                  currentContent={contentHtml}
+                  onRewritten={({ title: nextTitle, lead: nextLead, contentHtml: nextHtml }) => {
+                    setTitle(nextTitle);
+                    if (nextLead) setLead(nextLead);
+                    setContentHtml(nextHtml);
+                  }}
+                  onCover={(url) => {
+                    setCoverImage(url);
+                    setUploadWarning(null);
+                    setUploadError(null);
+                    // Same rule as the cover panel: only into an empty credit field.
+                    setPhotoSource((current) => current.trim() || AI_GENERATED_SOURCE);
+                  }}
+                />
+
                 <div className="max-w-xs space-y-1.5">
                   <label
                     htmlFor="publishedAt"

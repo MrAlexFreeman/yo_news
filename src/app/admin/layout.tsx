@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { countNewFeedItems } from "@/lib/feed-store";
+
 /**
  * Shared chrome for the editorial area.
  *
@@ -14,11 +16,20 @@ import Link from "next/link";
 
 const NAV = [
   { href: "/admin/articles", label: "Материалы" },
+  { href: "/admin/feed", label: "Предложка" },
   { href: "/admin/forum", label: "Форум" },
   { href: "/admin/settings", label: "Настройки" },
 ] as const;
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  /*
+    The badge is the reason this layout is async. It has to be the number of items
+    nobody has looked at yet, and that is only knowable from the database — a count
+    rendered once and cached would show a zero that never changes, which is worse than
+    no badge at all: it would tell the desk the wire is empty.
+  */
+  const pending = await countNewFeedItems();
+
   return (
     <div className="flex min-h-dvh flex-col">
       <nav
@@ -34,9 +45,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <li key={item.href}>
               <Link
                 href={item.href}
-                className="rounded-sm px-2.5 py-1 text-sm text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+                className="inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-sm text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
               >
                 {item.label}
+                {item.href === "/admin/feed" && pending > 0 ? (
+                  <span
+                    className="rounded-full bg-green-600 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white"
+                    aria-label={`Новых инфоповодов: ${pending}`}
+                  >
+                    {pending}
+                  </span>
+                ) : null}
               </Link>
             </li>
           ))}

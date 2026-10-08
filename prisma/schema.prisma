@@ -159,7 +159,40 @@ model Category {
   articles Article[]
 }
 
-// --- forum -------------------------------------------------------------------
+/**
+ * An incoming story from another outlet, waiting to be turned into an article.
+ *
+ * The "Предложка" — a wire desk. Editors do not read e1.ru and ura.ru in one tab and
+ * write in another; the aggregator holds what those two published, and the interesting
+ * button is the one that turns an item into a draft with the source text already in the
+ * editor.
+ *
+ * `externalId` carries the uniqueness rather than the URL, because a feed's `<guid>`
+ * is what the publisher promises is stable: a story can be re-published under a new
+ * path, and an item whose link changed would otherwise arrive a second time. Where a
+ * feed carries no guid the link is used, and only then a hash of the title.
+ *
+ * `rawText` is plain text, not the feed's HTML. It is what the rewriter reads and what
+ * the list previews, and neither wants third-party markup in it.
+ */
+model NewsFeedItem {
+  id          String   @id @default(cuid())
+  /// "E1" or "URA" — the outlet, not the URL.
+  source      String
+  externalId  String   @unique
+  originalUrl String
+  title       String
+  rawText     String
+  publishedAt DateTime
+  /// "NEW" | "DRAFTED" | "IGNORED"
+  status      String   @default("NEW")
+  createdAt   DateTime @default(now())
+
+  // The list is always "newest first, and hide what is done with", so the index
+  // carries both columns in the order the query uses them.
+  @@index([status, publishedAt])
+  @@index([source])
+}// --- forum -------------------------------------------------------------------
 //
 // A reader discussion board. Separate tables rather than a comment column on
 // Article: a forum thread outlives the story it was started from, and a thread can
