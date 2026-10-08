@@ -24,8 +24,10 @@ import {
   deleteArticleAction,
 } from "@/app/admin/articles/actions";
 import { ArticlePreview } from "@/app/admin/articles/components/article-preview";
+import { ArticleMediaPanel } from "@/app/admin/articles/components/article-media-panel";
 import { CharCounter } from "@/app/admin/articles/components/char-counter";
 import { ContentEditor } from "@/app/admin/articles/components/content-editor";
+import type { ContentEditorHandle } from "@/app/admin/articles/components/content-editor";
 import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar";
 import { StickyActionBar } from "@/app/admin/articles/components/sticky-action-bar";
 import { TagInput } from "@/app/admin/articles/components/tag-input";
@@ -34,7 +36,15 @@ import { VkVideoDrop } from "@/app/admin/articles/components/vk-video-drop";
 import { AiCoverGenerator } from "@/app/admin/articles/components/ai-cover-generator";
 import { BalanceStrip } from "@/app/admin/articles/components/balance-strip";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
-import { parseMediaField, serializeMedia, type MediaItem } from "@/lib/article-media";
+import {
+  MEDIA_INSERTED_AT_END_NOTICE,
+  MEDIA_INSERTED_FROM_OTHER_TAB_NOTICE,
+  mediaInsertHint,
+  parseMediaField,
+  serializeMedia,
+  type MediaItem,
+} from "@/lib/article-media";
+import { appendFigureHtml } from "@/lib/article-figure";
 import { AI_GENERATED_SOURCE } from "@/lib/photo-sources";
 import { canSetDzenExperiment } from "@/lib/dzen-experiment";
 import {
@@ -267,6 +277,50 @@ export function ArticleForm({
     });
   const errors = state.fieldErrors ?? {};
   const busy = pending || deletePending;
+
+  /**
+   * The sidebar's route into the body.
+   *
+   * The editor is unmounted while the writer is on another tab of the form, and the
+   * sidebar is visible on all of them — so a click can arrive with no editor to insert
+   * into. In that case the figure is appended to the stored HTML and the form switches
+   * to the text tab, which is more useful than a dead button: the writer sees the
+   * picture land and carries on from there.
+   */
+  const editorRef = useRef<ContentEditorHandle>(null);
+  const [mediaNotice, setMediaNotice] = useState<string | null>(null);
+  /**
+   * Mirrors the editor's caret state for the sidebar hint. Held here rather than read
+   * from the ref at render time: a ref change does not re-render, so the hint would
+   * still say "поставьте курсор" after the writer had just clicked into the text.
+   */
+  const [caretPlaced, setCaretPlaced] = useState(false);
+
+  function insertMediaIntoText(item: MediaItem) {
+    const placement = editorRef.current?.insertPhoto(item.url, item.caption ?? "");
+
+    if (placement === "caret") {
+      setMediaNotice(null);
+      return;
+    }
+
+    if (placement === "end") {
+      setMediaNotice(MEDIA_INSERTED_AT_END_NOTICE);
+      return;
+    }
+
+    // No editor at all — the writer is on another tab.
+    setContentHtml((previous) => appendFigureHtml(previous, item.url, item.caption ?? ""));
+    setTab("material");
+    setMediaNotice(MEDIA_INSERTED_FROM_OTHER_TAB_NOTICE);
+  }
+
+  /*
+    Says what the next click will do, because the two outcomes differ and the state is
+    not visible from the sidebar: the caret lives in a component the writer is not
+    looking at.
+  */
+  const insertHint = mediaInsertHint(caretPlaced);
 
   /**
    * Why the two messenger boxes might be empty when the editor did not clear them.
@@ -826,6 +880,8 @@ export function ArticleForm({
                   error={errors.contentHtml}
                   media={media}
                   coverImage={coverImage}
+                  ref={editorRef}
+                  onCaretChange={setCaretPlaced}
                 />
 
                 <ArticlePreview
@@ -1205,7 +1261,23 @@ export function ArticleForm({
             }}
             dzenExperimentLocked={dzenExperimentLocked}
             categoryError={errors.categoryId}
-          />
+          >
+            <ArticleMediaPanel
+              items={media}
+              onChange={setMedia}
+              onInsert={insertMediaIntoText}
+              insertHint={insertHint}
+            />
+          </PublishSidebar>
+
+          {mediaNotice ? (
+            <p
+              role="status"
+              className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+            >
+              {mediaNotice}
+            </p>
+          ) : null}
         </div>
       </div>
 

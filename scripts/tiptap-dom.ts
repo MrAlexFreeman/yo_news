@@ -62,6 +62,48 @@ export function installDom(url = "https://eartnews.ru/admin/articles/new") {
   );
   assign("cancelAnimationFrame", (id: number) => clearTimeout(id));
 
+  /*
+    A layout stub, for the same missing engine.
+
+    ProseMirror calls `getClientRects` on whatever node holds the caret whenever it
+    scrolls a selection into view — which is any transaction that moves the caret in a
+    focused editor, so inserting a photo through the sidebar's handle reaches it. jsdom
+    implements neither method, and the failure is a `TypeError` from deep inside
+    prosemirror-view, which reads as a bug in the component under test.
+
+    An empty list and a zero rect are the only truthful answers without layout: there is
+    nothing to measure, and ProseMirror needs a rect only to decide how far to scroll.
+    Scrolling is a no-op here either way. `getClientRects` returns an empty list rather
+    than a rect because that is what prosemirror-view's `singleRect` checks for before
+    falling back to `getBoundingClientRect`.
+  */
+  const emptyRect = () => ({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: 0,
+    height: 0,
+    toJSON() {
+      return this;
+    },
+  });
+
+  for (const prototype of [dom.window.Node.prototype, dom.window.Range.prototype]) {
+    Object.defineProperty(prototype, "getClientRects", {
+      value: () => [],
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(prototype, "getBoundingClientRect", {
+      value: emptyRect,
+      configurable: true,
+      writable: true,
+    });
+  }
+
   if (!dom.window.document.querySelector(".tiptap")) {
     const host = dom.window.document.createElement("div");
     dom.window.document.body.appendChild(host);

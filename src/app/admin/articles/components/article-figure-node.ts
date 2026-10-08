@@ -1,5 +1,7 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 
+import { FIGURE_CAPTION_CLASS, FIGURE_CLASS } from "@/lib/article-figure";
+
 /**
  * A photo inside the article body, with an optional caption.
  *
@@ -28,10 +30,7 @@ import { Node, mergeAttributes } from "@tiptap/core";
  */
 
 /** Class the figure carries into the database, and the hook the stylesheet uses. */
-export const FIGURE_CLASS = "article-figure";
-
-/** Class on the caption element. */
-export const FIGURE_CAPTION_CLASS = "article-figure__caption";
+export { FIGURE_CLASS, FIGURE_CAPTION_CLASS } from "@/lib/article-figure";
 
 /**
  * The caption, as a line of text under the picture.

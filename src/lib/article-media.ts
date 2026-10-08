@@ -113,3 +113,89 @@ export function parseMediaField(raw: string | null | undefined): MediaItem[] {
 export function serializeMedia(items: MediaItem[]): string {
   return JSON.stringify(items.map((item) => ({ ...item })));
 }
+
+/** Same ceiling the upload endpoint enforces, per file. */
+export const MEDIA_MAX_FILE_BYTES = 8 * 1024 * 1024;
+
+/** Types the upload endpoint accepts, and therefore the types the picker offers. */
+export const MEDIA_ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif"] as const;
+
+/** The `accept` attribute both uploaders use, built from the list above. */
+export const MEDIA_ACCEPT_ATTRIBUTE = MEDIA_ACCEPTED_TYPES.join(",");
+
+/** Extensions a press drop plausibly contains when someone grabs a video. */
+const VIDEO_EXTENSIONS = [
+  ".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg", ".3gp",
+];
+
+/**
+ * True for anything that looks like a video rather than a photograph.
+ *
+ * Container-agnostic sniffing, so a dropped file with no extension is still caught:
+ * some desktops report an empty type for .mkv and .mov over RDP or from a network
+ * share, so the extension is the second line rather than the first.
+ */
+export function looksLikeVideo(file: Pick<File, "name" | "type">): boolean {
+  if (file.type?.startsWith("video/")) return true;
+  return VIDEO_EXTENSIONS.some((extension) => file.name.toLowerCase().endsWith(extension));
+}
+
+/**
+ * Why a file cannot be added to the gallery, or null when it can.
+ *
+ * One implementation for the two uploaders on the article form — the detailed list on
+ * the «Медиа» tab and the thumbnail grid in the sidebar. The rules are the part that
+ * drifts when there are two copies: a size cap raised in one place and not the other
+ * is discovered by an editor whose drop half-worked.
+ *
+ * Pure, so the check suite can exercise it without a DOM or a network.
+ */
+export function mediaFileProblem(
+  file: Pick<File, "name" | "type" | "size">,
+  currentCount: number,
+): string | null {
+  if (currentCount >= MAX_MEDIA_ITEMS) {
+    return `Достигнут предел в ${MAX_MEDIA_ITEMS} изображений.`;
+  }
+
+  // Checked before the type, because a .mp4 must not be reported as "not a JPG":
+  // that tells the editor the wrong thing about what the gallery is for.
+  if (looksLikeVideo(file)) {
+    return `${file.name}: видео добавляется ссылкой, а не файлом.`;
+  }
+
+  if (!(MEDIA_ACCEPTED_TYPES as readonly string[]).includes(file.type)) {
+    return `${file.name}: нужен JPG, PNG или GIF.`;
+  }
+
+  if (file.size > MEDIA_MAX_FILE_BYTES) {
+    return `${file.name}: больше 8 МБ.`;
+  }
+
+  return null;
+}
+
+/**
+ * What the next click on a sidebar thumbnail will do.
+ *
+ * The two outcomes differ and the state that decides between them — the caret — lives
+ * in a component the writer is not looking at, so the sidebar has to say which one
+ * applies *before* the click. An unexplained picture at the bottom of a long article is
+ * the failure this prevents.
+ *
+ * A pure function rather than a ternary in the form, so the wording is asserted
+ * alongside the rule it describes.
+ */
+export function mediaInsertHint(caretPlaced: boolean): string {
+  return caretPlaced
+    ? "Клик по фото вставит его под текущий курсор."
+    : "Поставьте курсор в текст, иначе фото добавится в конец статьи.";
+}
+
+/** Shown after a click that appended to the end because there was no caret. */
+export const MEDIA_INSERTED_AT_END_NOTICE =
+  "Фото добавлено в конец текста: курсор в тексте не стоял. Поставьте курсор перед вставкой, чтобы фото встало под нужный абзац.";
+
+/** Shown after a click that had to switch tabs, because the editor was unmounted. */
+export const MEDIA_INSERTED_FROM_OTHER_TAB_NOTICE =
+  "Фото добавлено в конец текста. Открыл вкладку «Материал» — дальше можно править текст вокруг.";

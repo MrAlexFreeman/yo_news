@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import type { ArticleStatus } from "@/lib/article-status";
 import type { CategoryOption } from "@/app/admin/articles/types";
 import { DZEN_EXPERIMENT_LOCKED_HINT } from "@/lib/dzen-experiment";
@@ -35,6 +37,13 @@ type PublishSidebarProps = {
   /** True once the publication moment has passed; locks the experiment flag. */
   dzenExperimentLocked: boolean;
   categoryError?: string;
+  /**
+   * Rendered under the properties card, inside the same sticky column — currently the
+   * «Медиафайлы статьи» panel. A slot rather than a prop per feature: the sidebar is
+   * already the longest prop list in the form, and every addition to it is a reason to
+   * change two files.
+   */
+  children?: ReactNode;
 };
 
 const STATUS_LABELS: Record<ArticleStatus, string> = {
@@ -98,9 +107,10 @@ export function PublishSidebar({
   onDzenDirectChange,
   dzenExperimentLocked,
   categoryError,
+  children,
 }: PublishSidebarProps) {
   return (
-    <aside className="lg:sticky lg:top-6 lg:self-start">
+    <aside className="space-y-2 lg:sticky lg:top-6 lg:self-start">
       <section className="rounded border border-neutral-300 bg-white shadow-xs">
         <h2 className="rounded-t border-b border-neutral-300 bg-gradient-to-b from-neutral-100 to-neutral-200 px-3 py-2 text-sm font-semibold text-neutral-800">
           Свойства
@@ -294,6 +304,8 @@ export function PublishSidebar({
           </div>
         </div>
       </section>
+
+      {children}
     </aside>
   );
 }

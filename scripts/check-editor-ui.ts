@@ -27,6 +27,19 @@ import {
 import {
   insertQuoteSourceAtCaret,
 } from "../src/app/admin/articles/components/article-quote";
+import { ArticleMediaPanel } from "../src/app/admin/articles/components/article-media-panel";
+import type { ContentEditorHandle } from "../src/app/admin/articles/components/content-editor";
+import {
+  FIGURE_CAPTION_CLASS,
+  FIGURE_CLASS,
+  appendFigureHtml,
+  figureHtml,
+} from "../src/lib/article-figure";
+import {
+  MEDIA_MAX_FILE_BYTES,
+  mediaFileProblem,
+  mediaInsertHint,
+} from "../src/lib/article-media";
 import {
   MetrikaNoScript,
   isValidMetrikaId,
@@ -1261,9 +1274,376 @@ async function runRoundTrips() {
 
   checkFigureInsertion(make);
   checkQuoteMarkup(make);
+  checkArticleMedia();
   runCommands(make);
   await runMountedEditor();
+  await checkSidebarInsertion();
   report();
+}
+
+/**
+ * The «Медиафайлы статьи» panel: its shape, and the two rules that decide what a click
+ * on a thumbnail does.
+ *
+ * Rendered as static markup, which is enough for everything here: the grid, the labels
+ * and the absence of nested buttons are all decided on the first render.
+ */
+function checkArticleMedia() {
+  const source = (relative: string) => {
+    try {
+      return readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)), "utf8");
+    } catch (error) {
+      // Returned rather than thrown: a wrong path should fail the one check that reads
+      // it, not take the whole suite down before the other fifty run.
+      return `НЕ ПРОЧИТАН: ${error instanceof Error ? error.message : ""}`;
+    }
+  };
+
+  const items: MediaItem[] = [
+    { url: "/uploads/a.webp", caption: "Первый кадр", source: "Рутюб", width: 1200, height: 800 },
+    { url: "/uploads/b.webp", caption: "", source: "", width: 900, height: 600 },
+  ];
+
+  const rendered = renderToStaticMarkup(
+    createElement(ArticleMediaPanel as never, {
+      items,
+      onChange: () => {},
+      onInsert: () => {},
+      insertHint: mediaInsertHint(true),
+    }),
+  );
+
+  const empty = renderToStaticMarkup(
+    createElement(ArticleMediaPanel as never, {
+      items: [],
+      onChange: () => {},
+      onInsert: () => {},
+      insertHint: mediaInsertHint(false),
+    }),
+  );
+
+  check(
+    "Панель медиа: секция называется «Медиафайлы статьи»",
+    rendered.includes("Медиафайлы статьи"),
+    "заголовок на месте",
+  );
+
+  check(
+    "Панель медиа: загрузка нескольких файлов доступна",
+    /<input[^>]*type="file"[^>]*multiple/.test(rendered) && rendered.includes("Добавить фото"),
+    "multiple и кнопка",
+  );
+
+  check(
+    "Панель медиа: счётчик и предел показаны",
+    rendered.includes(`${items.length} из ${MAX_MEDIA_ITEMS}`),
+    `${items.length} из ${MAX_MEDIA_ITEMS}`,
+  );
+
+  check(
+    "Панель медиа: каждая миниатюра вставляется в текст по клику",
+    rendered.includes('aria-label="Вставить в текст фото 1: Первый кадр"') &&
+      rendered.includes('aria-label="Вставить в текст фото 2"'),
+    "подписанные кнопки вставки",
+  );
+
+  check(
+    "Панель медиа: у миниатюры есть предпросмотр и удаление",
+    rendered.includes('aria-label="Предпросмотр фото 1"') &&
+      rendered.includes('aria-label="Убрать изображение 1"'),
+    "обе кнопки",
+  );
+
+  /*
+    Structural, and the reason the overlay buttons are siblings of the thumbnail
+    button rather than children: a `<button>` inside a `<button>` is invalid HTML, and
+    browsers disagree about which one a click belongs to — so the wrong action fires,
+    or two fire.
+  */
+  check(
+    "Панель медиа: кнопка не вложена в кнопку",
+    !/<button[^>]*>(?:(?!<\/button>)[\s\S])*<button/.test(rendered),
+    "плоская разметка",
+  );
+
+  check(
+    "Панель медиа: подсказка о курсоре показана до клика",
+    rendered.includes(mediaInsertHint(true)) && empty.includes(mediaInsertHint(false)),
+    "обе формулировки",
+  );
+
+  check(
+    "Панель медиа: пустое состояние без миниатюр",
+    empty.includes("Дополнительных фото нет") && !empty.includes("Вставить в текст фото 1"),
+    "только зона загрузки",
+  );
+
+  check(
+    "Панель медиа: сказано, что это та же галерея",
+    rendered.includes("видны на вкладке «Медиа»"),
+    "один список, два представления",
+  );
+
+  // --- the rules themselves -------------------------------------------------
+
+  const file = (name: string, type: string, size = 1024) => ({ name, type, size });
+
+  check(
+    "Правила медиа: обычный JPG проходит",
+    mediaFileProblem(file("кадр.jpg", "image/jpeg"), 0) === null,
+    "null",
+  );
+
+  check(
+    "Правила медиа: видео отклоняется ссылкой, а не типом",
+    (mediaFileProblem(file("клип.mp4", "video/mp4"), 0) ?? "").includes("ссылкой"),
+    mediaFileProblem(file("клип.mp4", "video/mp4"), 0) ?? "",
+  );
+
+  check(
+    "Правила медиа: видео без MIME распознаётся по расширению",
+    (mediaFileProblem(file("клип.mov", ""), 0) ?? "").includes("ссылкой"),
+    mediaFileProblem(file("клип.mov", ""), 0) ?? "",
+  );
+
+  check(
+    "Правила медиа: неподдерживаемый тип отклоняется",
+    (mediaFileProblem(file("схема.svg", "image/svg+xml"), 0) ?? "").includes("JPG, PNG или GIF"),
+    mediaFileProblem(file("схема.svg", "image/svg+xml"), 0) ?? "",
+  );
+
+  check(
+    "Правила медиа: большой файл отклоняется",
+    (mediaFileProblem(file("большой.jpg", "image/jpeg", MEDIA_MAX_FILE_BYTES + 1), 0) ?? "").includes(
+      "8 МБ",
+    ),
+    "предел размера",
+  );
+
+  check(
+    "Правила медиа: предел галереи проверяется по счётчику",
+    (mediaFileProblem(file("кадр.jpg", "image/jpeg"), MAX_MEDIA_ITEMS) ?? "").includes(
+      `предел в ${MAX_MEDIA_ITEMS}`,
+    ),
+    mediaFileProblem(file("кадр.jpg", "image/jpeg"), MAX_MEDIA_ITEMS) ?? "",
+  );
+
+  check(
+    "Правила медиа: те же правила у панели и у списка на вкладке «Медиа»",
+    // Both import `mediaFileProblem`; asserted against the sources because a copy
+    // reintroduced in either component would not fail any behavioural check — the two
+    // would simply disagree the first time a limit changed.
+    source("src/app/admin/articles/components/media-editor.tsx").includes(
+      "mediaFileProblem",
+    ) &&
+      source("src/app/admin/articles/components/article-media-panel.tsx").includes(
+        "mediaFileProblem",
+      ),
+    "одна реализация на два места",
+  );
+
+  // --- the figure markup the panel appends -----------------------------------
+
+  const built = figureHtml("/uploads/a.webp", 'Кадр с "кавычками" и <тегом>');
+
+  check(
+    "Разметка фигуры: те же классы, что у редактора",
+    built.includes(`<figure class="${FIGURE_CLASS}">`) &&
+      built.includes(`<figcaption class="${FIGURE_CAPTION_CLASS}">`),
+    built.slice(0, 120),
+  );
+
+  check(
+    "Разметка фигуры: подпись экранирована",
+    built.includes("&quot;кавычками&quot;") && built.includes("&lt;тегом&gt;") &&
+      !built.includes("<тегом>"),
+    built.slice(0, 170),
+  );
+
+  check(
+    "Разметка фигуры: кавычка в адресе не разрывает атрибут",
+    !figureHtml('/uploads/a"onerror="alert(1).webp', "").includes('"onerror="'),
+    figureHtml('/uploads/a"onerror="alert(1).webp', "").slice(0, 140),
+  );
+
+  // The bridge that matters: what the sidebar appends has to survive the same
+  // sanitiser the public page runs, with its classes intact.
+  const sanitizedBuilt = sanitizeArticleHtml(built);
+  check(
+    "Разметка фигуры: переживает санитайзер с классами",
+    sanitizedBuilt.includes(`class="${FIGURE_CLASS}"`) &&
+      sanitizedBuilt.includes(`class="${FIGURE_CAPTION_CLASS}"`),
+    sanitizedBuilt.slice(0, 170),
+  );
+
+  check(
+    "Разметка фигуры: добавляется в конец, а не в начало",
+    appendFigureHtml("<p>Текст.</p>", "/uploads/a.webp", "Подпись") ===
+      `<p>Текст.</p>${figureHtml("/uploads/a.webp", "Подпись")}`,
+    "порядок",
+  );
+
+  check(
+    "Разметка фигуры: пустое тело даёт только фигуру",
+    appendFigureHtml("   ", "/uploads/a.webp", "") === figureHtml("/uploads/a.webp", ""),
+    "без пустого абзаца впереди",
+  );
+
+  check(
+    "Разметка фигуры: пустая подпись всё равно оставляет figcaption",
+    figureHtml("/uploads/a.webp", "  ").includes(`<figcaption class="${FIGURE_CAPTION_CLASS}"></figcaption>`),
+    "место под подпись есть",
+  );
+}
+
+/**
+ * The sidebar's way into the editor, driven for real.
+ *
+ * Mounts the component the way the form does and calls `insertPhoto` through the ref,
+ * because the behaviour that matters spans two components and no amount of asserting
+ * on either one alone would catch it: the editor has to report where the photo went,
+ * and it has to be right about whether a caret was ever placed.
+ *
+ * The two placements are told apart by where the figure lands, and the setup is chosen
+ * to make that unambiguous: with a caret placed and nothing else touched, ProseMirror's
+ * selection is position zero, so the figure must come *before* the first paragraph;
+ * with no caret it must come after the last one.
+ *
+ * What this cannot do is place the caret mid-paragraph: that needs the DOM selection,
+ * and ProseMirror then calls `getClientRects`, which jsdom does not implement. The
+ * mid-text case is covered from the other side — `checkFigureInsertion` drives
+ * `insertFigureAtCaret` at four caret positions on a real editor — and by the browser
+ * pass.
+ */
+async function checkSidebarInsertion() {
+  const react = await import("react");
+  const { createElement } = react;
+  const { createRoot } = await import("react-dom/client");
+  // Imported here rather than at module load: this module pulls in `@tiptap/react`,
+  // which wants a DOM, and the suite installs one inside `runRoundTrips`.
+  const { ContentEditor } = await import(
+    "../src/app/admin/articles/components/content-editor"
+  );
+
+  const act = typeof react.act === "function" ? react.act : null;
+  const settle = async () => {
+    if (act) {
+      await act(async () => {});
+      return;
+    }
+    for (let turn = 0; turn < 5; turn += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  const mount = async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    let handle: ContentEditorHandle | null = null;
+    let latest = "";
+    const caretReports: boolean[] = [];
+
+    await actIfNeeded(act, () => {
+      root.render(
+        createElement(ContentEditor as never, {
+          value: "<p>Первый абзац.</p><p>Второй абзац.</p>",
+          onChange: (next: string) => {
+            latest = next;
+          },
+          onCaretChange: (placed: boolean) => caretReports.push(placed),
+          ref: (instance: unknown) => {
+            handle = instance as ContentEditorHandle | null;
+          },
+        }),
+      );
+    });
+    await settle();
+
+    return {
+      handle: () => handle,
+      html: () => latest,
+      caretReports,
+      surface: host.querySelector('[contenteditable="true"]') as HTMLElement | null,
+      async unmount() {
+        root.unmount();
+        await settle();
+        host.remove();
+      },
+    };
+  };
+
+  // --- with no caret at all: the picture goes to the end ----------------------
+
+  const fresh = await mount();
+
+  check(
+    "Сайдбар: редактор отдаёт handle и знает, что курсора нет",
+    fresh.handle() !== null && fresh.handle()!.hasCaret() === false,
+    `handle: ${fresh.handle() !== null}, hasCaret: ${fresh.handle()?.hasCaret()}`,
+  );
+
+  const withoutCaret = fresh.handle()!.insertPhoto("/uploads/side.webp", "Из панели");
+  await settle();
+
+  check(
+    "Сайдбар: без курсора фото уходит в конец текста",
+    withoutCaret === "end" &&
+      fresh.html().trimEnd().endsWith(figureHtml("/uploads/side.webp", "Из панели")),
+    `размещение ${withoutCaret}: ${fresh.html().slice(-120)}`,
+  );
+
+  await fresh.unmount();
+
+  // --- with a caret placed: the picture follows the selection -----------------
+
+  const placed = await mount();
+
+  /*
+    A click on a sidebar button takes the focus away from the editor, so the flag has to
+    survive a blur — which is why it is set on the first focus rather than read from
+    `isFocused` at click time. The synthetic event is what the suite can do here; the
+    real browser pass covers the rest.
+  */
+  if (placed.surface) {
+    await actIfNeeded(act, () => {
+      placed.surface!.dispatchEvent(new Event("focus"));
+    });
+    await settle();
+  }
+
+  check(
+    "Сайдбар: после установки курсора редактор это помнит",
+    placed.handle()!.hasCaret() === true && placed.caretReports.includes(true),
+    `hasCaret: ${placed.handle()?.hasCaret()}, отчёты: ${JSON.stringify(placed.caretReports)}`,
+  );
+
+  const withCaret = placed.handle()!.insertPhoto("/uploads/caret.webp", "");
+  await settle();
+
+  check(
+    "Сайдбар: с курсором фото встаёт по каретке, а не в конец",
+    withCaret === "caret" &&
+      placed.html().indexOf("caret.webp") < placed.html().indexOf("Первый абзац"),
+    `размещение ${withCaret}: ${placed.html().slice(0, 140)}`,
+  );
+
+  await placed.unmount();
+}
+
+/** Runs a state-updating callback inside `act` when React exports one. */
+async function actIfNeeded(
+  act: typeof import("react").act | null,
+  run: () => void,
+): Promise<void> {
+  if (act) {
+    await act(async () => {
+      run();
+    });
+    return;
+  }
+  run();
 }
 
 /**

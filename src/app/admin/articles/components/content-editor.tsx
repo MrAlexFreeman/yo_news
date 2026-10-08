@@ -21,7 +21,7 @@ import {
   Underline as UnderlineIcon,
   Video,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 
 import { editorExtensions } from "@/app/admin/articles/components/editor-extensions";
 import { editorBodyHtml } from "@/app/admin/articles/components/editor-output";
@@ -218,6 +218,36 @@ type ContentEditorProps = {
   media?: MediaItem[];
   /** Cover of the article being edited, offered in the same list. */
   coverImage?: string;
+  /**
+   * Imperative handle for the sidebar, which puts a photo into the body from outside
+   * this component. React 19 passes `ref` as an ordinary prop, so no forwardRef.
+   */
+  ref?: React.Ref<ContentEditorHandle>;
+  /**
+   * Fires when the writer first puts the cursor in the text, and when the editor goes
+   * away with it. The sidebar's hint has to say what a click will do, and that depends
+   * on this — which a ref cannot drive, because a ref change does not re-render.
+   */
+  onCaretChange?: (placed: boolean) => void;
+};
+
+/** Where a photo ended up, so the caller can tell the editor what happened. */
+export type PhotoPlacement = "caret" | "end";
+
+export type ContentEditorHandle = {
+  /**
+   * Puts a photo into the body.
+   *
+   * `caret` when the writer had placed the cursor in the text, `end` when they had
+   * not — the two are different enough that the sidebar says which one happened
+   * rather than leaving a picture at the bottom of the article unexplained.
+   *
+   * Returns null when the editor is not ready yet, which the caller treats as "append
+   * to the stored HTML instead".
+   */
+  insertPhoto: (src: string, caption: string) => PhotoPlacement | null;
+  /** True once the writer has put the cursor in the text at least once. */
+  hasCaret: () => boolean;
 };
 
 /**
@@ -242,11 +272,24 @@ export function ContentEditor({
   error,
   media = [],
   coverImage = "",
+  ref,
+  onCaretChange,
 }: ContentEditorProps) {
   const labelId = useId();
   const [toolbarError, setToolbarError] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
+
+  /**
+   * Whether the writer has ever put the cursor in the text.
+   *
+   * The sidebar inserts a photo from outside this component, and by the time its
+   * button is clicked the editor has already lost focus — a click on a button moves
+   * the focus. So `editor.isFocused` is always false at that moment and cannot be the
+   * test. What survives the blur is ProseMirror's selection, and this flag says
+   * whether that selection is something the writer placed or just position zero.
+   */
+  const [caretPlaced, setCaretPlaced] = useState(false);
 
   // The last HTML this editor handed up. An incoming `value` that matches it is
   // our own change coming back from React, and re-applying it would reset the
@@ -264,12 +307,61 @@ export function ContentEditor({
     editorProps: {
       attributes: editorAttributes(),
     },
+    // Recorded because it is the only durable signal that a caret was placed: see
+    // `caretPlaced`. Nothing else in the component needs the focus event.
+    onFocus: () => {
+      setCaretPlaced(true);
+      onCaretChange?.(true);
+    },
     onUpdate: ({ editor: current }) => {
       const html = editorBodyHtml(current);
       emitted.current = html;
       onChange(html);
     },
   });
+
+  /*
+    The editor unmounts when the writer switches to another tab, and its selection goes
+    with it. Reporting that upwards keeps the sidebar's hint honest: after a tab switch
+    the next click really will append to the end, and the hint should have said so
+    before it was clicked.
+  */
+  useEffect(() => {
+    if (!editor) return;
+    return () => onCaretChange?.(false);
+  }, [editor, onCaretChange]);
+
+  /**
+   * The sidebar's way in.
+   *
+   * Two placements, and the difference is visible to the writer: with the cursor in
+   * the text the photo lands where they were writing, and without it the photo goes to
+   * the end of the body. The sidebar reports which one happened, so a picture at the
+   * bottom of a long article is explained rather than mysterious.
+   */
+  useImperativeHandle(
+    ref,
+    () => ({
+      hasCaret: () => caretPlaced,
+      insertPhoto(src, caption) {
+        if (!editor) return null;
+
+        if (!caretPlaced) {
+          // Position at the very end of the document. `insertFigureAtCaret` then takes
+          // care of the paragraph underneath, the same as it does for a caret that was
+          // already there.
+          const end = editor.state.doc.content.size;
+          editor.chain().focus().setTextSelection(end).run();
+          insertFigureAtCaret(editor, src, caption, caption);
+          return "end";
+        }
+
+        insertFigureAtCaret(editor, src, caption, caption);
+        return "caret";
+      },
+    }),
+    [editor, caretPlaced],
+  );
 
   useEffect(() => {
     if (!editor) return;

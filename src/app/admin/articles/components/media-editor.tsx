@@ -1,21 +1,40 @@
 "use client";
 
-import { GripVertical, ImagePlus, Loader2, Upload, VideoOff, X } from "lucide-react";
+import {
+  GripVertical,
+  ImagePlus,
+  Loader2,
+  Upload,
+  VideoOff,
+  X,
+} from "lucide-react";
 import { useRef, useState } from "react";
 
-import type { MediaItem } from "@/lib/article-media";
-import { DZEN_MIN_HEIGHT, DZEN_MIN_WIDTH, MAX_MEDIA_ITEMS } from "@/lib/article-media";
+import {
+  DZEN_MIN_HEIGHT,
+  DZEN_MIN_WIDTH,
+  MAX_MEDIA_ITEMS,
+  MEDIA_ACCEPT_ATTRIBUTE,
+  looksLikeVideo,
+  mediaFileProblem,
+  type MediaItem,
+} from "@/lib/article-media";
 import { readImageDimensions } from "@/lib/image-dimensions";
 import { cn } from "@/lib/utils";
+
+/**
+ * Re-exported from `article-media.ts`, where it now lives beside the other upload
+ * rules so the sidebar grid and this list cannot disagree about what a video is.
+ * Kept as a re-export because `check-editor-ui.ts` imports it from here.
+ */
+export { looksLikeVideo };
 
 type MediaEditorProps = {
   items: MediaItem[];
   onChange: (items: MediaItem[]) => void;
 };
 
-/** Same ceiling the upload endpoint enforces, per file. */
-const MAX_FILE_BYTES = 8 * 1024 * 1024;
-const ACCEPT = "image/jpeg,image/png,image/gif";
+const ACCEPT = MEDIA_ACCEPT_ATTRIBUTE;
 
 /**
  * The drop-zone guard message, worded as editorial asked for.
@@ -26,29 +45,6 @@ const ACCEPT = "image/jpeg,image/png,image/gif";
  */
 export const VIDEO_DROP_WARNING =
   "Для экономии диска сервера видео добавляется ссылкой (VK Video, Rutube, YouTube) в поле «Ссылка на видео». Загрузите ролик в ВК/Дзен и скопируйте ссылку сюда";
-
-/** Extensions a press drop plausibly contains when someone grabs a video. */
-const VIDEO_EXTENSIONS = [
-  ".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg", ".3gp",
-];
-
-/** Container-agnostic sniffing, so a dropped file with no extension is still caught. */
-const VIDEO_MIME_PREFIX = "video/";
-
-/**
- * True for anything that looks like a video rather than a photograph.
- *
- * Exported for the test suite: this is the rule that decides whether a press drop
- * of twenty frames plus one stray clip warns or silently uploads.
- */
-export function looksLikeVideo(file: Pick<File, "name" | "type">): boolean {
-  if (file.type?.startsWith(VIDEO_MIME_PREFIX)) return true;
-  // Some desktops report an empty type for .mkv and .mov over RDP or from a
-  // network share, so the extension is the second line rather than the first.
-  return VIDEO_EXTENSIONS.some((extension) =>
-    file.name.toLowerCase().endsWith(extension),
-  );
-}
 
 /**
  * Bulk gallery uploader for press-service photo drops.
@@ -112,20 +108,15 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
     setBusy(true);
 
     const problems: string[] = [];
+    let added = [...items];
 
     for (const file of queue) {
-      if (items.length >= MAX_MEDIA_ITEMS) {
-        problems.push(`Достигнут предел в ${MAX_MEDIA_ITEMS} изображений.`);
-        break;
-      }
-
-      if (!["image/jpeg", "image/png", "image/gif"].includes(file.type)) {
-        problems.push(`${file.name}: нужен JPG, PNG или GIF.`);
-        continue;
-      }
-
-      if (file.size > MAX_FILE_BYTES) {
-        problems.push(`${file.name}: больше 8 МБ.`);
+      const problem = mediaFileProblem(file, added.length);
+      if (problem) {
+        problems.push(problem);
+        // The limit stops the queue rather than skipping one file; a type or size
+        // problem skips that file and keeps going.
+        if (added.length >= MAX_MEDIA_ITEMS) break;
         continue;
       }
 
@@ -142,8 +133,8 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
           continue;
         }
 
-        onChange([
-          ...items,
+        added = [
+          ...added,
           {
             url: payload.url,
             caption: "",
@@ -151,7 +142,8 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
             width: dimensions.width,
             height: dimensions.height,
           },
-        ]);
+        ];
+        onChange(added);
       } catch (error) {
         problems.push(
           `${file.name}: ${error instanceof Error ? error.message : "ошибка загрузки"}`,
