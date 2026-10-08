@@ -19,8 +19,10 @@ import {
   MAX_MESSAGE_LIMIT,
   MESSENGER_QUOTE_PREFIX,
   TELEGRAM_CAPTION_LIMIT,
+  TELEGRAM_MAX_MESSAGES,
   TELEGRAM_MESSAGE_LIMIT,
   buildMessengerPost,
+  chunkForTelegram,
   cutForReading,
   escapeHtml,
   htmlToPlainText,
@@ -399,19 +401,25 @@ check(
 );
 
 check(
-  "Telegram: ровно 4000 — ещё полный текст",
-  planTelegramPost({ text: paragraph(LONG_READING_THRESHOLD), url: "u" }).truncated === false,
+  "Telegram: ровно 4000 — ещё одним сообщением",
+  planTelegramPost({ text: paragraph(LONG_READING_THRESHOLD), url: "u" }).mode === "split",
   "граница включительно",
 );
 
 check(
-  "Telegram: 4001 — обрезка",
-  planTelegramPost({ text: paragraph(LONG_READING_THRESHOLD + 1), url: "u" }).truncated === true,
-  "один символ через границу",
+  "Telegram: 4001 — уже несколькими сообщениями и без обрезки",
+  planTelegramPost({ text: paragraph(LONG_READING_THRESHOLD + 1), url: "u" }).mode === "chunks" &&
+    planTelegramPost({ text: paragraph(LONG_READING_THRESHOLD + 1), url: "u" }).truncated === false,
+  "граница между одним сообщением и несколькими",
 );
 
-// --- truncation ---------------------------------------------------------------
+// --- several messages, and the point past which they are cut ------------------
 
+/*
+  The post the brief is about: a story too long for one Telegram message. It must go
+  out whole — as several messages split on paragraph boundaries — rather than as a
+  picture with a teaser, which is the shape that was reaching the channel.
+*/
 const longText = buildMessengerPost({
   title: "Расследование",
   contentHtml: `<p>${bodyOfLength(9000)}</p>`,
@@ -421,24 +429,52 @@ const longText = buildMessengerPost({
 });
 
 const longPlan = planTelegramPost(longText, { hasCover: true });
+const longChunks = longPlan.steps
+  .filter((step): step is { kind: "text"; text: string } => step.kind === "text")
+  .map((step) => step.text);
 
 check(
-  "Telegram: сверхдлинный материал обрезается",
-  longPlan.mode === "truncated" && longPlan.truncated,
-  `${longPlan.mode}, исходных ${longPlan.length} символов`,
+  "Telegram: длинный материал уходит несколькими сообщениями",
+  longPlan.mode === "chunks" && !longPlan.truncated && longChunks.length >= 2,
+  `${longPlan.mode}, ${longChunks.length} сообщений, исходных ${longPlan.length}`,
 );
-
-const cutText = longPlan.steps[1]?.kind === "text" ? longPlan.steps[1].text : "";
 
 check(
-  "Telegram: после обрезки пост короче порога",
-  cutText.length < LONG_READING_THRESHOLD,
-  `${cutText.length} < ${LONG_READING_THRESHOLD}`,
+  "Telegram: каждое сообщение влезает в лимит",
+  longChunks.every((chunk) => chunk.length <= TELEGRAM_MESSAGE_LIMIT),
+  `максимум ${Math.max(...longChunks.map((chunk) => chunk.length))} <= ${TELEGRAM_MESSAGE_LIMIT}`,
 );
+
+check(
+  "Telegram: сообщения складываются в исходный текст без потерь",
+  longChunks.join("\n\n") === longText.text,
+  `${longChunks.join("\n\n").length} против ${longText.text.length}`,
+);
+
+check(
+  "Telegram: границы сообщений проходят по абзацам",
+  longChunks
+    .slice(0, -1)
+    .every((chunk) => longText.text.includes(chunk) && chunk.includes("\n\n")),
+  "каждый кусок, кроме последнего, составлен из целых абзацев",
+);
+
+const hugePlan = planTelegramPost(
+  { text: paragraph(17000), url: `${SITE}/news/s` },
+  { hasCover: true },
+);
+
+check(
+  "Telegram: за пределом четырёх сообщений материал обрезается",
+  hugePlan.mode === "truncated" && hugePlan.truncated,
+  `${hugePlan.mode}, исходных ${hugePlan.length}, порог ${TELEGRAM_MAX_MESSAGES} сообщения`,
+);
+
+const cutText = hugePlan.steps[1]?.kind === "text" ? hugePlan.steps[1].text : "";
 
 check(
   "Telegram: обрез заканчивается приглашением прочитать на сайте",
-  cutText.endsWith(readingNotice(`${SITE}/news/rassledovanie`)),
+  cutText.endsWith(readingNotice(`${SITE}/news/s`)),
   cutText.slice(-70),
 );
 
@@ -448,29 +484,45 @@ check(
   `${cutText.length} >= ~${Math.round(LONG_READING_BODY_LIMIT * 0.9)}`,
 );
 
-/*
-  The reason the cut lands on a paragraph boundary rather than on a character count:
-  the visible cut must not look like the site broke mid-sentence. An ellipsis and a
-  "read on the site" line are an admission; half a word is a bug.
-*/
-const paragraphsInCut = cutText.split("\n\n...")[0]?.split("\n\n") ?? [];
-check(
-  "Telegram: обрез сделан по границе абзаца",
-  paragraphsInCut.length > 1 &&
-    paragraphsInCut.every((block) => !block.includes(paragraph(50, "z"))),
-  `${paragraphsInCut.length} целых абзацев, ни один не обрезан посередине`,
-);
-
 check(
   "Telegram: многоточие стоит перед приглашением",
   cutText.includes("\n\n...\n\n"),
-  "три абзаца: текст, многоточие, ссылка",
+  "стандартный обрез",
 );
 
 check(
   "Telegram: обрез одного гигантского абзаца не даёт пустой пост",
   cutForReading({ text: paragraph(9000), url: `${SITE}/news/s` }).length > 3000,
   "обрезан по символам, но не в ноль",
+);
+
+// --- chunking itself ----------------------------------------------------------
+
+check(
+  "Чанки: короткий текст не режется",
+  chunkForTelegram("а".repeat(100), 1000).length === 1,
+  "один чанк",
+);
+
+check(
+  "Чанки: граница по абзацам, а не по символам",
+  chunkForTelegram("а".repeat(30) + "\n\n" + "б".repeat(30), 40).join("|") ===
+    `${"а".repeat(30)}|${"б".repeat(30)}`,
+  "два абзаца — два чанка",
+);
+
+check(
+  "Чанки: абзац длиннее сообщения режется, но не теряется",
+  chunkForTelegram("в".repeat(100), 30).join("").length === 100,
+  "100 символов на выходе",
+);
+
+check(
+  "Чанки: обрез не оставляет половину сущности",
+  chunkForTelegram(`ааааа&amp;ббб`, 6).every((chunk) => !/&[a-z]*$/.test(chunk)),
+  chunkForTelegram(`ааааа&amp;ббб`, 6)
+    .map((chunk) => JSON.stringify(chunk))
+    .join(" "),
 );
 
 // --- no cover -----------------------------------------------------------------
@@ -649,6 +701,240 @@ check(
   }).text.length < MAX_MESSAGE_LIMIT,
   `${planMaxPost({ text: postWithQuoteAndFigure.text.repeat(20), url: "u" }).text.length} < ${MAX_MESSAGE_LIMIT}`,
 );
+
+// --- the actual Bot API calls, with `fetch` stubbed ---------------------------
+
+/*
+  The planning tests above prove the shape of the plan; these prove the shape of the
+  requests. They exist because the failure that reached production was not in the plan
+  at all — the plan said "photo with a caption", and what an editor saw was a photo
+  without one and no text — and a suite that only looks at the plan cannot see that.
+
+  `fetch` is replaced for the duration: the cover URL is answered with a few bytes and
+  the two Bot API methods are recorded instead of sent. Restored in `finally`, because
+  the proxy tests further down need the real one.
+*/
+const COVER_URL = "https://covers.example.com/c.jpg";
+
+type RecordedCall = {
+  method: string;
+  form: FormData | null;
+  json: Record<string, unknown> | null;
+};
+
+const calls: RecordedCall[] = [];
+const realFetch = globalThis.fetch;
+
+/** Answers a cover fetch, or records a Bot API call and answers `ok: true`. */
+function stubTelegramFetch(messageId: number) {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+    if (url === COVER_URL) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    }
+
+    const method = /\/bot[^/]+\/(sendPhoto|sendMessage)/.exec(url)?.[1] ?? "unknown";
+    if (method === "sendPhoto") {
+      calls.push({ method, form: init?.body as FormData, json: null });
+    } else if (method === "sendMessage") {
+      calls.push({
+        method,
+        form: null,
+        json: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+      });
+    } else {
+      throw new Error(`unexpected fetch: ${url}`);
+    }
+
+    return new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+}
+
+delete process.env.TELEGRAM_PROXY;
+globalThis.fetch = stubTelegramFetch(701);
+
+/*
+  The publisher builds its links from `siteUrl()`, which reads this variable; the
+  expected posts below are built against `SITE`. Without pinning it, the test would
+  compare a `localhost` post against an `eartnews.ru` one and fail on a difference that
+  has nothing to do with the bug under test.
+*/
+const originalSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+process.env.NEXT_PUBLIC_SITE_URL = SITE;
+
+setTelegramConfigSource(async () => ({
+  token: "123456:AAHtest",
+  channelId: "@eartnews",
+  enabled: true,
+  apiRoot: "",
+}));
+
+/** What `buildMessengerPost` produces for an article, without going through the publisher. */
+function expectedPost(article: {
+  title: string;
+  contentHtml: string;
+  slug: string;
+  categoryName: string | null;
+}) {
+  return buildMessengerPost({ ...article, siteUrl: SITE });
+}
+
+try {
+  // 1. A short post: the caption must be on the photo. This is the reported bug. */
+  calls.length = 0;
+  const shortArticle = {
+    title: "Короткая новость",
+    contentHtml: `<p>${paragraph(300)}</p>`,
+    slug: "korotkaya",
+    categoryName: "Технологии",
+    coverImage: COVER_URL,
+  };
+  const shortResult = await publishArticleToTelegram(shortArticle);
+
+  check(
+    "Мок: короткий пост — один запрос sendPhoto с подписью",
+    shortResult.ok &&
+      calls.length === 1 &&
+      calls[0]?.method === "sendPhoto" &&
+      (calls[0]?.form?.get("caption") as string | null) === expectedPost(shortArticle).text,
+    `${calls.length} запрос(ов): ${calls.map((call) => call.method).join(", ")}`,
+  );
+
+  check(
+    "Мок: подпись уходит с parse_mode HTML в нужный чат",
+    calls[0]?.form?.get("parse_mode") === "HTML" &&
+      calls[0]?.form?.get("chat_id") === "@eartnews",
+    `${calls[0]?.form?.get("parse_mode")} / ${calls[0]?.form?.get("chat_id")}`,
+  );
+
+  // 2. A long post: the cover on its own, then the whole text as a message. This is
+  //    the case that reached the channel as a bare picture.
+  calls.length = 0;
+  const longArticle = {
+    title: "Длинная новость",
+    contentHtml: `<p>${paragraph(3000)}</p>`,
+    slug: "dlinnaia",
+    categoryName: "Общество",
+    coverImage: COVER_URL,
+  };
+  const longResult = await publishArticleToTelegram(longArticle);
+
+  check(
+    "Мок: длинный пост — фото и следом текст",
+    longResult.ok &&
+      calls.length === 2 &&
+      calls[0]?.method === "sendPhoto" &&
+      calls[1]?.method === "sendMessage",
+    `${calls.length} запрос(ов): ${calls.map((call) => call.method).join(", ")}`,
+  );
+
+  check(
+    "Мок: текст второго сообщения — полный пост, а не огрызок",
+    String(calls[1]?.json?.text ?? "") === expectedPost(longArticle).text &&
+      String(calls[1]?.json?.text ?? "").includes(paragraph(3000)),
+    `${String(calls[1]?.json?.text ?? "").length} символов`,
+  );
+
+  check(
+    "Мок: у текста parse_mode HTML и отключён предпросмотр",
+    calls[1]?.json?.parse_mode === "HTML" && calls[1]?.json?.disable_web_page_preview === true,
+    `${calls[1]?.json?.parse_mode} / ${calls[1]?.json?.disable_web_page_preview}`,
+  );
+
+  // 3. The escaping, end to end: this body is exactly what used to make Telegram refuse
+  //    the message, which left the picture without it.
+  calls.length = 0;
+  const trickyArticle = {
+    title: "Сравнение",
+    contentHtml: "<p>По данным, 5 &lt; 6 и «А &amp; Б», а &lt;b&gt;это не жирный&lt;/b&gt;.</p>",
+    slug: "sravnenie",
+    categoryName: null,
+    coverImage: null as string | null,
+  };
+  const trickyResult = await publishArticleToTelegram(trickyArticle);
+  const trickyText = String(calls[0]?.json?.text ?? "");
+
+  check(
+    "Мок: тело с < и & экранируется перед отправкой",
+    trickyResult.ok &&
+      trickyText.includes("5 &lt; 6") &&
+      trickyText.includes("А &amp; Б") &&
+      trickyText.includes("&lt;b&gt;это не жирный&lt;/b&gt;"),
+    trickyText.slice(0, 90),
+  );
+
+  check(
+    "Мок: единственный живой тег — <b> заголовка",
+    (trickyText.match(/<[^>]*>/g) ?? []).join("") === "<b></b>",
+    JSON.stringify(trickyText.match(/<[^>]*>/g) ?? []),
+  );
+
+  // 4. An answer Telegram rejects: the whole answer must reach the log, so an operator
+  //    reading PM2 sees the reason and not a bare "fetch failed".
+  calls.length = 0;
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((value) => String(value)).join(" "));
+  };
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === COVER_URL) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    }
+    if (/\/sendPhoto$/.test(url)) {
+      calls.push({ method: "sendPhoto", form: init?.body as FormData, json: null });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 703 } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error_code: 400,
+        description: "Bad Request: can't parse entities: Unexpected end tag at byte offset 5",
+      }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const rejected = await publishArticleToTelegram(longArticle);
+  console.warn = realWarn;
+
+  check(
+    "Мок: отказ Telegram возвращается как ошибка, а не как успех",
+    rejected.ok === false && (rejected.error ?? "").includes("can't parse entities"),
+    rejected.error ?? "",
+  );
+
+  check(
+    "Мок: причина отказа попадает в лог PM2 вместе с методом",
+    warnings.some((line) => line.includes("sendMessage") && line.includes("can't parse entities")),
+    warnings.find((line) => line.includes("can't parse entities"))?.slice(0, 120) ?? "нет строки",
+  );
+
+  check(
+    "Мок: фото к этому моменту уже ушло — именно так выглядел сбой",
+    calls.some((call) => call.method === "sendPhoto"),
+    calls.map((call) => call.method).join(", "),
+  );
+} finally {
+  globalThis.fetch = realFetch;
+  resetTelegramConfigSource();
+  if (originalSiteUrl === undefined) delete process.env.NEXT_PUBLIC_SITE_URL;
+  else process.env.NEXT_PUBLIC_SITE_URL = originalSiteUrl;
+}
 
 // --- settings validation ------------------------------------------------------
 

@@ -18,8 +18,18 @@
 /** Telegram's `sendPhoto` caption ceiling. */
 export const TELEGRAM_CAPTION_LIMIT = 1024;
 
-/** Telegram's `sendMessage` ceiling. Kept for reference; see `planTelegramPost`. */
+/** Telegram's `sendMessage` ceiling, and the size of one chunk of a long post. */
 export const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+/**
+ * How many messages one article may become before it is cut instead.
+ *
+ * A long story is sent whole — several `sendMessage` calls rather than one teaser —
+ * because "the full text" is the point. The cap is what keeps that from becoming a
+ * flood: past four messages the rest is dropped and the usual link to the site stands
+ * in, the same shape a single over-long message already had.
+ */
+export const TELEGRAM_MAX_MESSAGES = 4;
 
 /**
  * Past this length the post is no longer a post and becomes a teaser.
@@ -281,8 +291,23 @@ export function buildMessengerPost(input: MessengerPostInput): MessengerPost {
   const base = input.siteUrl.replace(/\/+$/, "");
   const url = `${base}/news/${input.slug}`;
 
-  const body = htmlToPlainText(input.contentHtml);
-  const hashtag = toHashtag(input.categoryName);
+  /*
+    The body is escaped, and this is a fix for a failure that reached production.
+
+    `htmlToPlainText` decodes entities, so an article containing `5 &lt; 6` produced a
+    bare `<` in the post, and Telegram rejects a caption or message with a `<` that
+    starts no valid tag — "can't parse entities" — *whole*. On a post long enough to be
+    split, the cover went out first and the text message was refused, which is exactly
+    the reported symptom: a channel showing a picture with nothing on it. A raw `&` in a
+    body ("А & Б") fails the same way.
+
+    The same escape closes an injection: text typed as `&lt;b&gt;нет&lt;/b&gt;` came back
+    as a live `<b>` and bolded itself in the channel.
+  */
+  const body = escapeHtml(htmlToPlainText(input.contentHtml));
+  // `toHashtag` already strips everything but letters, digits and underscores, so this
+  // is belt-and-braces: an entity can never appear here, and the escape says so.
+  const hashtag = escapeHtml(toHashtag(input.categoryName));
 
   /*
     The credit and the rubric tag share one block, joined by a single newline rather
@@ -304,6 +329,73 @@ export function buildMessengerPost(input: MessengerPostInput): MessengerPost {
 /** The trailing block a cut ends with. */
 export function readingNotice(url: string): string {
   return `${READING_NOTICE}: ${escapeHtml(url)}`;
+}
+
+/**
+ * Trims a string to `limit` without leaving half an entity behind.
+ *
+ * Only a paragraph longer than a whole message is ever cut mid-text, and the body is
+ * escaped by then, so a plain `slice` can land inside `&amp;` and hand Telegram `&am`,
+ * which is not an entity it accepts. The check is the cheap one: if the tail has an `&`
+ * with no `;` after it, the cut falls back to before that `&`.
+ */
+function cutWithoutSplittingEntity(text: string, limit: number): string {
+  let cut = text.slice(0, limit);
+  const lastAmp = cut.lastIndexOf("&");
+  if (lastAmp !== -1 && !cut.slice(lastAmp).includes(";")) {
+    cut = cut.slice(0, lastAmp);
+  }
+  return cut.replace(/\s+$/, "");
+}
+
+/**
+ * Splits a post into chunks no longer than Telegram's message ceiling, at paragraph
+ * boundaries.
+ *
+ * The reason this exists at all: a post over 4096 characters is otherwise cut, and the
+ * brief asks for the full text. Chunks are as many whole paragraphs as fit, so a message
+ * never ends mid-sentence; only a single paragraph longer than a whole message is cut by
+ * character, entity-safe.
+ */
+export function chunkForTelegram(text: string, limit = TELEGRAM_MESSAGE_LIMIT): string[] {
+  if (text.length <= limit) return [text];
+
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const paragraph of text.split("\n\n")) {
+    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (candidate.length <= limit) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+
+    if (paragraph.length <= limit) {
+      current = paragraph;
+      continue;
+    }
+
+    // A paragraph longer than a message on its own. Cut it, keep the rest as the
+    // paragraph to pack from — otherwise it would be dropped, which is the one thing
+    // chunking is meant to avoid.
+    let rest = paragraph;
+    while (rest.length > limit) {
+      const piece = cutWithoutSplittingEntity(rest, limit);
+      // A pathological input (an entity longer than the limit) must not loop for ever.
+      const safePiece = piece.length > 0 ? piece : rest.slice(0, limit);
+      chunks.push(safePiece);
+      rest = rest.slice(safePiece.length).replace(/^\s+/, "");
+    }
+    current = rest;
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 /**
@@ -337,7 +429,7 @@ export function cutForReading(post: MessengerPost): string {
   // to a character count and the ellipsis below says so.
   let body = kept.join("\n\n");
   if (body.length > LONG_READING_BODY_LIMIT) {
-    body = body.slice(0, LONG_READING_BODY_LIMIT);
+    body = cutWithoutSplittingEntity(body, LONG_READING_BODY_LIMIT);
   }
 
   return `${body}\n\n...\n\n${readingNotice(post.url)}`;
@@ -350,7 +442,7 @@ export type TelegramStep =
 
 export type TelegramPlan = {
   /** Why the plan has the shape it has. Read in logs and asserted in tests. */
-  mode: "caption" | "split" | "truncated" | "text-only";
+  mode: "caption" | "split" | "chunks" | "truncated" | "text-only";
   steps: TelegramStep[];
   /** Length of the assembled post, before any decision was taken. */
   length: number;
@@ -365,14 +457,18 @@ export type PlanOptions = {
 /**
  * Decides how a post reaches Telegram.
  *
- * Three shapes, from Telegram's own limits:
+ * Four shapes, from Telegram's own limits:
  *
  *  - up to `TELEGRAM_CAPTION_LIMIT`: one `sendPhoto` with the text as the caption.
  *    A single message is what a reader wants and what the channel's preview shows.
  *  - above that, up to `LONG_READING_THRESHOLD`: the cover on its own, then the
  *    text as a separate `sendMessage`. Telegram rejects a photo whose caption
  *    exceeds 1024 characters, so the split is the only way to keep the cover.
- *  - above that: the cover, then a cut post pointing at the site.
+ *  - above that, while the text still fits in `TELEGRAM_MAX_MESSAGES` chunks of
+ *    `TELEGRAM_MESSAGE_LIMIT`: the cover, then the whole text as those chunks, split
+ *    on paragraph boundaries. This is what "the full text" means for a long story.
+ *  - past that: the cover, then the cut teaser pointing at the site, because a post
+ *    that has become five messages is no longer a post.
  *
  * Without a cover there is no `sendPhoto` to carry a caption, so a short post still
  * goes out as a plain message rather than as an empty photo.
@@ -400,6 +496,12 @@ export function planTelegramPost(
   if (length <= LONG_READING_THRESHOLD) {
     steps.push({ kind: "text", text: post.text });
     return { mode: "split", length, truncated: false, steps };
+  }
+
+  const chunks = chunkForTelegram(post.text, TELEGRAM_MESSAGE_LIMIT);
+  if (chunks.length <= TELEGRAM_MAX_MESSAGES) {
+    for (const chunk of chunks) steps.push({ kind: "text", text: chunk });
+    return { mode: "chunks", length, truncated: false, steps };
   }
 
   steps.push({ kind: "text", text: cutForReading(post) });

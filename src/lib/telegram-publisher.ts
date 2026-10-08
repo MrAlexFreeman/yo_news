@@ -286,13 +286,31 @@ async function callTelegram<T>(
     parsed = JSON.parse(text) as TelegramEnvelope;
   } catch {
     // A non-JSON body from an edge proxy is not a Telegram error and has no
-    // `description`; reporting the status keeps the failure readable.
+    // `description`; the body is logged so a proxy's error page is visible rather than
+    // reduced to a status code.
+    console.warn(
+      `[telegram] ${method}: HTTP ${response.status}, ответ не JSON — ${text.slice(0, 500)}`,
+    );
     throw new Error(`Telegram ${method}: HTTP ${response.status}, ответ не JSON`);
   }
 
   // Telegram answers 200 with `ok: false` for most failures, so the status alone
   // would report a rejected token as a delivered message.
   if (!response.ok || parsed.ok === false) {
+    /*
+      The whole answer is logged, not a summary of it.
+
+      This line is what was missing when a long post reached the channel as a bare
+      picture: Telegram refused the text with "can't parse entities", the publisher
+      threw, and all an operator could find was a sentence that named neither the method
+      nor the reason. `description` and `error_code` are the fields the Bot API
+      documents; the raw body is kept for when it answers with something else.
+    */
+    console.warn(
+      `[telegram] ${method} отклонён: ${parsed.description ?? `HTTP ${response.status}`}${
+        parsed.error_code ? ` (${parsed.error_code})` : ""
+      } — ответ: ${text.slice(0, 500)}`,
+    );
     throw new Error(
       `Telegram ${method}: ${parsed.description ?? `HTTP ${response.status}`}${
         parsed.error_code ? ` (${parsed.error_code})` : ""
@@ -395,7 +413,18 @@ export async function publishArticleToTelegram(
         if (!cover) continue;
 
         try {
-          firstMessageId ??= await sendPhoto(config, cover, step.caption);
+          /*
+            `await` first, then `??=`, and the order is the whole point of this shape.
+
+            Written the obvious way — `firstMessageId ??= await sendPhoto(…)` — the
+            assignment operator skips its right-hand side once an id already exists, so
+            the *second* step of a plan was never sent at all. For every post longer than
+            a caption that meant: the cover went out, the `sendMessage` carrying the text
+            was never called, and the channel showed a picture with nothing under it.
+            That is the reported fault, and it lived in one operator.
+          */
+          const id = await sendPhoto(config, cover, step.caption);
+          firstMessageId ??= id;
           sent += 1;
         } catch (error) {
           warning = `Обложка не отправлена: ${
@@ -406,7 +435,8 @@ export async function publishArticleToTelegram(
         continue;
       }
 
-      firstMessageId ??= await sendMessage(config, step.text);
+      const id = await sendMessage(config, step.text);
+      firstMessageId ??= id;
       sent += 1;
     }
 
@@ -431,14 +461,17 @@ export async function publishArticleToTelegram(
       }
     }
 
+    const textMessageCount = plan.steps.filter((step) => step.kind === "text").length;
     const summary =
       plan.mode === "caption"
-        ? `Telegram: одно сообщение с обложкой${plan.truncated ? ", текст обрезан" : ""}.`
+        ? "Telegram: одно сообщение с обложкой."
         : plan.mode === "truncated"
           ? "Telegram: обложка и анонс со ссылкой на полный текст."
           : plan.mode === "split"
             ? "Telegram: обложка и текст двумя сообщениями."
-            : "Telegram: текст без обложки.";
+            : plan.mode === "chunks"
+              ? `Telegram: обложка и текст ${textMessageCount} сообщениями.`
+              : "Telegram: текст без обложки.";
 
     return {
       ok: true,
