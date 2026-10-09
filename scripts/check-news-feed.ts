@@ -23,12 +23,14 @@
  * ids, and the archive page the feed's "Вся лента новостей" link depends on existing
  * at all.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { ArticleCard } from "../src/components/article-card";
+import { FrontPageHero } from "../src/components/front-page-hero";
+import { SectionGrid } from "../src/components/section-grid";
 import { ForumTopicsBlock } from "../src/components/forum-topics";
 import { NewsTicker } from "../src/components/news-ticker";
 import { dayLabel, formatTime, groupByDay } from "../src/lib/date";
@@ -40,6 +42,18 @@ const checks: { name: string; ok: boolean; detail: string }[] = [];
 
 function check(name: string, ok: boolean, detail: string) {
   checks.push({ name, ok, detail });
+}
+
+/**
+ * How many times a substring appears.
+ *
+ * Counting rather than asserting presence is what turns "there is a hero" into "there are
+ * four urgent rows and four rubric cards", which is the claim actually worth making: a
+ * block that renders one item where the design says four looks identical in a screenshot
+ * at a glance and is caught here.
+ */
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
 }
 
 type Row = { id: string; at: Date; title: string };
@@ -255,41 +269,269 @@ function checkCompactPreview() {
   );
 }
 
-function checkLeadCover() {
-  const article = {
+/**
+ * The top of the front page, rendered.
+ *
+ * This replaced the assertions on the old `lead` card variant. Two things were being
+ * checked there that still hold — the 16:9 crop and the absence of a hard-coded height —
+ * and one that changed: the lead story now prints its headline before its picture, with a
+ * metadata line under it, so the order of the markup is itself part of the contract.
+ */
+function checkFrontHero() {
+  const lead = {
     id: "h1",
     title: "Главный материал",
     slug: "glavnyy-material",
     publishedAt: NOW,
     createdAt: NOW,
     subtitle: null,
-    lead: null,
+    lead: "Лид в двух предложениях, который читатель видит под заголовком.",
     coverImage: "/uploads/hero.jpg",
+    contentHtml: `<p>${"слово ".repeat(400)}</p>`,
     isDzen: true,
     isVk: true,
     isExclusive: true,
     is18plus: false,
-    category: null,
+    category: { name: "Расследования", slug: "investigations" },
   };
 
+  const urgent = [0, 1, 2, 3].map((index) => ({
+    id: `u${index}`,
+    title: `Срочный сюжет ${index + 1}`,
+    slug: `srochnyy-${index + 1}`,
+    publishedAt: NOW,
+    createdAt: NOW,
+    coverImage: `/uploads/u${index}.jpg`,
+    isDzen: true,
+    isVk: true,
+    isExclusive: false,
+    is18plus: false,
+    category: { name: "Происшествия", slug: "incidents" },
+  }));
+
   const html = renderToStaticMarkup(
-    createElement(ArticleCard as never, { article, variant: "lead" }),
+    createElement(FrontPageHero as never, { lead, urgent }),
   );
 
   check(
-    "Обложка: соотношение 16:9 и потолок 400px",
-    html.includes("aspect-video") && html.includes("max-h-[400px]"),
-    "aspect-video + max-h-[400px]",
+    "Первая полоса: обложка 16:9, без растягивания и без старого ratio",
+    html.includes("aspect-video") &&
+      html.includes("object-cover") &&
+      !html.includes("aspect-[16/9]"),
+    "aspect-video + object-cover",
+  );
+
+  check(
+    "Первая полоса: заголовок с засечками, крупный и плотный по трекингу",
+    html.includes("--font-lora") &&
+      html.includes("lg:text-4xl") &&
+      html.includes("leading-tight") &&
+      html.includes("tracking-tight"),
+    "Lora + text-4xl + leading-tight + tracking-tight",
+  );
+
+  check(
+    "Первая полоса: заголовок идёт раньше фотографии",
+    html.indexOf("Главный материал") < html.indexOf("aspect-video"),
+    "h1 выше по разметке",
+  );
+
+  check(
+    "Первая полоса: лид приглушённым шрифтом под заголовком",
+    html.includes("Лид в двух предложениях") && html.includes("text-ink-soft"),
+    "лид на месте",
+  );
+
+  check(
+    "Первая полоса: строка метаданных — дата, время чтения, источник",
+    html.includes("мин чтения") && html.includes("Ё-новости") && html.includes("<time"),
+    "дата · минуты · издание",
+  );
+
+  check(
+    "Первая полоса: асимметрия 7/5 с волосяной линией между колонками",
+    html.includes("lg:col-span-7") &&
+      html.includes("lg:col-span-5") &&
+      html.includes("lg:border-l"),
+    "7/5 + разделитель",
+  );
+
+  check(
+    "Первая полоса: замыкается двойной линией",
+    html.includes("rule-double"),
+    "rule-double",
+  );
+
+  check(
+    "Первая полоса: на телефоне одна колонка — лид сверху, срочное под ним",
+    !html.includes("lg:grid-cols-12") || html.includes("grid gap-x-10 gap-y-7"),
+    "одна колонка до lg",
+  );
+
+  check(
+    "Первая полоса: срочная колонка — четыре строки через тонкую линию",
+    occurrences(html, "border-b border-rule/70 py-4") === 4,
+    `${occurrences(html, "border-b border-rule/70 py-4")} строк(и)`,
+  );
+
+  check(
+    "Первая полоса: у срочного сюжета миниатюра справа, квадратная",
+    html.includes("size-24") && html.includes("self-start") && html.includes("flex items-start gap-4"),
+    "миниатюра справа, self-start",
+  );
+
+  check(
+    "Первая полоса: заголовок срочного сюжета с засечками и подчёркиванием при hover",
+    occurrences(html, "font-[family-name:var(--font-lora)] text-base") >= 4 &&
+      html.includes("underline-offset-4"),
+    "Lora + underline-offset-4",
+  );
+
+  const empty = renderToStaticMarkup(
+    createElement(FrontPageHero as never, { lead, urgent: [] }),
   );
   check(
-    "Обложка: фото обрезается по кадру, а не растягивается",
-    html.includes("object-cover"),
-    "object-cover на месте",
+    "Первая полоса: без срочных сюжетов колонка не рисуется",
+    !empty.includes("Важное за сегодня") && empty.includes("Главный материал"),
+    "только лид",
+  );
+}
+
+/** The dense rubric strips below the fold. */
+function checkSectionGrid() {
+  const articles = [0, 1, 2, 3].map((index) => ({
+    id: `s${index}`,
+    title: `Материал рубрики ${index + 1}`,
+    slug: `rubrika-${index}`,
+    publishedAt: NOW,
+    createdAt: NOW,
+    subtitle: null,
+    lead: null,
+    coverImage: `/uploads/s${index}.jpg`,
+    isDzen: true,
+    isVk: true,
+    isExclusive: false,
+    is18plus: false,
+    category: { name: "Дом и сад", slug: "home-garden" },
+  }));
+
+  const html = renderToStaticMarkup(
+    createElement(SectionGrid as never, {
+      title: "Дом и сад",
+      slug: "home-garden",
+      articles,
+    }),
+  );
+
+  check(
+    "Плотная витрина: четыре карточки в ряд на десктопе",
+    html.includes("lg:grid-cols-4") && occurrences(html, "aspect-[3/2]") === 4,
+    "lg:grid-cols-4, 4 карточки",
+  );
+
+  check(
+    "Плотная витрина: заголовок рубрики с волосяной чертой во всю ширину",
+    html.includes("rubric-line") && html.includes("border-t-2 border-ink"),
+    "rubric-line + разделитель секции",
+  );
+
+  check(
+    "Плотная витрина: заголовок рубрики с засечками и плотным трекингом",
+    html.includes("--font-lora") && html.includes("tracking-tight"),
+    "Lora + tracking-tight",
+  );
+
+  check(
+    "Плотная витрина: рубрика капсом над заголовком в каждой карточке",
+    occurrences(html, "Дом и сад") === 4 + 1,
+    `${occurrences(html, "Дом и сад")} (1 заголовок + 4 карточки)`,
+  );
+
+  check(
+    "Плотная витрина: без теней и рамок — плоский стиль",
+    !/shadow-|drop-shadow/.test(html),
+    "теней нет",
+  );
+
+  check(
+    "Плотная витрина: пустая рубрика не рисует заголовок",
+    renderToStaticMarkup(
+      createElement(SectionGrid as never, { title: "Кино и сцена", slug: "cinema", articles: [] }),
+    ) === "",
+    "пусто",
+  );
+}
+
+/**
+ * The font pairing, read from the layout's source.
+ *
+ * `next/font` resolves the files at build time, so there is nothing to assert at runtime
+ * about whether Cyrillic is covered — what there is to assert is that the declaration
+ * still asks for it. A dropped `subsets: ["cyrillic"]` compiles, deploys, and renders
+ * the whole publication in a fallback face; a dropped weight compiles too, and then every
+ * serif headline quietly falls back. Both failures are invisible in the markup, which is
+ * why they are checked here rather than left to a visual review.
+ */
+function checkFonts() {
+  const layoutSource = readFileSync(
+    new URL("../src/app/layout.tsx", import.meta.url),
+    "utf8",
+  );
+
+  /*
+    Every pattern below is anchored at the `Lora({` / `Inter({` call rather than searched
+    for anywhere in the file. This file's comments quote the declarations verbatim — the
+    reasons the weights and the swap are there — and an unanchored count happily passes on
+    the comment while the code underneath is wrong, which is the one failure mode a
+    source-reading assertion has and the reason it is worth doing carefully.
+
+    `[\s\S]` rather than the `s` flag: the TypeScript target this project compiles for
+    predates `dotAll`, and a check suite that only runs on a newer compiler is a check
+    suite that stops running.
+  */
+  check(
+    "Шрифты: у антиквы объявлены 600 и 700 плюс 400 для цитат и лида",
+    /Lora\(\{[\s\S]*?weight:\s*\[[^\]]*["']600[^\]]*["']700[^\]]*\][\s\S]*?\}\)/.test(
+      layoutSource,
+    ),
+    "weight внутри вызова Lora()",
+  );
+
+  check(
+    "Шрифты: кириллица в подмножествах обоих начертаний",
+    occurrences(layoutSource, 'subsets: ["latin", "cyrillic"]') === 2,
+    `${occurrences(layoutSource, 'subsets: ["latin", "cyrillic"]')} вхождений`,
+  );
+
+  check(
+    "Шрифты: подмена вместо блокировки — нет сдвига верстки",
+    /Inter\(\{[\s\S]*?display: "swap"[\s\S]*?\}\)/.test(layoutSource) &&
+      /Lora\(\{[\s\S]*?display: "swap"[\s\S]*?\}\)/.test(layoutSource),
+    "display: swap у обоих",
+  );
+
+  check(
+    "Шрифты: гротеск остаётся основным текстом, антиква — только заголовки",
+    layoutSource.includes("--font-inter") &&
+      layoutSource.includes("--font-lora") &&
+      !layoutSource.includes("body:"),
+    "--font-inter + --font-lora",
+  );
+
+  const globalsSource = readFileSync(
+    new URL("../src/app/globals.css", import.meta.url),
+    "utf8",
   );
   check(
-    "Обложка: старый arbitrary-ratio убран",
-    !html.includes("aspect-[16/9]"),
-    "aspect-[16/9] больше не используется",
+    "Шрифты: тело и интерфейс на гротеске",
+    /body\s*\{[^}]*--font-inter/.test(globalsSource),
+    "body на --font-inter",
+  );
+  check(
+    "Шрифты: двойная линия первой полосы и линия рубрики объявлены один раз",
+    occurrences(globalsSource, ".rule-double {") === 1 &&
+      occurrences(globalsSource, ".rubric-line {") === 1,
+    "по одному объявлению",
   );
 }
 
@@ -490,8 +732,10 @@ function checkArchive() {
 checkGrouping();
 checkMarkup();
 checkCompactPreview();
-checkLeadCover();
+checkFrontHero();
+checkSectionGrid();
 checkTypography();
+checkFonts();
 checkForumBlock();
 checkArchive();
 

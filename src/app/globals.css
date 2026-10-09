@@ -50,6 +50,45 @@ body {
   line-height: 1;
 }
 
+/*
+  The rule that closes the front page.
+
+  A double hairline, the way a broadsheet separates its top page from the columns below: a
+  single rule reads as a card border, and two read as a page edge. `--color-rule` is the
+  same tone as every other divider on the site, so the front page does not acquire a
+  heavier palette than the article it links to.
+
+  Declared here rather than spelled out per page because the front page, the rubric grids
+  and the section footers all want the same one, and three copies of
+  `border-b-[3px] border-double` drift apart the first time someone edits one.
+*/
+.rule-double {
+  border-bottom: 3px double var(--color-rule);
+}
+
+/*
+  A rubric line: a heading, then a hairline that runs to the edge of the block, then the
+  link to everything in it.
+
+  The rule is a sibling of the heading rather than a `border-bottom` on it, so it starts
+  *after* the text instead of underlining it — that is the difference between a rubric and
+  a link with a rule stuck underneath. It takes the remaining width rather than a fixed
+  one, so the line ends flush at the same right edge whatever the rubric happens to be
+  called.
+*/
+.rubric-line {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.rubric-line::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background-color: var(--color-rule);
+}
+
 /* The diaeresis of the logotype Ё is amber, the letter body orange.
    A gradient clipped to the glyph avoids absolutely positioning two dots over
    font metrics, and it scales with any font size. */

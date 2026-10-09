@@ -85,17 +85,28 @@ export async function getPublishedArticles(
 /**
  * The lead story: an exclusive piece if there is one, otherwise the freshest
  * article overall. Matches the editorial rule described in the spec.
+ *
+ * Returns a `LoopArticle` rather than an `ArticleListItem` because the front page prints
+ * a reading time under the headline, and the only honest source for that number is the
+ * text. One article's body is a few kilobytes and it is the single largest thing on the
+ * page, so the cost is bounded — unlike the listing queries, which is why `LIST_FIELDS`
+ * stays without it.
  */
-export async function getHeroArticle(): Promise<ArticleListItem | null> {
+export async function getHeroArticle(): Promise<LoopArticle | null> {
   const exclusive = await prisma.article.findFirst({
     where: { status: "published", deletedAt: null, isExclusive: true },
     orderBy: BY_FRESHNESS,
-    select: LIST_FIELDS,
+    select: LOOP_FIELDS,
   });
 
   if (exclusive) return exclusive;
 
-  const [freshest] = await getPublishedArticles(1);
+  const freshest = await prisma.article.findFirst({
+    where: { status: "published", deletedAt: null },
+    orderBy: BY_FRESHNESS,
+    select: LOOP_FIELDS,
+  });
+
   return freshest ?? null;
 }
 

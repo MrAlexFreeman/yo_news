@@ -5,15 +5,34 @@ import { SITE_NAME, SITE_TAGLINE, SITE_TAGLINE_LONG, siteUrl } from "@/lib/site"
 
 import "./globals.css";
 
+/**
+ * Body face. Cyrillic is not optional here: every string on the site is Russian, and a
+ * family without that subset renders the whole publication in the fallback.
+ */
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin", "cyrillic"],
   display: "swap",
 });
 
+/**
+ * The type pair: an antiqua for anything that is a headline, a grotesque for everything
+ * else. Body text, metadata, rubric kickers and interface stay on Inter — that split is
+ * what makes a card read as a newspaper rather than as a page of serif.
+ *
+ * `weight: ["400", "600", "700"]` and not just the two the headlines use: the article
+ * deck and the pull-quote in `.article-body blockquote` are Lora at its regular weight,
+ * and a family loaded without that weight renders them in the Georgia fallback *inside* a
+ * serif block, which is more visibly broken than not using the face at all.
+ *
+ * `display: "swap"` and self-hosted files: no request to Google at runtime, and the text
+ * paints in the fallback immediately rather than waiting for a font that is already on
+ * disk.
+ */
 const lora = Lora({
   variable: "--font-lora",
   subsets: ["latin", "cyrillic"],
+  weight: ["400", "600", "700"],
   display: "swap",
 });
 

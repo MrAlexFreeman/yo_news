@@ -55,8 +55,15 @@ export function RubricLabel({
   );
 }
 
-/** Exclusive / 18+ badges shown next to the rubric. */
-function Badges({ article }: { article: ArticleListItem }) {
+/**
+ * Exclusive / 18+ badges shown next to the rubric.
+ *
+ * Exported because the front page's lead column prints its own rubric line and still has
+ * to carry the badges: «Эксклюзив» is the one marker that tells an editor and a reader the
+ * story is the desk's own, and dropping it from the front page would make the flagship
+ * position look like any other.
+ */
+export function Badges({ article }: { article: ArticleListItem }) {
   if (!article.isExclusive && !article.is18plus) return null;
 
   return (
@@ -139,8 +146,16 @@ function Heading({
 
 type ArticleCardProps = {
   article: ArticleListItem;
-  /** `lead` for the hero slot, `default` for section grids, `compact` for rails. */
-  variant?: "lead" | "default" | "compact";
+  /**
+   * `default` for section grids, `compact` for rails and sidebars.
+   *
+   * There was a third, `lead`, for the hero slot. It is gone because the front page's lead
+   * column is its own component now — `FrontPageHero` — and it prints the headline before
+   * the picture, with a metadata line under it, which is the order a newspaper uses and
+   * the reverse of what the old variant did. Keeping both would mean two ways to render the
+   * same thing, and the one nobody edits.
+   */
+  variant?: "default" | "compact";
   /**
    * Thumbnail size for `compact` only.
    *
@@ -234,63 +249,6 @@ export function ArticleCard({
     );
   }
 
-  if (variant === "lead") {
-    return (
-      <article className="group">
-        {/*
-          `aspect-video` with `object-cover` on the image: the ratio is fixed, so a
-          portrait or square photo is cropped rather than stretched or letterboxed.
-
-          `max-h-[400px]` is a ceiling, not part of the ratio — below roughly 711px of
-          width the 16:9 box is already under 400px and the cap does nothing; above it
-          the box flattens toward the cap. Without the cap a wide desktop hero runs to
-          500px and pushes the headline below the fold, which is the part of the card
-          that actually has to be read.
-        */}
-        <div className="relative aspect-video max-h-[400px] overflow-hidden rounded-sm bg-paper-dim">
-          {/*
-            `sizes` is the rendered width of that box, not the column's: the hero spans
-            two of three columns inside a max-w-7xl container, which is roughly 790px on
-            a wide screen. The previous 640px made the browser fetch a smaller candidate
-            than the slot needed, and the hero is the one image on the page that is
-            judged on sharpness.
-          */}
-          <Cover article={article} sizes="(max-width: 1024px) 100vw, 790px" preload={preload} className="transition-transform duration-500 group-hover:scale-[1.03]" />
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {article.category ? (
-            <RubricLabel name={article.category.name} slug={article.category.slug} />
-          ) : null}
-          <Badges article={article} />
-          {/* Decorative separator; the divider colour is too light to pass a
-              contrast audit, so it is muted instead. */}
-          <span aria-hidden className="text-ink-soft/40">
-            |
-          </span>
-          <time
-            dateTime={timestamp.toISOString()}
-            className="text-[10px] text-ink-soft"
-          >
-            {formatTime(timestamp)} · {formatDate(timestamp)}
-          </time>
-        </div>
-
-        <h1 className="mt-2 font-[family-name:var(--font-lora)] text-3xl leading-[1.12] font-bold text-ink sm:text-4xl lg:text-[2.75rem]">
-          <Link href={href} className={HEADLINE_LINK}>
-            {article.title}
-          </Link>
-        </h1>
-
-        {article.subtitle || article.lead ? (
-          <p className="mt-3 max-w-2xl text-base leading-relaxed text-ink-soft sm:text-lg">
-            {article.subtitle ?? article.lead}
-          </p>
-        ) : null}
-      </article>
-    );
-  }
-
   return (
     <article className="group flex h-full flex-col">
       <div className="relative aspect-[3/2] overflow-hidden rounded-sm bg-paper-dim">
@@ -307,7 +265,7 @@ export function ArticleCard({
 
         <Heading
           level={headingLevel}
-          className="clamp-3 font-[family-name:var(--font-lora)] text-base leading-snug font-bold text-ink"
+          className="clamp-3 font-[family-name:var(--font-lora)] text-base leading-snug font-bold tracking-tight text-ink"
         >
           <Link href={href} className={HEADLINE_LINK}>
             {article.title}
