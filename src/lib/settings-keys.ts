@@ -41,6 +41,9 @@ export const ALLOWED_KEYS = [
   "MAX_BOT_TOKEN",
   "MAX_CHAT_ID",
   "MAX_ENABLED",
+  "LIVE_STREAM_ENABLED",
+  "LIVE_STREAM_URL",
+  "LIVE_STREAM_TITLE",
 ] as const;
 
 export type SettingKey = (typeof ALLOWED_KEYS)[number];
@@ -82,6 +85,27 @@ export const SYNDICATION_FIELDS = {
 } as const satisfies Record<string, SyndicationField>;
 
 export type SyndicationFieldName = keyof typeof SYNDICATION_FIELDS;
+
+/**
+ * The «Прямой эфир» badge, and the third settings area.
+ *
+ * Not syndication, and not an API key: a flag, a URL and a short label that decide whether
+ * the masthead prints a badge. They get their own map for the same reason the messengers
+ * do — the token validator would reject all three, and the API-key validator would accept a
+ * `javascript:` URL without complaint, which is the one value here that reaches an `href`.
+ *
+ * The URL and the label are validated in `lib/live-stream.ts` rather than through
+ * `SyndicationFieldKind`, because `url` here means "a destination a reader clicks" and not
+ * "the API root a bot token is sent to": the first may be a site-relative path, and the
+ * second must never be.
+ */
+export const LIVE_STREAM_FIELDS = {
+  liveStreamEnabled: { key: "LIVE_STREAM_ENABLED" },
+  liveStreamUrl: { key: "LIVE_STREAM_URL" },
+  liveStreamTitle: { key: "LIVE_STREAM_TITLE" },
+} as const satisfies Record<string, { key: SettingKey }>;
+
+export type LiveStreamFieldName = keyof typeof LIVE_STREAM_FIELDS;
 
 export function isAllowedKey(key: string): key is SettingKey {
   return (ALLOWED_KEYS as readonly string[]).includes(key);

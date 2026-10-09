@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
 import {
-  ALLOWED_KEYS,
   FIELD_BY_NAME,
   type SettingKey,
   isAllowedKey,
@@ -43,25 +42,39 @@ function isJsonRequest(request: Request): boolean {
   return request.headers.get("content-type")?.split(";")[0].trim() === "application/json";
 }
 
-/** Setting key → the request field name that carries it, the reverse of the map. */
-const NAME_BY_KEY = Object.fromEntries(
+/**
+ * Setting key → the request field name that carries it, the reverse of the map.
+ *
+ * Partial on purpose, and that is the fix: this route serves the *API-key* form, so it walks
+ * `FIELD_BY_NAME` and nothing else. Walking `ALLOWED_KEYS` instead — as it did — put every key
+ * with no name in this map into `settings["undefined"]`, so all seven messenger keys collapsed
+ * into one property and the last one won. The response was not merely wrong in shape: the
+ * three API-key fields were still correct, which is exactly why nothing noticed, and adding
+ * three more nameless keys to the allowlist would have made the collision larger rather than
+ * exposing it.
+ *
+ * Type is `Record<string, FieldName | undefined>` rather than the older
+ * `Record<SettingKey, FieldName>`, because that older type asserted a completeness that does
+ * not exist: only 3 of 10 allowed keys are reachable here, by design.
+ */
+const NAME_BY_KEY: Partial<Record<SettingKey, FieldName>> = Object.fromEntries(
   Object.entries(FIELD_BY_NAME).map(([name, key]) => [key, name]),
-) as Record<SettingKey, FieldName>;
+);
 
 /**
- * GET → the current state of every allowed setting, with keys masked.
+ * GET → the current state of every API-key setting, with keys masked.
  *
- * Built by walking ALLOWED_KEYS rather than naming each field. The previous
- * version listed them one by one, which meant adding VK_ACCESS_TOKEN required
- * three coordinated edits and the third one was easy to forget — a silently
- * missing field reads as "this setting has no UI", not as a mistake.
+ * Walking `FIELD_BY_NAME` rather than naming each field: the previous version listed them one
+ * by one, which meant adding VK_ACCESS_TOKEN required three coordinated edits and the third
+ * was easy to forget — a silently missing field reads as "this setting has no UI", not as a
+ * mistake. See `NAME_BY_KEY` for why the allowlist is not walked instead.
  */
 export async function GET() {
   const resolved = await resolveAllSettings();
 
   const settings: Record<string, ReturnType<typeof toView>> = {};
-  for (const key of ALLOWED_KEYS) {
-    settings[NAME_BY_KEY[key]] = toView(resolved[key]);
+  for (const [name, key] of Object.entries(FIELD_BY_NAME)) {
+    settings[name] = toView(resolved[key]);
   }
 
   return NextResponse.json({ settings });
@@ -147,8 +160,8 @@ export async function POST(request: Request) {
   const after = await resolveAllSettings();
 
   const settings: Record<string, ReturnType<typeof toView>> = {};
-  for (const key of ALLOWED_KEYS) {
-    settings[NAME_BY_KEY[key]] = toView(after[key]);
+  for (const [name, key] of Object.entries(FIELD_BY_NAME)) {
+    settings[name] = toView(after[key]);
   }
 
   return NextResponse.json({

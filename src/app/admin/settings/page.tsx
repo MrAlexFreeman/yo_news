@@ -2,9 +2,14 @@ import type { Metadata } from "next";
 
 import { SettingsForm } from "@/app/admin/settings/components/settings-form";
 import {
+  LiveStreamSettings,
+  type LiveStreamState,
+} from "@/app/admin/settings/components/live-stream-settings";
+import {
   SyndicationSettings,
   type SyndicationState,
 } from "@/app/admin/settings/components/syndication-settings";
+import { toLiveStreamView } from "@/lib/live-stream";
 import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
 import { resolveAllSettings, toView } from "@/lib/settings";
 
@@ -58,18 +63,39 @@ export default async function SettingsPage() {
     },
   };
 
+  /*
+    The badge state, built by the same pure function the header uses, so the admin form and
+    the masthead cannot disagree about what is stored. `url` is echoed verbatim while `href`
+    is the resolved destination — an editor has to see the value that is actually in the
+    database in order to fix it, and `href: null` is what tells them it is not being used.
+  */
+  const liveView = toLiveStreamView({
+    enabled: resolved.LIVE_STREAM_ENABLED.value,
+    url: resolved.LIVE_STREAM_URL.value,
+    title: resolved.LIVE_STREAM_TITLE.value,
+  });
+
+  const liveStream: LiveStreamState = {
+    enabled: liveView.enabled,
+    url: resolved.LIVE_STREAM_URL.value,
+    title: resolved.LIVE_STREAM_TITLE.value,
+    href: liveView.href,
+    label: liveView.title,
+  };
+
   return (
     <div className="flex-1 bg-neutral-100 p-4">
       <div className="mx-auto max-w-3xl space-y-4">
         <header className="border border-neutral-300 bg-white px-5 py-4">
           <h1 className="text-base font-semibold text-neutral-900">Настройки</h1>
           <p className="mt-1 text-sm text-neutral-600">
-            Ключи внешних сервисов и каналы автопостинга, которые использует редакция.
+            Ключи внешних сервисов, каналы автопостинга и элементы шапки, которые использует редакция.
           </p>
         </header>
 
         <SettingsForm initial={initial} />
         <SyndicationSettings initial={syndication} />
+        <LiveStreamSettings initial={liveStream} />
       </div>
     </div>
   );

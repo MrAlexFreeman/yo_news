@@ -30,6 +30,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ArticleCard } from "../src/components/article-card";
 import { RiverArticleCard } from "../src/components/river-article-card";
+import { LiveBadge } from "../src/components/live-badge";
+import { toLiveStreamView, type LiveStreamView } from "../src/lib/live-stream";
 import { SectionGrid } from "../src/components/section-grid";
 import { ForumTopicsBlock } from "../src/components/forum-topics";
 import { OpinionsBlock } from "../src/components/opinions-block";
@@ -995,10 +997,18 @@ function checkStickyHeader() {
     shell.includes("absolute left-1/2 -translate-x-1/2"),
     "left-1/2 + -translate-x-1/2",
   );
+  /*
+    The live badge moved into one component shared by both headers, so this asserts the
+    component rather than a literal in either file — a copy of the check that greps for the
+    word "Прямой эфир" in one header would keep passing after the badge stopped rendering
+    there, which is exactly the state this is meant to catch.
+  */
   check(
     "Шапка: эфир и поиск остаются доступны",
-    shell.includes("Прямой эфир") && shell.includes('href="/search"'),
-    "эфир + поиск",
+    shell.includes("LiveBadge") &&
+      shell.includes("ml-auto flex shrink-0 items-center gap-1") &&
+      shell.includes('href="/search"'),
+    "значок эфира + поиск",
   );
 
   /*
@@ -1021,7 +1031,7 @@ function checkStickyHeader() {
    */
   check(
     "Шапка: мачта рендерится на сервере и передаётся как children",
-    layout.includes("<HeaderShell categories={categories}>") &&
+    /<HeaderShell categories={categories}[^>]*>/.test(layout) &&
       layout.includes('import { PublicHeader } from "@/components/public-header";'),
     "мачта в layout, дети в HeaderShell",
   );
@@ -1040,6 +1050,141 @@ function checkStickyHeader() {
  * text in the DOM at every width, and that the river and the sidebar draw from one shared
  * claim set.
  */
+/**
+ * The «Прямой эфир» badge, as it actually renders.
+ *
+ * These are behavioural rather than textual on purpose. The brief asks for a switch that
+ * shows and hides the badge, and the failure it is guarding against — leaving an empty gap,
+ * or shifting the search icon — is only observable in the output HTML: a badge hidden with
+ * `hidden` or `opacity-0` still emits its element and its padding, and a grep over the source
+ * cannot tell that from a badge that is genuinely absent.
+ *
+ * Rendering rather than reading the source also means the assertions survive the component
+ * being rewritten. The three states below are the three that matter: off, on-with-a-link, and
+ * on-without-one.
+ */
+function checkLiveBadge() {
+  const render = (live: LiveStreamView) =>
+    renderToStaticMarkup(createElement(LiveBadge as never, { live }));
+
+  const off = render(toLiveStreamView({ enabled: "false", url: "", title: "" }));
+  const onPath = render(
+    toLiveStreamView({ enabled: "true", url: "/live", title: "" }),
+  );
+  const onExternal = render(
+    toLiveStreamView({
+      enabled: "true",
+      url: "https://www.youtube.com/watch?v=abc",
+      title: "Прямой эфир",
+    }),
+  );
+  const onNoUrl = render(toLiveStreamView({ enabled: "true", url: "", title: "" }));
+  const onHostile = render(
+    toLiveStreamView({ enabled: "true", url: "javascript:alert(1)", title: "" }),
+  );
+
+  /*
+    The load-bearing assertion of the whole feature. `""` and not `<span hidden>`: an element
+    that is hidden but present keeps its padding, which pushes the search icon inward by the
+    width of a label nobody can read. On every page of the site, the moment an editor turns
+    the stream off.
+  */
+  check(
+    "Значок эфира: выключен — в разметке ничего нет",
+    off === "",
+    off === "" ? "пусто" : `выведено: ${off.slice(0, 60)}`,
+  );
+
+  check(
+    "Значок эфира: включён ведёт по адресу внутри сайта",
+    onPath.includes('href="/live"') && onPath.includes("Прямой эфир"),
+    "ссылка на /live",
+  );
+
+  /*
+    External opens in a new tab, site-relative does not. `rel="noopener noreferrer"` is not
+    decoration on a `target="_blank"` link: without it the opened page gets a handle on
+    `window.opener` and can navigate this tab out from under the reader.
+  */
+  check(
+    "Значок эфира: внешний адрес открывается в новой вкладке с защитой",
+    onExternal.includes('target="_blank"') &&
+      onExternal.includes('rel="noopener noreferrer"') &&
+      !onPath.includes("target="),
+    "внешний — новая вкладка, локальный — текущая",
+  );
+
+  /*
+    Enabled with nowhere to go is still a badge, and still not a link. An `<a>` with an empty
+    href would reload the current page on click, and a route invented for the purpose would
+    be a 404 in the masthead of every page.
+  */
+  check(
+    "Значок эфира: включён без адреса — надпись без ссылки",
+    onNoUrl.includes("Прямой эфир") && !onNoUrl.includes("<a "),
+    "текст без <a>",
+  );
+
+  /*
+    The rendered output must never contain the stored URL in a form that executes, even if a
+    bad value reached the database by some route that skipped validation — a hand-edited row,
+    or a future caller that forgets to resolve. Asserting it at the render boundary rather
+    than only at the validator is what makes it hold.
+  */
+  check(
+    "Значок эфира: опасный адрес не попадает в разметку ссылкой",
+    onHostile === onNoUrl,
+    "то же, что и без адреса",
+  );
+
+  check(
+    "Значок эфира: пульсирующая точка скрыта от читалки",
+    onPath.includes('aria-hidden="true"') && onPath.includes("live-dot"),
+    "точка декоративная",
+  );
+
+  /* ---- the label reaches both variants ---- */
+  const custom = render(
+    toLiveStreamView({ enabled: "true", url: "/live", title: "Эфир из думы" }),
+  );
+  check(
+    "Значок эфира: своя подпись выводится вместо «Прямой эфир»",
+    custom.includes("Эфир из думы") && !custom.includes("Прямой эфир"),
+    "подпись из настройки",
+  );
+
+  /* ---- both headers wire the same component ---- */
+  const masthead = readFileSync(
+    new URL("../src/components/public-header.tsx", import.meta.url),
+    "utf8",
+  );
+  const shell = readFileSync(
+    new URL("../src/components/header-shell.tsx", import.meta.url),
+    "utf8",
+  );
+  const layout = readFileSync(
+    new URL("../src/app/(public)/layout.tsx", import.meta.url),
+    "utf8",
+  );
+
+  check(
+    "Значок эфира: обе шапки рисуют один и тот же компонент",
+    masthead.includes("<LiveBadge") &&
+      shell.includes("<LiveBadge") &&
+      !masthead.includes("live-dot") &&
+      !shell.includes("live-dot"),
+    "общая отрисовка вместо двух копий",
+  );
+
+  check(
+    "Значок эфира: настройка приходит из layout в обе шапки",
+    layout.includes("getLiveStreamView()") &&
+      layout.includes("<HeaderShell categories={categories} live={live}>") &&
+      layout.includes("live={live}"),
+    "одно чтение на все публичные страницы",
+  );
+}
+
 function checkStoryRiver() {
   const card = (
     overrides: Partial<Parameters<typeof RiverArticleCard>[0]["article"]> = {},
@@ -1297,6 +1442,7 @@ function checkStoryRiver() {
 
 checkStoryRiver();
 checkStickyHeader();
+checkLiveBadge();
 checkGrouping();
 checkCompactPreview();
 checkRubricFill();

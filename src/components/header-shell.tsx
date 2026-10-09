@@ -5,7 +5,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
+import { LiveBadge } from "@/components/live-badge";
 import { Logo } from "@/components/logo";
+import { LIVE_STREAM_OFF, type LiveStreamView } from "@/lib/live-stream";
 
 /**
  * Scroll depth at which the masthead gives way to the compact bar.
@@ -42,9 +44,12 @@ const COMPACT_AFTER_PX = 120;
  */
 export function HeaderShell({
   categories,
+  live = LIVE_STREAM_OFF,
   children,
 }: {
   categories: { name: string; slug: string }[];
+  /** Passed through to the compact bar; see `LiveBadge` for the off behaviour. */
+  live?: LiveStreamView;
   children: React.ReactNode;
 }) {
   const markerRef = useRef<HTMLDivElement>(null);
@@ -96,7 +101,11 @@ export function HeaderShell({
       */}
       <div inert={compact ? true : undefined}>{children}</div>
 
-      <CompactHeader categories={categories} compact={compact} />
+      <CompactHeader
+        categories={categories}
+        live={live}
+        compact={compact}
+      />
     </div>
   );
 }
@@ -122,9 +131,11 @@ const MENU_PANEL_ID = "compact-sections";
  */
 function CompactHeader({
   categories,
+  live,
   compact,
 }: {
   categories: { name: string; slug: string }[];
+  live: LiveStreamView;
   compact: boolean;
 }) {
   const pathname = usePathname();
@@ -211,10 +222,17 @@ function CompactHeader({
           </Link>
 
           <div className="ml-auto flex shrink-0 items-center gap-1">
-            <span className="hidden items-center gap-1.5 text-[10px] font-semibold tracking-wide text-live-ink uppercase sm:inline-flex">
-              <span className="live-dot size-1.5 rounded-full bg-live" aria-hidden />
-              Прямой эфир
-            </span>
+            {/*
+              Same component and same rule as the masthead: off means nothing is rendered,
+              and `ml-auto` on this group keeps the search button at the far right either
+              way. `hidden sm:inline-flex` because the compact bar has 52px to work with and
+              the badge is the first thing that should go on a phone.
+            */}
+            <LiveBadge
+              live={live}
+              variant="compact"
+              className="hidden sm:inline-flex"
+            />
 
             <Link
               href="/search"

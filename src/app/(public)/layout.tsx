@@ -3,6 +3,7 @@ import { MascotWidget } from "@/components/mascot-widget";
 import { PublicFooter } from "@/components/public-footer";
 import { PublicHeader } from "@/components/public-header";
 import { YandexMetrika } from "@/components/analytics/yandex-metrika";
+import { getLiveStreamView } from "@/lib/live-stream-server";
 import { getCategories, getTrendingTags } from "@/lib/public-queries";
 
 /**
@@ -26,11 +27,12 @@ const TRENDING_TAGS_COUNT = 5;
  */
 export default async function PublicLayout({ children }: LayoutProps<"/">) {
   // One round trip for both header shelves: the rubric pills and the topic strip beneath
-  // them. Neither waits on the other, and `TrendingBar` renders nothing when the strip
-  // comes back empty, so an install with no tags pays nothing and shows no bar.
-  const [categories, trendingTags] = await Promise.all([
+  // them, plus the live badge. Neither waits on the other, and `TrendingBar` renders nothing
+  // when the strip comes back empty, so an install with no tags pays nothing and shows no bar.
+  const [categories, trendingTags, live] = await Promise.all([
     getCategories(),
     getTrendingTags(TRENDING_TAGS_COUNT),
+    getLiveStreamView(),
   ]);
   const now = new Date();
 
@@ -42,10 +44,11 @@ export default async function PublicLayout({ children }: LayoutProps<"/">) {
         shell only owns what has to be client-side: the scroll threshold and the slim bar
         that replaces the masthead once the reader is 120px down.
       */}
-      <HeaderShell categories={categories}>
+      <HeaderShell categories={categories} live={live}>
         <PublicHeader
           categories={categories}
           trendingTags={trendingTags}
+          live={live}
           now={now}
         />
       </HeaderShell>

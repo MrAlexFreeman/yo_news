@@ -48,6 +48,7 @@ import {
 import {
   ALLOWED_KEYS,
   FIELD_BY_NAME,
+  LIVE_STREAM_FIELDS,
   SYNDICATION_FIELDS,
   isAllowedKey,
   maskSecret,
@@ -55,6 +56,15 @@ import {
   type SettingKey,
   type SettingsViewState,
 } from "../src/lib/settings-keys";
+import {
+  LIVE_STREAM_DEFAULT_TITLE,
+  parseLiveStreamEnabled,
+  resolveLiveStreamHref,
+  resolveLiveStreamTitle,
+  toLiveStreamView,
+  validateLiveStreamTitle,
+  validateLiveStreamUrl,
+} from "../src/lib/live-stream";
 import {
   DZEN_EXPERIMENT_LOCKED_HINT,
   DZEN_EXPERIMENT_WINDOW_MS,
@@ -1291,14 +1301,14 @@ function checkSettingsPrimitives() {
   );
 
   /*
-    The allowlist grew from three keys to nine when messenger auto-posting landed, and
-    the API-key names are asserted by name because they are the ones the existing
-    routes read. The messenger keys are asserted below instead, since they are
-    reached through SYNDICATION_FIELDS.
+    The allowlist grew from three keys to nine when messenger auto-posting landed, then to
+    twelve with the live-stream badge. The API-key names are asserted by name because they
+    are the ones the existing routes read. The messenger keys are asserted below instead,
+    since they are reached through SYNDICATION_FIELDS.
   */
   check(
-    "Настройки: allowlist содержит десять ключей",
-    ALLOWED_KEYS.length === 10 &&
+    "Настройки: allowlist содержит тринадцать ключей",
+    ALLOWED_KEYS.length === 13 &&
       isAllowedKey("DEEPSEEK_API_KEY") &&
       isAllowedKey("DEEPINFRA_API_KEY") &&
       isAllowedKey("VK_ACCESS_TOKEN") &&
@@ -1308,7 +1318,10 @@ function checkSettingsPrimitives() {
       isAllowedKey("TELEGRAM_API_ROOT") &&
       isAllowedKey("MAX_BOT_TOKEN") &&
       isAllowedKey("MAX_CHAT_ID") &&
-      isAllowedKey("MAX_ENABLED"),
+      isAllowedKey("MAX_ENABLED") &&
+      isAllowedKey("LIVE_STREAM_ENABLED") &&
+      isAllowedKey("LIVE_STREAM_URL") &&
+      isAllowedKey("LIVE_STREAM_TITLE"),
     ALLOWED_KEYS.join(", "),
   );
 
@@ -1324,28 +1337,51 @@ function checkSettingsPrimitives() {
   /*
     Every allowed key must be reachable from exactly one field map. "At least one" is
     the invariant that matters: a key in the allowlist that no map names can never be
-    read or written, which reads as "this setting has no UI". A key in *both* maps
-    would be validated as a token by one route and as a destination by the other, so
-    the two are counted separately here and asserted disjoint above.
+    read or written, which reads as "this setting has no UI". A key in *two* maps would be
+    validated by two routes with different rules — a live-stream URL read as a token would
+    be rejected outright, and read as an API root would be forced to be an https origin the
+    site-relative `/live` is not — so the maps are counted separately and asserted disjoint.
   */
   const fieldKeys: SettingKey[] = Object.values(FIELD_BY_NAME);
-  // Annotated rather than inferred: `SYNDICATION_FIELDS` is `as const`, so without
-  // the annotation this is the six literal names rather than `SettingKey[]`, and
-  // `.includes` then refuses any key from the wider allowlist.
+  // Annotated rather than inferred: `SYNDICATION_FIELDS` and `LIVE_STREAM_FIELDS` are
+  // `as const`, so without the annotation these are the literal names rather than
+  // `SettingKey[]`, and `.includes` then refuses any key from the wider allowlist.
   const syndicationKeys: SettingKey[] = Object.values(SYNDICATION_FIELDS).map(
+    (field) => field.key,
+  );
+  const liveStreamKeys: SettingKey[] = Object.values(LIVE_STREAM_FIELDS).map(
     (field) => field.key,
   );
 
   check(
     "Настройки: у каждого разрешённого ключа есть имя поля",
-    ALLOWED_KEYS.every((key) => fieldKeys.includes(key) || syndicationKeys.includes(key)),
-    `${Object.keys(FIELD_BY_NAME).length} + ${syndicationKeys.length} полей на ${ALLOWED_KEYS.length} ключей`,
+    ALLOWED_KEYS.every(
+      (key) =>
+        fieldKeys.includes(key) ||
+        syndicationKeys.includes(key) ||
+        liveStreamKeys.includes(key),
+    ),
+    `${Object.keys(FIELD_BY_NAME).length} + ${syndicationKeys.length} + ${liveStreamKeys.length} полей на ${ALLOWED_KEYS.length} ключей`,
   );
 
   check(
     "Настройки: ключ не попадает сразу в две карты полей",
-    syndicationKeys.every((key) => !fieldKeys.includes(key)),
-    `${syndicationKeys.length} мессенджерных ключей отдельно от ${fieldKeys.length} API-ключей`,
+    syndicationKeys.every((key) => !fieldKeys.includes(key)) &&
+      liveStreamKeys.every((key) => !fieldKeys.includes(key)) &&
+      liveStreamKeys.every((key) => !syndicationKeys.includes(key)),
+    `${syndicationKeys.length} мессенджерных и ${liveStreamKeys.length} эфирных отдельно от ${fieldKeys.length} API-ключей`,
+  );
+
+  /*
+    The live-stream keys have to be exactly these three. Asserted as a set rather than as
+    counts alone so a fourth key added to the map — or one renamed onto an existing secret —
+    fails here instead of quietly widening what `/api/admin/live-stream` will write.
+  */
+  check(
+    "Настройки: карта эфира — ровно три ключа LIVE_STREAM_*",
+    liveStreamKeys.length === 3 &&
+      liveStreamKeys.every((key) => key.startsWith("LIVE_STREAM_")),
+    liveStreamKeys.join(", "),
   );
 
   check(
@@ -2704,7 +2740,8 @@ async function main() {
   checkArticleMedia();
   checkAiCover();
   checkDeepInfraEnvelope();
-  checkSettingsPrimitives();
+  checkLiveStream();
+checkSettingsPrimitives();
   checkBalances();
   checkPhotoSources();
   checkFluxModels();
@@ -2716,7 +2753,165 @@ async function main() {
   checkVkNoNext();
   checkVideoDropGuard();
   checkVkVideo();
-  checkSettingsWriteIsOptIn();
+  /**
+ * The «Прямой эфир» badge: what may be stored, and what reaches the masthead.
+ *
+ * This is the one settings area whose value lands in an `href` on every page of the site, so
+ * it is asserted rather than assumed. A `javascript:` URL stored here is not a broken link: it
+ * is script running in this site's own origin for every reader who clicks the masthead.
+ *
+ * The rejections are listed one by one rather than asserted as a class, because each is a
+ * different mistake someone actually makes — a scheme typo, a plaintext stream, and a
+ * protocol-relative link copied out of a browser's address bar. A single "rejects bad URLs"
+ * assertion would pass just as well if the class were accidentally narrowed to the first of
+ * them.
+ */
+function checkLiveStream() {
+  /* ---- the default is off, which is the opposite of the messenger flags ---- */
+  check(
+    "Эфир: без настройки значок выключен",
+    !parseLiveStreamEnabled("") &&
+      !parseLiveStreamEnabled("   ") &&
+      !parseLiveStreamEnabled("maybe") &&
+      !parseLiveStreamEnabled("null") &&
+      !toLiveStreamView({ enabled: "", url: "", title: "" }).enabled,
+    "пусто и неопознанное — выключено",
+  );
+
+  check(
+    "Эфир: включён принимает обычные формы записи",
+    ["true", "1", "on", "да", "TRUE", "  true  "].every((v) => parseLiveStreamEnabled(v)) &&
+      ["false", "0", "off", "нет"].every((v) => !parseLiveStreamEnabled(v)),
+    "те же формы записи, что и у флагов мессенджеров",
+  );
+
+  /* ---- destinations that must never reach an href ---- */
+  for (const hostile of [
+    "javascript:alert(document.domain)",
+    "JavaScript:alert(1)",
+    "  javascript:alert(1)",
+    "data:text/html;base64,PHNjcmlwdD4=",
+    "vbscript:msgbox(1)",
+    "http://example.com/stream",
+    "//evil.example.com/stream",
+    "/\\evil.example.com/stream",
+    "ftp://example.com/stream",
+    "https://user:pass@example.com/stream",
+  ]) {
+    check(
+      `Эфир: адрес отклонён — ${hostile.slice(0, 40)}`,
+      resolveLiveStreamHref(hostile) === null && validateLiveStreamUrl(hostile) !== null,
+      "и не рендерится ссылкой, и не проходит проверку",
+    );
+  }
+
+  /* ---- destinations that are legitimate ---- */
+  check(
+    "Эфир: путь внутри сайта принимается",
+    resolveLiveStreamHref("/live") === "/live" &&
+      resolveLiveStreamHref("  /category/society  ") === "/category/society" &&
+      resolveLiveStreamHref("/news/oblozhka-tekushchey-novosti") ===
+        "/news/oblozhka-tekushchey-novosti",
+    "/live и /category/society",
+  );
+
+  check(
+    "Эфир: внешний https-адрес принимается",
+    resolveLiveStreamHref("https://www.youtube.com/watch?v=abc") ===
+      "https://www.youtube.com/watch?v=abc",
+    "youtube",
+  );
+
+  /*
+    Empty is "no destination", not an invalid URL. It has to be valid: clearing the field is
+    turning the badge into a plain label, which is a real configuration, and a validation error
+    there would make the field impossible to clear.
+  */
+  check(
+    "Эфир: пустой адрес — это «без ссылки», а не ошибка",
+    resolveLiveStreamHref("") === null &&
+      resolveLiveStreamHref("   ") === null &&
+      validateLiveStreamUrl("") === null,
+    "значок без ссылки",
+  );
+
+  /*
+    The stored value is echoed back to the editor verbatim, so validation has to separate the
+    two cases at the door. A form that rendered the resolved value instead would show `null`
+    for a hostile URL and leave the editor unable to tell a bad value from a missing one.
+  */
+  check(
+    "Эфир: валидатор отличает годный адрес от негодного",
+    validateLiveStreamUrl("https://ok.example/live") === null &&
+      validateLiveStreamUrl("/live") === null &&
+      validateLiveStreamUrl("javascript:alert(1)") !== null &&
+      validateLiveStreamUrl("//evil.example/live") !== null,
+    "годный проходит, негодный — нет",
+  );
+
+  /* ---- the label ---- */
+  check(
+    "Эфир: пустая подпись даёт «Прямой эфир»",
+    resolveLiveStreamTitle("") === LIVE_STREAM_DEFAULT_TITLE &&
+      resolveLiveStreamTitle("   ") === LIVE_STREAM_DEFAULT_TITLE,
+    LIVE_STREAM_DEFAULT_TITLE,
+  );
+
+  check(
+    "Эфир: длинная подпись обрезается, а не ломает шапку",
+    resolveLiveStreamTitle("а".repeat(200)).length <= 61 &&
+      resolveLiveStreamTitle("а".repeat(200)).endsWith("…"),
+    `${resolveLiveStreamTitle("а".repeat(200)).length} символов с многоточием`,
+  );
+
+  /*
+    A bidi override pasted from another page would make the header display one string and read
+    as another. Stripped rather than rejected: the label is cosmetic, and refusing the save
+    over an invisible character would be worse than printing the clean text.
+  */
+  const label = "Прямой эфир";
+  const withBidi = label + String.fromCodePoint(0x202e);
+  const withBom = String.fromCodePoint(0xfeff) + label;
+  const withZeroWidth = label + String.fromCodePoint(0x200b);
+  check(
+    "Эфир: невидимые символы вычищаются из подписи",
+    resolveLiveStreamTitle(withBidi) === "Прямой эфир" &&
+      resolveLiveStreamTitle(withBom) === "Прямой эфир" &&
+      resolveLiveStreamTitle(withZeroWidth) === "Прямой эфир",
+    "bidi-override, BOM и zero-width убраны",
+  );
+
+  /* ---- what the header actually receives ---- */
+  check(
+    "Эфир: выключенный значок не превращается во включённый",
+    !toLiveStreamView({ enabled: "false", url: "https://a.example/l", title: "" }).enabled,
+    "выключено",
+  );
+
+  check(
+    "Эфир: включённый значок без безопасного адреса остаётся без ссылки",
+    toLiveStreamView({ enabled: "true", url: "", title: "Эфир" }).href === null &&
+      toLiveStreamView({ enabled: "true", url: "javascript:alert(1)", title: "" }).href ===
+        null,
+    "нет безопасного адреса — нет ссылки",
+  );
+
+  check(
+    "Эфир: протокол-относительный адрес отброшен даже при включённом значке",
+    toLiveStreamView({ enabled: "true", url: "//evil.example/x", title: "" }).href === null,
+    "уходит наружу, а не на сайт",
+  );
+
+  check(
+    "Эфир: подпись длиннее предела отвергается, а не обрезается молча",
+    validateLiveStreamTitle("а".repeat(200)) !== null &&
+      validateLiveStreamTitle("а".repeat(60)) === null,
+    "200 — ошибка, 60 — можно",
+  );
+}
+
+/* ---- live stream ---- */
+checkSettingsWriteIsOptIn();
 
   const base = process.env.CHECK_BASE_URL?.trim() || "http://localhost:3000";
 

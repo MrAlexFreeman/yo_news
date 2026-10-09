@@ -1,11 +1,13 @@
 import { Search } from "lucide-react";
 import Link from "next/link";
 
+import { LiveBadge } from "@/components/live-badge";
 import { LiveDateline } from "@/components/live-dateline";
 import { Logo } from "@/components/logo";
 import { NavPill } from "@/components/nav-pill";
 import { TrendingBar } from "@/components/trending-bar";
 import { formatDateline } from "@/lib/date";
+import { LIVE_STREAM_OFF, type LiveStreamView } from "@/lib/live-stream";
 import { SITE_TAGLINE } from "@/lib/site";
 
 /** Static market strip — the spec asks for a fixed weather/rate line. */
@@ -24,6 +26,14 @@ type PublicHeaderProps = {
    * an install with no tags must not print a labelled bar with nothing in it.
    */
   trendingTags: { name: string; slug: string }[];
+  /**
+   * The live-stream badge, or the off view.
+   *
+   * Defaults to off rather than being required, so the component still renders in a check
+   * that does not care about the badge. A caller that forgets to pass it gets the safe
+   * outcome — no badge — instead of an error or, worse, an unconditional one.
+   */
+  live?: LiveStreamView;
   /** Frozen so a statically generated page keeps the build-time dateline. */
   now: Date;
 };
@@ -32,7 +42,12 @@ type PublicHeaderProps = {
  * Masthead: dateline + ticker on top, wordmark and controls in the middle, a
  * horizontally scrollable rubric strip of pill links below.
  */
-export function PublicHeader({ categories, trendingTags, now }: PublicHeaderProps) {
+export function PublicHeader({
+  categories,
+  trendingTags,
+  live = LIVE_STREAM_OFF,
+  now,
+}: PublicHeaderProps) {
   return (
     <>
       <header className="border-b border-rule bg-paper">
@@ -74,14 +89,15 @@ export function PublicHeader({ categories, trendingTags, now }: PublicHeaderProp
         </Link>
 
         <div className="flex items-center gap-2">
-          {/* Live badge with a pulsing indicator. */}
-          <span className="hidden items-center gap-2 rounded-full border border-live/30 bg-live/10 px-3 py-1.5 text-[11px] font-semibold tracking-wide text-live-ink uppercase sm:inline-flex">
-            <span
-              className="live-dot size-2 rounded-full bg-live"
-              aria-hidden
-            />
-            Прямой эфир
-          </span>
+          {/*
+            The live badge, or nothing at all. `LiveBadge` returns null when the stream is
+            off, which is what keeps the search icon flush to the right edge instead of
+            leaving the width of a label behind.
+          */}
+          <LiveBadge
+            live={live}
+            className="hidden sm:inline-flex"
+          />
 
           {/* No link to /admin: the CMS is for editors, not readers. It stays
               reachable by typing the path, and Basic Auth in src/proxy.ts is the
