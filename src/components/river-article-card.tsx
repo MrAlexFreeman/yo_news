@@ -25,7 +25,8 @@ import { cn } from "@/lib/utils";
  * A story with no photograph drops the image and runs the text across the full width at the
  * river's own type sizes. It is not given a grey plate and it is not squeezed into the 40%
  * column: a headline alone is wide enough to set at 24px, and a card that reserves space
- * for a picture that will never arrive is a hole in the column.
+ * for a picture that will never arrive is a hole in the column. `Article` has one image
+ * field, `coverImage` — there is no `imageUrl` to fall back to.
  */
 export function RiverArticleCard({
   article,
@@ -39,7 +40,7 @@ export function RiverArticleCard({
   now: Date;
 }) {
   const timestamp = article.publishedAt ?? article.createdAt;
-  const picture = Boolean(article.coverImage);
+  const hasImage = Boolean(article.coverImage);
   const standfirst = riverStandfirst(article);
 
   const credit = [article.photoSource, article.photoAuthor]
@@ -53,11 +54,23 @@ export function RiverArticleCard({
         lead ? "pt-0 pb-7" : "py-6",
       )}
     >
-      {/* Text. `md:basis-2/5` rather than a percentage width: a basis is a share of the
-          flex container, so it stays 40% of whatever the column is at any width, while
-          `md:w-[40%]` would measure against the parent's content box and leave the gap
-          unaccounted for. */}
-      <div className="flex w-full flex-col md:basis-2/5">
+      {/*
+        Text. `md:basis-2/5` rather than a percentage width: a basis is a share of the flex
+        container, so it stays 40% of whatever the column is at any width, while
+        `md:w-[40%]` would measure against the parent's content box and leave the gap
+        unaccounted for.
+
+        The basis is applied *only when there is a photograph*. With none, the row has a
+        single child, and a lone child still carrying `md:basis-2/5` leaves 60% of the
+        column as empty paper beside a headline — the grey-rectangle complaint in reverse:
+        not a box where a picture should be, but bare space where a headline should be.
+      */}
+      <div
+        className={cn(
+          "flex w-full flex-col",
+          hasImage && "md:basis-2/5",
+        )}
+      >
         {article.category ? (
           <RubricLabel
             name={article.category.name}
@@ -110,20 +123,32 @@ export function RiverArticleCard({
       {/*
         The picture. `md:basis-3/5` is the other 60%, and `shrink-0` on the media wrapper
         keeps the text from pushing it narrower on a long Russian headline.
+
+        `relative` on the frame is load-bearing, and this is the bug that made the first
+        photograph fill the screen. `CoverImage` renders a Next `<Image fill>`, which is
+        `position: absolute; inset: 0` — it positions itself against the nearest positioned
+        ancestor, not against its own box. With no `relative` here the nearest one was the
+        initial containing block, so all eleven images in the river stacked on top of each
+        other at the top of the document: the first screen was one enormous photograph, and
+        every card below it kept an empty grey frame where its own image should have been.
+
+        `max-h` caps what `aspect-video` computes. Eight columns of a 1280 page is ~790px
+        wide, and 790/16:9 is 444px — taller than the fold, so the headline and its deck
+        fell below it. The ratio alone is not a height limit.
       */}
-      {picture ? (
+      {hasImage ? (
         <div className="w-full shrink-0 md:basis-3/5">
           <Link
             href={`/news/${article.slug}`}
             tabIndex={-1}
             aria-hidden
-            className="block aspect-video w-full overflow-hidden rounded-sm bg-paper-dim"
+            className="relative block aspect-video max-h-[360px] w-full overflow-hidden rounded-sm bg-paper-dim md:max-h-[380px]"
           >
             <CoverImage
               src={article.coverImage as string}
               alt=""
               sizes="(max-width: 768px) 100vw, (max-width: 1280px) 60vw, 460px"
-              className="object-cover transition-transform duration-500 group-hover:scale-[1.02]"
+              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.02]"
             />
           </Link>
 

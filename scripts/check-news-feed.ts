@@ -1111,7 +1111,7 @@ function checkStoryRiver() {
 
   check(
     "Река: на десктопе текст слева, фото справа",
-    plain.includes("md:basis-2/5") && withPhoto.includes("md:basis-3/5"),
+    withPhoto.includes("md:basis-2/5") && withPhoto.includes("md:basis-3/5"),
     "40% текст / 60% фото",
   );
 
@@ -1148,6 +1148,34 @@ function checkStoryRiver() {
     "кредит выводится",
   );
 
+  /*
+   * The regression, and the reason this file changed at all.
+   *
+   * `CoverImage` renders a Next `<Image fill>`, which is `position: absolute; inset: 0` —
+   * it positions against the nearest *positioned* ancestor, not against its own box. The
+   * frame had no `relative`, so every image in the river resolved to the initial containing
+   * block and all eleven stacked on top of each other at the top of the document. What a
+   * reader saw was one photograph across the first screen and a column of empty grey frames
+   * where the other ten belonged. This assertion is on `relative` in the frame's classes,
+   * because that is the whole of the fix.
+   */
+  check(
+    "Река: рамка фото — позиционированный предок для absolutely-positioned картинки",
+    /class="relative block aspect-video/.test(withPhoto),
+    "relative на обёртке",
+  );
+
+  /*
+   * `aspect-video` sets a ratio, not a ceiling. Eight columns of a 1280 page is about 790px,
+   * and 790/16:9 is 444px — below the headline and its deck on a laptop. The cap is what
+   * keeps the lead photograph a photograph rather than the whole first screen.
+   */
+  check(
+    "Река: высота фото ограничена, 16:9 — это пропорция, а не предел",
+    withPhoto.includes("max-h-[360px]") && withPhoto.includes("md:max-h-[380px]"),
+    "max-h-[360px] md:max-h-[380px]",
+  );
+
   /* ---- a story with no photograph ---- */
 
   /*
@@ -1164,6 +1192,22 @@ function checkStoryRiver() {
     "Река: без фото заголовок остаётся крупным",
     plain.includes("text-xl leading-snug md:text-2xl"),
     "те же кегли, что и у карточки с фото",
+  );
+
+  /*
+   * The other half of the same complaint. A lone child that still carries `md:basis-2/5`
+   * takes 40% of the column and leaves the other 60% as bare paper — the inverse of the grey
+   * frame: not a box where a picture should be, but empty space where a headline should be.
+   */
+  check(
+    "Река: без фото текст занимает всю ширину колонки",
+    !plain.includes("md:basis-2/5"),
+    "basis 2/5 только когда есть фото",
+  );
+  check(
+    "Река: с фото текст остаётся в 40%, иначе картинка не влезет",
+    withPhoto.includes("md:basis-2/5") && withPhoto.includes("md:basis-3/5"),
+    "2/5 + 3/5",
   );
 
   /* ---- the deck ---- */
