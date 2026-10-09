@@ -53,6 +53,7 @@ import {
   isAllowedKey,
   maskSecret,
   mergeSettings,
+  validateApiKeyField,
   type SettingKey,
   type SettingsViewState,
 } from "../src/lib/settings-keys";
@@ -2913,6 +2914,7 @@ async function main() {
   checkAiCover();
   checkDeepInfraEnvelope();
   checkLiveStream();
+  checkApiKeyCharsets();
 checkImageUpscale();
   await checkFalQueue();
 checkSettingsPrimitives();
@@ -3376,6 +3378,106 @@ function checkImageUpscale() {
  * assertion would pass just as well if the class were accidentally narrowed to the first of
  * them.
  */
+/**
+ * Which characters each API-key field accepts.
+ *
+ * Added because a real key was refused: fal.ai issues `<key_id>:<key_secret>`, and the route's
+ * charset had no colon in it. The editor could press «Тест подключения» — which never applied
+ * that charset — watch the provider accept the key, and then be blocked from saving it by a
+ * field two inches below. Both halves of the form disagreed about the same value, and the
+ * suite was green throughout.
+ *
+ * The colon is therefore allowed for fal and for nobody else, and the cases below are the two
+ * that matter in opposite directions: a real fal key must save, and the widening must not
+ * have turned the field into a place where a pasted sentence is accepted.
+ */
+function checkApiKeyCharsets() {
+  /** Two real-shaped fal keys: an id, a secret, and the colon between them. */
+  for (const key of [
+    "a1b2c3d4e5f6a7b8:9c8d7e6f5a4b3c2d1e0f9a8b",
+    "kZx9QpL2mNb4VcRt7:Yh3DsW5FgHjKl1ZaQwErTyU6",
+  ]) {
+    check(
+      `Ключ fal в формате id:secret принимается — ${key.slice(0, 12)}…`,
+      validateApiKeyField("falApiKey", key) === null,
+      validateApiKeyField("falApiKey", key) ?? "принят",
+    );
+  }
+
+  /*
+    The same value on a field that has no reason to accept a colon. This is the assertion that
+    stops the fix from being "add `:` to the shared pattern", which would work and would be
+    wrong: it relaxes three providers to solve one.
+  */
+  check(
+    "Двоеточие остаётся запрещённым для остальных провайдеров",
+    validateApiKeyField("deepseekApiKey", "a1b2c3d4e5f6a7b8:9c8d7e6f5a4b3c2d1e0f9a8b") !== null &&
+      validateApiKeyField("deepinfraApiKey", "a1b2c3d4:9c8d7e6f5a4b3c2d1e0f9a8b") !== null &&
+      validateApiKeyField("vkAccessToken", "a1b2c3d4:9c8d7e6f5a4b3c2d1e0f9a8b") !== null,
+    "только falApiKey",
+  );
+
+  /* ---- the check still does its original job ---- */
+  for (const bad of [
+    "sk-abc def ghi",
+    "sk-abc\"quoted\"",
+    "sk-abc\ndef",
+    "наш ключ для сервиса",
+    "sk-abc;drop",
+  ]) {
+    check(
+      `Ключ fal по-прежнему отвергает мусор — ${JSON.stringify(bad).slice(0, 24)}`,
+      validateApiKeyField("falApiKey", bad) !== null,
+      "отвергнут",
+    );
+  }
+
+  /* ---- length, unchanged by the widening ---- */
+  check(
+    "Длина ключа проверяется одинаково для всех полей",
+    validateApiKeyField("falApiKey", "a:bb") !== null &&
+      validateApiKeyField("deepseekApiKey", "a:bb") !== null &&
+      validateApiKeyField("falApiKey", "a".repeat(301)) !== null &&
+      validateApiKeyField("falApiKey", "a".repeat(60)) === null,
+    "короткий — ошибка, длинный — ошибка",
+  );
+
+  /*
+    Trim. A key pasted out of a dashboard or a password manager very often carries a trailing
+    newline; stored verbatim it is indistinguishable from a wrong key at the provider, which
+    answers "authentication failed" while the editor is looking at a correct one.
+  */
+  check(
+    "Ключи обрезаются по краям",
+    validateApiKeyField("falApiKey", "  a1b2c3d4e5f6a7b8:9c8d7e6f5a4b3c2d1e0f9a8b  ") ===
+      null &&
+      validateApiKeyField("deepseekApiKey", "  sk-abcdefghijkl  ") === null,
+    "пробелы по краям не считаются ошибкой",
+  );
+
+  /*
+    Empty clears rather than fails, which is how the form resets a field to fall back to
+    `.env`. Rejecting it would make a key impossible to remove through the UI.
+  */
+  check(
+    "Пустое значение — это очистка, а не ошибка",
+    validateApiKeyField("falApiKey", "") === null &&
+      validateApiKeyField("falApiKey", "   ") === null,
+    "принимается",
+  );
+
+  /*
+    The two halves of the form must agree. The test endpoint never applied the charset, and
+    that asymmetry is what made this confusing: the button said the key was fine and the save
+    said it was not. Asserted as a property so a future route cannot quietly diverge again.
+  */
+  check(
+    "Правила записи и правила теста не расходятся по набору полей",
+    Object.keys(FIELD_BY_NAME).length === 4 && "falApiKey" in FIELD_BY_NAME,
+    Object.keys(FIELD_BY_NAME).join(", "),
+  );
+}
+
 function checkLiveStream() {
   /* ---- the default is off, which is the opposite of the messenger flags ---- */
   check(

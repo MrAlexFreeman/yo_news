@@ -5,6 +5,7 @@ import {
   type SettingKey,
   isAllowedKey,
   toView,
+  validateApiKeyField,
 } from "@/lib/settings-keys";
 import { resolveAllSettings, setSetting } from "@/lib/settings";
 
@@ -24,19 +25,16 @@ export const dynamic = "force-dynamic";
  * while a cross-origin JSON fetch needs a preflight that no CORS header permits.
  */
 
-/** Long enough to reject an obvious typo, short enough to reject a pasted page. */
-const MIN_KEY_LENGTH = 8;
-const MAX_KEY_LENGTH = 300;
-
 /**
- * Token charset only: no spaces, no quotes, no control characters.
+ * The charset rules live in `settings-keys.ts`, not here.
  *
- * This is not format validation for a specific provider — both vendors issue
- * opaque strings and guessing a prefix would reject valid keys on a change. It is
- * a check that the field holds one token and not a sentence someone pasted by
- * accident, which would fail confusingly at the provider instead.
+ * They used to be a private `KEY_PATTERN` in this file, which is why nothing tested them: a
+ * route importing `server-only` and Prisma cannot be loaded by a check, so the one field
+ * whose provider issues a colon was refused by every key the editor could legitimately paste,
+ * and the suite stayed green. The validators are now beside the other pure ones — length and
+ * charset together, so no caller can enforce one without the other — and are asserted
+ * directly.
  */
-const KEY_PATTERN = /^[A-Za-z0-9._~-]+$/;
 
 function isJsonRequest(request: Request): boolean {
   return request.headers.get("content-type")?.split(";")[0].trim() === "application/json";
@@ -102,6 +100,11 @@ export async function POST(request: Request) {
       continue;
     }
 
+    // Trimmed here as well as in the form. The field is a password input, and a key pasted
+    // from a dashboard or a password manager very often arrives with a trailing newline or
+    // a space; without this the value would be stored with it, and a stored trailing space
+    // is indistinguishable from a wrong key at the provider — the request fails with a
+    // message about authentication while the editor is looking at a correct one.
     const trimmed = value.trim();
 
     // Empty clears the override so the .env value takes over again. Reported
@@ -111,17 +114,9 @@ export async function POST(request: Request) {
       continue;
     }
 
-    if (trimmed.length < MIN_KEY_LENGTH) {
-      errors[name as FieldName] = `Ключ слишком короткий — минимум ${MIN_KEY_LENGTH} символов.`;
-      continue;
-    }
-    if (trimmed.length > MAX_KEY_LENGTH) {
-      errors[name as FieldName] = "Ключ слишком длинный — проверьте, что вставили ключ целиком.";
-      continue;
-    }
-    if (!KEY_PATTERN.test(trimmed)) {
-      errors[name as FieldName] =
-        "Ключ содержит пробелы или недопустимые символы. Нужен один непрерывный токен без кавычек.";
+    const problem = validateApiKeyField(name, trimmed);
+    if (problem) {
+      errors[name as FieldName] = problem;
       continue;
     }
 

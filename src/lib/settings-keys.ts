@@ -293,6 +293,69 @@ export function isMessengerConfigured(token: string, destination: string): boole
 }
 
 /**
+ * The API-key fields, and what each provider's key may contain.
+ *
+ * Lives here rather than in `/api/admin/settings` for the same reason the other validators
+ * do: the rules are then reachable from a plain script, so a charset can be asserted directly
+ * instead of being discovered by an editor pasting a real key. That is exactly how the fal
+ * one went unnoticed — the pattern sat inside the route, nothing tested it, and the field
+ * refused every key the provider actually issues.
+ *
+ * `token` is the shared shape: opaque credential, no spaces, no quotes, no control
+ * characters. It is a check that the field holds one key and not a sentence somebody pasted
+ * by accident, which would fail confusingly at the provider instead.
+ *
+ * The colon is allowed for fal alone because fal.ai issues `<key_id>:<key_secret>`, and it
+ * is part of the credential rather than decoration. The entry is per field, not merged into
+ * the shared pattern: no other provider here uses it, and widening the charset for everyone
+ * would relax a route with no reason to be relaxed. A field absent from the map keeps the
+ * strict shape, so adding a provider without thinking about this fails closed.
+ */
+
+/** Long enough to reject an obvious typo, short enough to reject a pasted page. */
+export const MIN_API_KEY_LENGTH = 8;
+export const MAX_API_KEY_LENGTH = 300;
+
+const API_KEY_PATTERN = /^[A-Za-z0-9._~-]+$/;
+
+const API_KEY_PATTERN_BY_FIELD: Record<string, RegExp> = {
+  // The hyphen sits last in the class on purpose: anywhere else it reads as a range, and
+  // `._~-:` parses as "every character from ~ to :", which is not a character class at all —
+  // TypeScript rejects it outright, and a runtime that did not would quietly accept a
+  // hundred-odd unrelated symbols as a valid key.
+  falApiKey: /^[A-Za-z0-9._~:-]+$/,
+};
+
+/** The charset for one request field, defaulting to the strict token shape. */
+export function apiKeyPatternFor(name: string): RegExp {
+  return API_KEY_PATTERN_BY_FIELD[name] ?? API_KEY_PATTERN;
+}
+
+/**
+ * Validates one API-key field, returning the message to show or null if it is fine.
+ *
+ * Empty is not an error, for the same reason it is not for the messenger fields: it means
+ * "clear this override", which the route turns into a delete so the `.env` value takes over.
+ */
+export function validateApiKeyField(name: string, value: string): string | null {
+  const trimmed = value.trim();
+
+  if (!trimmed) return null;
+
+  if (trimmed.length < MIN_API_KEY_LENGTH) {
+    return `Ключ слишком короткий — минимум ${MIN_API_KEY_LENGTH} символов.`;
+  }
+  if (trimmed.length > MAX_API_KEY_LENGTH) {
+    return "Ключ слишком длинный — проверьте, что вставили ключ целиком.";
+  }
+  if (!apiKeyPatternFor(name).test(trimmed)) {
+    return "Ключ содержит пробелы или недопустимые символы. Нужен один непрерывный токен без кавычек.";
+  }
+
+  return null;
+}
+
+/**
  * Shows enough of a key to tell two apart, and nothing more.
  *
  * The real value never reaches the browser — not masked, not base64, not
