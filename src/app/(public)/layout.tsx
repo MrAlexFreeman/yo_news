@@ -1,3 +1,4 @@
+import { MascotWidget } from "@/components/mascot-widget";
 import { PublicFooter } from "@/components/public-footer";
 import { PublicHeader } from "@/components/public-header";
 import { YandexMetrika } from "@/components/analytics/yandex-metrika";
@@ -43,6 +44,17 @@ export default async function PublicLayout({ children }: LayoutProps<"/">) {
         {children}
       </main>
       <PublicFooter />
+
+      {/*
+        The mascot, inside the public group rather than the root layout. The root layout
+        also wraps `/admin`, and a cat that turns to follow the cursor is a moving target
+        for someone trying to edit a headline. The CMS gets a working surface.
+
+        After the footer so it paints over the page corner rather than being painted over
+        by the footer's own stacking.
+      */}
+      <MascotWidget />
+
       <YandexMetrika />
     </>
   );
