@@ -496,6 +496,62 @@ function checkNowReadingMarkup() {
   );
 }
 
+function checkNoCoverCard() {
+  const base = {
+    id: "c1",
+    slug: "material-bez-foto",
+    title: "Материал без фотографии",
+    contentHtml: `<p>${"слово ".repeat(540)}</p>`,
+    publishedAt: NOW,
+    createdAt: NOW,
+    category: { name: "Дом и сад", slug: "home-garden" },
+  };
+
+  const withCover = renderToStaticMarkup(
+    createElement(LoopCard as never, {
+      story: { ...base, id: "c2", slug: "s-foto", coverImage: "/uploads/c.jpg" },
+    }),
+  );
+  const withoutCover = renderToStaticMarkup(
+    createElement(LoopCard as never, { story: { ...base, coverImage: null } }),
+  );
+
+  check(
+    "Карточка цикла: с фото — плитка 16:9",
+    withCover.includes("aspect-video") && !withCover.includes("/placeholder.png"),
+    "aspect-video",
+  );
+
+  /*
+    The grey plate. Six of them in the closing grid is a page of rectangles with the
+    headlines lost between them, and `/placeholder.png` is exactly that: a bundled image
+    carrying the site's mark. The assertion is on the source of the picture, not on a
+    visual, because a missing class is invisible in a screenshot and unmissable here.
+  */
+  check(
+    "Карточка цикла: без фото — никакой серой заглушки",
+    !withoutCover.includes("/placeholder.png") && !withoutCover.includes("<img"),
+    "ни картинки, ни заглушки",
+  );
+  check(
+    "Карточка цикла: без фото — рамка 16:9 не резервируется",
+    !withoutCover.includes("aspect-video"),
+    "рамки нет",
+  );
+  check(
+    "Карточка цикла: без фото — текстовый газетный формат",
+    withoutCover.includes("--font-lora") &&
+      withoutCover.includes("Дом и сад") &&
+      withoutCover.includes("мин"),
+    "рубрика + антиква + минуты",
+  );
+  check(
+    "Карточка цикла: без фото — тач-зона и подчёркивание те же",
+    withoutCover.includes("min-h-10") && withoutCover.includes("underline-offset-4"),
+    "min-h-10 + underline",
+  );
+}
+
 function checkSingleCard() {
   const html = renderToStaticMarkup(createElement(LoopCard, { story: story("one") }));
 
@@ -519,13 +575,12 @@ function checkSingleCard() {
     html.includes("min-h-10"),
     "min-h-10",
   );
-  check(
-    "Карточка сетки: без обложки кадр не схлопывается",
-    renderToStaticMarkup(
-      createElement(LoopCard, { story: story("no-cover", { coverImage: null }) }),
-    ).includes("aspect-video"),
-    "aspect-video со заглушкой",
-  );
+  /*
+    The no-cover shape has its own block, `checkNoCoverCard`. It used to be asserted
+    here as "a story with no cover still occupies a 16:9 frame" — which is exactly the
+    grey plate this rework removed, so keeping the old line would pin that behaviour back
+    in place the moment someone deleted the new block.
+  */
 }
 
 checkParagraphCounting();
@@ -538,6 +593,7 @@ checkPlateMarkup();
 checkGridMarkup();
 checkTrendingFallback();
 checkNowReadingMarkup();
+checkNoCoverCard();
 checkSingleCard();
 
 console.log("Цикл статьи: врезка в текст, закрывающая сетка, «Сейчас читают»\n");

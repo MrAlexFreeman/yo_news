@@ -33,7 +33,9 @@ import { FrontPageHero } from "../src/components/front-page-hero";
 import { SectionGrid } from "../src/components/section-grid";
 import { ForumTopicsBlock } from "../src/components/forum-topics";
 import { NewsTicker } from "../src/components/news-ticker";
+import { OpinionsBlock } from "../src/components/opinions-block";
 import { SpecTopicBlock } from "../src/components/spec-topic-block";
+import { TrendingBar } from "../src/components/trending-bar";
 import { fillSection } from "../src/lib/content-loop";
 import { dayLabel, formatTime, groupByDay } from "../src/lib/date";
 import type { ActiveForumTopic } from "../src/lib/forum";
@@ -1014,12 +1016,144 @@ function checkArchive() {
   );
 }
 
+/** The two new shelves: the topic strip under the navigation, and the opinion column. */
+function checkNewShelves() {
+  const tags = [
+    { name: "Бензин", slug: "benzin" },
+    { name: "Антициклон", slug: "anticiklon" },
+    { name: "Беспилотники", slug: "bespilotniki" },
+    { name: "Транспорт", slug: "transport" },
+    { name: "ЖКХ", slug: "zhkh" },
+  ];
+
+  const bar = renderToStaticMarkup(
+    createElement(TrendingBar as never, { tags }),
+  );
+
+  check(
+    "Полоса: жирная метка слева",
+    bar.includes("В центре внимания") &&
+      bar.includes("text-xs font-bold tracking-wider text-ink uppercase"),
+    "метка на месте",
+  );
+  check(
+    "Полоса: пять тем ссылками на /tags/",
+    occurrences(bar, 'href="/tags/') === 5,
+    `${occurrences(bar, 'href="/tags/')} ссылок`,
+  );
+  check(
+    "Полоса: темы — теги, а не рубрики",
+    bar.includes("/tags/benzin") && !bar.includes("/category/"),
+    "только теги",
+  );
+  check(
+    "Полоса: горизонтальный скролл без полосы прокрутки",
+    bar.includes("overflow-x-auto") &&
+      bar.includes("scrollbar-width:none") &&
+      bar.includes("shrink-0"),
+    "overflow-x-auto + скрытый скроллбар",
+  );
+  check(
+    "Полоса: подчёркивание при наведении",
+    bar.includes("hover:underline") && bar.includes("underline-offset-4"),
+    "underline",
+  );
+  check(
+    "Полоса: без тем не рисуется вовсе",
+    renderToStaticMarkup(createElement(TrendingBar as never, { tags: [] })) === "",
+    "пусто",
+  );
+
+  const opinions = [0, 1, 2].map((index) => ({
+    id: `o${index}`,
+    title: `Колонка номер ${index + 1}`,
+    slug: `kolonka-${index}`,
+    publishedAt: new Date(NOW.getTime() - (index + 1) * 60 * 60 * 1000),
+    createdAt: NOW,
+    coverImage: null,
+    lead: null,
+    subtitle: null,
+    isDzen: true,
+    isVk: true,
+    isExclusive: index === 0,
+    is18plus: false,
+    category: { name: "Общество", slug: "society" },
+  }));
+
+  const block = renderToStaticMarkup(
+    createElement(OpinionsBlock as never, { articles: opinions, headingId: "home-opinions", now: NOW }),
+  );
+
+  check(
+    "Мнения: три карточки",
+    occurrences(block, "border-b border-rule/70 py-3.5") === 3,
+    `${occurrences(block, "border-b border-rule/70 py-3.5")}`,
+  );
+  check(
+    "Мнения: круглая монограмма у каждой карточки",
+    occurrences(block, "rounded-full border border-rule") === 3 &&
+      occurrences(block, 'aria-hidden=""') + occurrences(block, 'aria-hidden="true"') >= 3,
+    "3 монограммы",
+  );
+  check(
+    "Мнения: имя автора полужирным",
+    block.includes("Колонка редактора") &&
+      block.includes("Редакция «Ё-новости»") &&
+      block.includes("text-sm font-semibold text-ink"),
+    "подпись на месте",
+  );
+  check(
+    "Мнения: заголовок антиквой с подчёркиванием",
+    occurrences(block, "font-[family-name:var(--font-lora)] text-sm") >= 3 &&
+      block.includes("underline-offset-4"),
+    "антиква + подчёркивание",
+  );
+  check(
+    "Мнения: относительное время, а не абсолютная дата",
+    block.includes("часа назад") || block.includes("час назад"),
+    "относительное время",
+  );
+  check(
+    "Мнения: без материалов блок не рисуется",
+    renderToStaticMarkup(
+      createElement(OpinionsBlock as never, {
+        articles: [],
+        headingId: "home-opinions",
+        now: NOW,
+      }),
+    ) === "",
+    "пусто",
+  );
+
+  /*
+    The strip is a shelf under the navigation, so its position is part of the design: it
+    has to arrive after the rubric pills and before the page content. Read from the header
+    because that ordering is a property of the component tree rather than of any markup.
+  */
+  const headerSource = readFileSync(
+    new URL("../src/components/public-header.tsx", import.meta.url),
+    "utf8",
+  );
+  check(
+    "Полоса: стоит под строкой рубрик, а не над шапкой",
+    headerSource.indexOf("aria-label=\"Рубрики\"") <
+      headerSource.indexOf("<TrendingBar"),
+    "рубрики → полоса",
+  );
+  check(
+    "Полоса: вне <header> — это контент, а не навигация сайта",
+    headerSource.indexOf("</header>") < headerSource.indexOf("<TrendingBar"),
+    "после </header>",
+  );
+}
+
 checkGrouping();
 checkMarkup();
 checkCompactPreview();
 checkRubricFill();
 checkSectionGrid();
 checkFeedColumn();
+checkNewShelves();
 checkFrontHero();
 checkHeroStandfirst();
 checkTypography();

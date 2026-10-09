@@ -3,6 +3,7 @@ import { ForumTopicsBlock } from "@/components/forum-topics";
 import { FrontPageHero } from "@/components/front-page-hero";
 import { Logo } from "@/components/logo";
 import { NewsTicker } from "@/components/news-ticker";
+import { OpinionsBlock } from "@/components/opinions-block";
 import { SpecTopicBlock } from "@/components/spec-topic-block";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { SectionGrid } from "@/components/section-grid";
@@ -63,6 +64,18 @@ const DAY_CARD_COUNT = 4;
 const TOPIC_COUNT = 4;
 /** Stories in the "Спецтема" block that balances the feed column. */
 const SPEC_TOPIC_COUNT = 3;
+/** Stories in the "Мнения" block. Three cards with a portrait each. */
+const OPINIONS_COUNT = 3;
+/**
+ * How many candidates the opinion block draws from.
+ *
+ * Six per card, not one: reads concentrate, so the most-read list overlaps heavily with
+ * the stories the hero, the urgent column and the feed have already claimed, and every
+ * one of those has to be skipped. Asking for three would return one or none and the
+ * block would appear only on days when the paper's popular stories happen to be its least
+ * read ones.
+ */
+const OPINIONS_CANDIDATES = OPINIONS_COUNT * 6;
 
 export default async function HomePage() {
   /*
@@ -81,6 +94,7 @@ export default async function HomePage() {
     mostRead,
     investigations,
     restByReads,
+    opinions,
   ] = await Promise.all([
     getHeroArticle(),
     getPublishedArticles(TICKER_FETCH),
@@ -91,6 +105,7 @@ export default async function HomePage() {
     getMostReadArticles(URGENT_COUNT * 3),
     getMostReadArticles(SPEC_TOPIC_COUNT, { categorySlug: "investigations" }),
     getMostReadArticles(SPEC_TOPIC_COUNT * 2),
+    getMostReadArticles(OPINIONS_CANDIDATES),
   ]);
 
   const heroId = hero?.id;
@@ -122,6 +137,15 @@ export default async function HomePage() {
   const tickerItems = take(ticker, TICKER_COUNT);
   const specItems = fillRanked(investigations, restByReads, SPEC_TOPIC_COUNT);
   for (const article of specItems) used.add(article.id);
+
+  /*
+    The opinion column is drawn from all-time reads rather than from the pool, because it
+    is not "what is new" — it is "what readers keep coming back to", and a story that was
+    published last week may belong here while a story from an hour ago does not. The ids
+    still go through `used`, so nothing the reader has already scrolled past is offered a
+    second time lower down the page.
+  */
+  const opinionItems = take(opinions, OPINIONS_COUNT);
   const railItems = take(pool, RAIL_COUNT);
 
   /*
@@ -198,6 +222,12 @@ export default async function HomePage() {
           />
 
           <SubscribeBlock />
+
+          <OpinionsBlock
+            articles={opinionItems}
+            headingId="home-opinions"
+            now={new Date()}
+          />
 
           <ForumTopicsBlock
             topics={topics}

@@ -30,15 +30,49 @@ export type LoopCardStory = {
   category: { name: string; slug: string } | null;
 };
 
-/**
- * Bundled fallback for a story with no cover. `CoverImage` swaps to the same file when
- * a stored URL fails, so pointing at it directly keeps the frame's aspect ratio instead
- * of collapsing to a line of text inside a grid cell.
- */
-const NO_COVER = "/placeholder.png";
-
 export function LoopCard({ story }: { story: LoopCardStory }) {
   const timestamp = story.publishedAt ?? story.createdAt;
+
+  /*
+    Two shapes, and which one is used is decided by the data rather than by the slot.
+
+    With a photograph, the card is the 16:9 tile: picture, rubric, headline, date. Without
+    one, that box used to be filled with the bundled placeholder — a grey plate carrying
+    the site's mark — and six of those in a two-row grid is a page of grey rectangles with
+    a few headlines lost between them. A story with no artwork becomes a newspaper column
+    instead: rubric, serif headline, date and reading time, no frame at all. The row keeps
+    its density and stops pretending to be showing pictures.
+  */
+  if (!story.coverImage) {
+    return (
+      <article className="group flex h-full flex-col">
+        {story.category ? (
+          <RubricLabel
+            name={story.category.name}
+            slug={story.category.slug}
+            className="mb-1.5"
+          />
+        ) : null}
+
+        <h3 className="clamp-3 font-[family-name:var(--font-lora)] text-sm leading-snug font-bold tracking-tight text-ink">
+          <Link
+            href={`/news/${story.slug}`}
+            className="inline-flex min-h-10 items-start transition-colors hover:text-accent hover:underline decoration-1 underline-offset-4"
+          >
+            {story.title}
+          </Link>
+        </h3>
+
+        <p className="mt-auto pt-2 text-[11px] tabular-nums text-ink-soft">
+          <time dateTime={timestamp.toISOString()}>
+            {formatDate(timestamp)}, {formatTime(timestamp)}
+          </time>
+          {" · "}
+          {readingMinutes(story.contentHtml)} мин
+        </p>
+      </article>
+    );
+  }
 
   return (
     <article className="group flex h-full flex-col">
@@ -49,7 +83,7 @@ export function LoopCard({ story }: { story: LoopCardStory }) {
         className="relative block aspect-video w-full overflow-hidden rounded-sm bg-paper-dim"
       >
         <CoverImage
-          src={story.coverImage ?? NO_COVER}
+          src={story.coverImage}
           alt=""
           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           className="object-cover transition-transform group-hover:scale-[1.02]"

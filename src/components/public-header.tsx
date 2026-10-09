@@ -4,6 +4,7 @@ import Link from "next/link";
 import { LiveDateline } from "@/components/live-dateline";
 import { Logo } from "@/components/logo";
 import { NavPill } from "@/components/nav-pill";
+import { TrendingBar } from "@/components/trending-bar";
 import { formatDateline } from "@/lib/date";
 import { SITE_TAGLINE } from "@/lib/site";
 
@@ -18,6 +19,11 @@ const TICKER_ITEMS = [
 type PublicHeaderProps = {
   /** Rubric links from the database, rendered as the scrollable nav row. */
   categories: { name: string; slug: string }[];
+  /**
+   * The topic strip under the rubric row. Empty means the strip is not rendered at all —
+   * an install with no tags must not print a labelled bar with nothing in it.
+   */
+  trendingTags: { name: string; slug: string }[];
   /** Frozen so a statically generated page keeps the build-time dateline. */
   now: Date;
 };
@@ -26,9 +32,10 @@ type PublicHeaderProps = {
  * Masthead: dateline + ticker on top, wordmark and controls in the middle, a
  * horizontally scrollable rubric strip of pill links below.
  */
-export function PublicHeader({ categories, now }: PublicHeaderProps) {
+export function PublicHeader({ categories, trendingTags, now }: PublicHeaderProps) {
   return (
-    <header className="border-b border-rule bg-paper">
+    <>
+      <header className="border-b border-rule bg-paper">
       {/* Top strip: date and the ticker. */}
       <div className="border-b border-rule/70 bg-paper-dim text-[11px] text-ink-soft">
         <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-1.5">
@@ -118,6 +125,17 @@ export function PublicHeader({ categories, now }: PublicHeaderProps) {
           </li>
         </ul>
       </nav>
-    </header>
+      </header>
+
+      {/*
+        The topic strip, rendered immediately under the rubric pills but *outside* the
+        <header>. Not a styling accident: the header is the masthead and the rubric row is
+        its navigation, while this is editorial content — a link list that changes with the
+        news. A list that changes belongs to the page, not to the site header, and a
+        screen reader walking the landmarks should meet it as content rather than as part
+        of the banner.
+      */}
+      <TrendingBar tags={trendingTags} />
+    </>
   );
 }

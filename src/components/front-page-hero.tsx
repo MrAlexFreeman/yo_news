@@ -100,18 +100,26 @@ export function FrontPageHero({ lead, urgent }: FrontPageHeroProps) {
             the metadata line, and with it the sentence that explains the headline, off
             the first screen. The cap keeps the picture large and the headline readable
             at the same time.
+
+            Rendered only when there is a photograph. With none, the box was filled with
+            the bundled placeholder — the same grey plate the loop cards just stopped
+            drawing — and the top of the front page became a grey rectangle above the
+            headline it was meant to illustrate. A headline and its standfirst hold the
+            space on their own.
           */}
-          <div className="relative aspect-video max-h-[360px] overflow-hidden rounded-sm bg-paper-dim md:max-h-[420px]">
-            <CoverImage
-              src={lead.coverImage ?? "/placeholder.png"}
-              alt={lead.title}
-              // This is the page's LCP element: the one image above the fold that decides
-              // how fast the front page paints.
-              preload
-              sizes="(max-width: 1024px) 100vw, 660px"
-              className="object-cover transition-transform duration-500 group-hover:scale-[1.02]"
-            />
-          </div>
+          {lead.coverImage ? (
+            <div className="relative aspect-video max-h-[360px] overflow-hidden rounded-sm bg-paper-dim md:max-h-[420px]">
+              <CoverImage
+                src={lead.coverImage}
+                alt={lead.title}
+                // This is the page's LCP element: the one image above the fold that
+                // decides how fast the front page paints.
+                preload
+                sizes="(max-width: 1024px) 100vw, 660px"
+                className="object-cover transition-transform duration-500 group-hover:scale-[1.02]"
+              />
+            </div>
+          ) : null}
 
           {/*
             The metadata row the brief asks for: date, reading time, source.
@@ -178,17 +186,23 @@ export function FrontPageHero({ lead, urgent }: FrontPageHeroProps) {
                       `self-start` on a flex row is load-bearing, not decoration: without it
                       the thumbnail is stretched to the height of the text beside it, which
                       quietly breaks the square the box asks for.
+
+                      Only when there is a picture. A 96px grey plate carrying the site's
+                      mark is worse than no plate at all: at that size it reads as a broken
+                      image rather than as a deliberate stand-in.
                     */}
-                    <span
-                      className={`relative ${URGENT_THUMB} shrink-0 self-start overflow-hidden bg-paper-dim`}
-                    >
-                      <CoverImage
-                        src={article.coverImage ?? "/placeholder.png"}
-                        alt=""
-                        sizes="112px"
-                        className="object-cover transition-transform duration-300 group-hover:scale-105"
-                      />
-                    </span>
+                    {article.coverImage ? (
+                      <span
+                        className={`relative ${URGENT_THUMB} shrink-0 self-start overflow-hidden bg-paper-dim`}
+                      >
+                        <CoverImage
+                          src={article.coverImage}
+                          alt=""
+                          sizes="112px"
+                          className="object-cover transition-transform duration-300 group-hover:scale-105"
+                        />
+                      </span>
+                    ) : null}
                   </Link>
                 </li>
               ))}

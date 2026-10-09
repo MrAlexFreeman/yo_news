@@ -404,6 +404,68 @@ export async function getMostReadArticles(
   });
 }
 
+/**
+ * The tags the paper is talking about, for the strip under the navigation.
+ *
+ * Two tiers, and the reason is measured rather than cautious: on the live database 107
+ * published stories carry tags and exactly **one** of those links falls inside the last
+ * three days. A strip that shows only what moved in 72 hours is a strip with one word in
+ * it, which reads as a broken widget rather than as a quiet three days — wire material
+ * arrives carrying tags far less often than the editorial pipeline attaches them.
+ *
+ * So the window decides the order and all-time usage fills the row. A tag inside the
+ * window always outranks one outside it, which keeps the claim the strip makes — these
+ * are the topics people are reading *now* — while the row stays a row rather than
+ * collapsing to a single link.
+ *
+ * `now` is a parameter for the same reason as `getTrendingArticles`: the window has to be
+ * assertable, and a caller that has already frozen a timestamp renders against it.
+ */
+export async function getTrendingTags(
+  take = 5,
+  options: { hours?: number; now?: Date } = {},
+): Promise<{ name: string; slug: string }[]> {
+  const { hours = 72, now = new Date() } = options;
+  const cut = new Date(now.getTime() - hours * 60 * 60 * 1000);
+
+  const published = { status: "published", deletedAt: null } as const;
+
+  const [tags, recent, overall] = await Promise.all([
+    prisma.tag.findMany({ select: { id: true, name: true, slug: true } }),
+    prisma.articleTag.groupBy({
+      by: ["tagId"],
+      where: { article: { ...published, publishedAt: { gte: cut } } },
+      _count: { _all: true },
+    }),
+    prisma.articleTag.groupBy({
+      by: ["tagId"],
+      where: { article: published },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const names = new Map(tags.map((tag) => [tag.id, tag]));
+  const byUses = (rows: typeof recent) =>
+    [...rows].sort((a, b) => b._count._all - a._count._all);
+
+  const picked = new Set<number>();
+  for (const row of byUses(recent)) {
+    if (picked.size >= take) break;
+    picked.add(row.tagId);
+  }
+  for (const row of byUses(overall)) {
+    if (picked.size >= take) break;
+    if (picked.has(row.tagId)) continue;
+    picked.add(row.tagId);
+  }
+
+  return [...picked]
+    .map((id) => names.get(id))
+    .filter((tag): tag is { id: number; name: string; slug: string } => Boolean(tag))
+    .slice(0, take)
+    .map(({ name, slug }) => ({ name, slug }));
+}
+
 export async function getCategoryBySlug(slug: string) {
   return prisma.category.findUnique({
     where: { slug },
