@@ -640,8 +640,190 @@ async function checkStore() {
   check("Статусы: фикстуры убраны за собой", left === 0, `${left} осталось`);
 }
 
+/**
+ * The teaser the wire sends, and the page it points at.
+ *
+ * `ARTICLE_TITLE` is repeated inside the page as its own paragraph because both outlets
+ * render the headline into the body container, and a rewriter handed the headline twice
+ * writes it twice. The furniture lines — the Telegram subscription, «Читать также», the
+ * "материал по теме" inset and the ad divider — are inside the content container too, which
+ * is the hard case: Readability pulls them into the body, and only the boilerplate filter
+ * removes them.
+ */
+const ARTICLE_TITLE = "В Екатеринбурге начали ремонтировать старый пешеходный мост через Исеть";
+
+const ARTICLE_PAGE = `<!doctype html><html><head><title>${ARTICLE_TITLE}</title></head><body>
+<header><nav><a href="/">Главная</a><a href="/news">Новости</a></nav></header>
+<div class="content_news-publication-content__v2iuZ">
+  <p>${ARTICLE_TITLE}</p>
+  <div class="content_news-publication-content__element__eg4mc image-element_news-content-image-element__Rgxkt">
+    <p>У Исети накануне начали ремонтировать старый пешеходный мост.</p>
+    <p>Фото: Екатерина Сычёва © URA.RU</p>
+  </div>
+  <div class="content_news-publication-content__element__eg4mc text-element_news-publication-text-element__6Owg5">
+    <p>Ремонт продлится до конца ноября: сначала заменят настил, затем покрасят перила и обновят освещение. Работы будут вести по ночам, чтобы не мешать движению.</p>
+  </div>
+  <div class="ad-divider_news-publication-ad-divider__IUAu7">Продолжение после рекламы</div>
+  <div class="content_news-publication-content__element__eg4mc text-element_news-publication-text-element__6Owg5">
+    <p>Проход по мосту на время работ не закрывают: для пешеходов оставят временный настил, а объезд для автомобилей направят по улице Мельникова до конца октября.</p>
+  </div>
+  <div class="content_news-publication-content__element__eg4mc text-element_news-publication-text-element__6Owg5">
+    <p>В администрации уточнили, что настил из литого асфальта заменят на стальной: он лучше переносит перепады температур и дольше служит при зимней уборке.</p>
+  </div>
+  <div class="news-publication-inset-element_news-publication-inset-element__EiP2s">
+    <p>Материал по теме: как в городе ремонтируют старые мосты</p>
+  </div>
+  <div class="content_news-publication-content__element__eg4mc text-element_news-publication-text-element__6Owg5">
+    <p>Подписывайтесь на нас в Telegram, чтобы следить за ремонтом и другими городскими новостями каждый день без лишних переходов на сайт.</p>
+  </div>
+  <div class="content_news-publication-content__element__eg4mc text-element_news-publication-text-element__6Owg5">
+    <p>Читайте также</p>
+  </div>
+  <div class="content_news-publication-content__element__eg4mc text-element_news-publication-text-element__6Owg5">
+    <p>Всего на мосту заменят около восьмидесяти погонных метров настила и четыре опоры освещения, работы оплачивают из городского бюджета.</p>
+  </div>
+  <p>Читать далее</p>
+</div>
+<footer><p>Все права защищены. Сайт не является сетевым изданием.</p></footer>
+</body></html>`;
+
+/**
+ * The whole path, by URL: a teaser in `rawText`, the original page behind
+ * `originalUrl`, and the story written back over the teaser.
+ *
+ * The transport is stubbed, not called. This suite runs on the deploy server on every
+ * `npm run check`, and a suite that fetches a newspaper is a suite that fails on a slow
+ * network and gets commented out; the page under test is a fixture either way, so the only
+ * thing a live request would add is a way to fail.
+ *
+ * The extractor itself is asserted field by field in `extract:check`. What is checked
+ * here is the part that has no other test — that a teaser is recognised as one, that the
+ * request carries an ASCII-only agent to the right address, that the story replaces the
+ * teaser *in the database row*, and that the second open does not fetch again.
+ */
+async function checkFullTextByUrl() {
+  const { ensureFullText } = await import("../src/lib/feed-fulltext");
+  const { USER_AGENT } = await import("../src/lib/wire-fetch");
+
+  const teaser = `${ARTICLE_TITLE}. Читать далее`;
+  const originalUrl = `https://ura.news/news/${marker}-fulltext`;
+
+  const created = await prisma.newsFeedItem.create({
+    data: {
+      source: "URA",
+      externalId: `${marker}-fulltext`,
+      originalUrl,
+      title: ARTICLE_TITLE,
+      rawText: teaser,
+      publishedAt: new Date(),
+      status: "NEW",
+    },
+    select: { id: true },
+  });
+
+  const requests: { url: string; agent: string }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({
+      url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      agent: String((init?.headers as Record<string, string> | undefined)?.["User-Agent"] ?? ""),
+    });
+    return new Response(ARTICLE_PAGE, {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+  }) as typeof globalThis.fetch;
+
+  try {
+    const item = await prisma.newsFeedItem.findUniqueOrThrow({
+      where: { id: created.id },
+      select: { id: true, title: true, rawText: true, originalUrl: true },
+    });
+
+    const outcome = await ensureFullText(item);
+
+    check(
+      "Полный текст: анонс опознан как усечённый и страница запрошена",
+      requests.length === 1 && requests[0]?.url === originalUrl,
+      `${requests.length} запрос(ов) на ${requests[0]?.url ?? "—"}`,
+    );
+
+    check(
+      "Полный текст: User-Agent — только ASCII, иначе fetch падает до отправки",
+      requests[0]?.agent === USER_AGENT && /^[\x00-\x7F]*$/.test(requests[0]?.agent ?? ""),
+      JSON.stringify(requests[0]?.agent ?? ""),
+    );
+
+    check(
+      "Полный текст: извлечение прошло одним из двух путей",
+      outcome.enriched && (outcome.method === "selector" || outcome.method === "readability"),
+      `${outcome.method}, ${outcome.text.length} символов`,
+    );
+
+    check(
+      "Полный текст: в тексте статья, а не анонс",
+      outcome.text.length > 250 && outcome.text.includes("сталь"),
+      `${outcome.text.length} символов`,
+    );
+
+    check(
+      "Полный текст: хвост «Читать далее» не попал в текст",
+      !/читать далее/iu.test(outcome.text),
+      "хвоста нет",
+    );
+
+    check(
+      "Полный текст: хвосты (Telegram, «Читайте также», фото, врезка, реклама) вычищены",
+      !/подписывайтесь|читайте также|фото\s*:|материал по теме|после рекламы/iu.test(
+        outcome.text,
+      ),
+      "хвостов нет",
+    );
+
+    check(
+      "Полный текст: заголовок не продублирован в теле",
+      !outcome.text.includes(ARTICLE_TITLE),
+      "заголовка в тексте нет",
+    );
+
+    const stored = await prisma.newsFeedItem.findUniqueOrThrow({
+      where: { id: created.id },
+      select: { rawText: true },
+    });
+    check(
+      "Полный текст: статья записана в rawText",
+      stored.rawText === outcome.text && stored.rawText.length > 250,
+      `${stored.rawText.length} символов в строке`,
+    );
+
+    /*
+      Second open. The row now holds a story, so the page must not be fetched a second
+      time: that is what makes «Создать материал» instant for an item the desk already
+      looked at, and a re-fetch per click is exactly the traffic the sync-time decision
+      below exists to avoid.
+    */
+    const again = await ensureFullText({ ...item, rawText: stored.rawText });
+    check(
+      "Полный текст: повторное открытие не ходит на сайт",
+      again.method === "cached" && !again.enriched && requests.length === 1,
+      `${again.method}, запросов ${requests.length}`,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    await prisma.newsFeedItem.delete({ where: { id: created.id } }).catch(() => {});
+  }
+
+  const left = await prisma.newsFeedItem.count({ where: { externalId: `${marker}-fulltext` } });
+  check("Полный текст: фикстуры убраны за собой", left === 0, `${left} осталось`);
+}
+
 await checkStore().catch((error) => {
   console.error("проверки статусов не выполнены:", error);
+  failures += 1;
+});
+
+await checkFullTextByUrl().catch((error) => {
+  console.error("проверка полного текста не выполнена:", error);
   failures += 1;
 });
 
