@@ -1,21 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import type { ArticleListItem } from "@/lib/public-queries";
-
-const LIST_FIELDS = {
-  id: true,
-  title: true,
-  subtitle: true,
-  slug: true,
-  lead: true,
-  coverImage: true,
-  isExclusive: true,
-  is18plus: true,
-  publishedAt: true,
-  createdAt: true,
-  category: { select: { name: true, slug: true } },
-} as const;
+import { LIST_FIELDS, type ArticleListItem } from "@/lib/public-queries";
 
 /**
  * Title / lead search over published articles.

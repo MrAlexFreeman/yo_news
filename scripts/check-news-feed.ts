@@ -29,12 +29,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { ArticleCard } from "../src/components/article-card";
-import { FrontPageHero } from "../src/components/front-page-hero";
+import { RiverArticleCard } from "../src/components/river-article-card";
 import { SectionGrid } from "../src/components/section-grid";
 import { ForumTopicsBlock } from "../src/components/forum-topics";
-import { NewsTicker } from "../src/components/news-ticker";
 import { OpinionsBlock } from "../src/components/opinions-block";
-import { SpecTopicBlock } from "../src/components/spec-topic-block";
 import { TrendingBar } from "../src/components/trending-bar";
 import { fillSection } from "../src/lib/content-loop";
 import { dayLabel, formatTime, groupByDay } from "../src/lib/date";
@@ -147,62 +145,6 @@ function checkGrouping() {
     "Лента: пустой список не ломает группировку",
     groupByDay<Row>([], (row) => row.at, NOW).length === 0,
     "пусто",
-  );
-}
-
-function checkMarkup() {
-  const articles = rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    slug: row.id,
-    publishedAt: row.at,
-    createdAt: row.at,
-    subtitle: null,
-    lead: null,
-    coverImage: null,
-    isDzen: true,
-    isVk: true,
-    isExclusive: false,
-    is18plus: false,
-    category: null,
-  }));
-
-  const html = renderToStaticMarkup(
-    createElement(NewsTicker as never, { articles, now: NOW }),
-  );
-
-  check(
-    "Лента: в разметке нет sticky — наложения больше не будет",
-    !/sticky/.test(html),
-    "подстроки sticky нет",
-  );
-  check(
-    "Лента: заголовки дней попали в разметку",
-    html.includes("Сегодня") && html.includes("Вчера") && html.includes("5 октября"),
-    "подписи на месте",
-  );
-  check(
-    "Лента: материалы не потерялись при группировке",
-    (html.match(/<time/g) ?? []).length === rows.length,
-    `${(html.match(/<time/g) ?? []).length} отметок времени на ${rows.length} материалов`,
-  );
-  check(
-    "Лента: заголовок раздела остался h2, а материалы — h4",
-    /<h2[^>]*>[\s\S]*?Лента новостей/.test(html) && html.includes("<h4"),
-    "иерархия заголовков не поехала",
-  );
-  check(
-    "Лента: внизу ссылка на архив /news",
-    html.includes('href="/news"') && html.includes("Вся лента новостей"),
-    "ссылка «Вся лента новостей →» на месте",
-  );
-  check(
-    "Лента: архив ведёт на существующий маршрут, а не на 404",
-    // `/news/[slug]` is a story route, so a bare `/news` only works because the
-    // archive page was added. Asserted here rather than by fetching, because this
-    // suite runs without a server.
-    /href="\/news"[^>]*>/.test(html) && !/href="\/news\/page\/1"/.test(html),
-    "канонический адрес архива — /news",
   );
 }
 
@@ -342,311 +284,6 @@ function checkRubricFill() {
 }
 
 /** The feed column, and the stack beside it that has to match its height. */
-function checkFeedColumn() {
-  const articles = [0, 1, 2].map((index) => ({
-    id: `t${index}`,
-    title: `Новость ленты ${index + 1}`,
-    slug: `lenta-${index + 1}`,
-    publishedAt: NOW,
-    createdAt: NOW,
-    lead: null,
-    subtitle: null,
-    coverImage: null,
-    isDzen: true,
-    isVk: true,
-    isExclusive: false,
-    is18plus: false,
-    category: { name: "Общество", slug: "society" },
-  }));
-
-  const html = renderToStaticMarkup(
-    createElement(NewsTicker as never, { articles, now: NOW }),
-  );
-
-  check(
-    "Лента: строки разряжены до py-3.5",
-    html.includes("py-3.5") && !html.includes("py-2.5"),
-    "py-3.5",
-  );
-  check(
-    "Лента: заголовок крупнее и контрастнее",
-    html.includes("md:text-base") && html.includes("text-ink"),
-    "text-sm md:text-base + text-ink",
-  );
-  check(
-    "Лента: время оранжевое и читаемое на мелком кегле",
-    html.includes("text-yo-ink"),
-    "text-yo-ink",
-  );
-  check(
-    "Лента: рубрика отдельной плашкой, а не серой массой",
-    html.includes("bg-paper-dim") && html.includes("Общество"),
-    "плашка рубрики",
-  );
-  check(
-    "Лента: время и рубрика разделены точкой",
-    // `aria-hidden="true"`, not `aria-hidden=""`: React renders a bare boolean ARIA
-    // attribute as the string "true", and asserting the empty form would pass on a
-    // hand-written fixture and fail on the real render.
-    html.includes('aria-hidden="true"') && html.includes("·"),
-    "разделитель есть",
-  );
-
-  const spec = renderToStaticMarkup(
-    createElement(SpecTopicBlock as never, {
-      articles,
-      headingId: "home-spec",
-    }),
-  );
-
-  check(
-    "Спецтема: три строки с засечными заголовками",
-    occurrences(spec, "py-3.5") === 3 &&
-      occurrences(spec, "font-[family-name:var(--font-lora)]") === 3,
-    `${occurrences(spec, "py-3.5")} строк(и)`,
-  );
-  check(
-    "Спецтема: без фотографий — иначе дыра вернётся в меньшем размере",
-    !spec.includes("<img"),
-    "картинок нет",
-  );
-  check(
-    "Спецтема: пустой блок не рисуется",
-    renderToStaticMarkup(
-      createElement(SpecTopicBlock as never, { articles: [], headingId: "home-spec" }),
-    ) === "",
-    "пусто",
-  );
-
-  /*
-    The balance is a property of the page, not of a component: the column beside the feed
-    has to carry as much as the chronology. Read from the source because rendering the
-    page would mean a database, and because the claim is about which components share the
-    column rather than about any one of their markup.
-  */
-  const pageSource = readFileSync(
-    new URL("../src/app/(public)/page.tsx", import.meta.url),
-    "utf8",
-  );
-  const column = pageSource.slice(
-    pageSource.indexOf('<div className="space-y-6">'),
-    pageSource.indexOf("</div>\n      </div>\n\n      {/* Rubric strips"),
-  );
-
-  check(
-    "Баланс колонок: рядом с лентой стоят три блока, а не одна плашка",
-    occurrences(column, "<SpecTopicBlock") === 1 &&
-      occurrences(column, "<SubscribeBlock") === 1 &&
-      occurrences(column, "<ForumTopicsBlock") === 1,
-    "спецтема + подписка + форум",
-  );
-}
-
-/** The standfirst under the front page's headline is never empty. */
-function checkHeroStandfirst() {
-  const base = {
-    id: "h1",
-    title: "Главный материал",
-    slug: "glavnyy-material",
-    publishedAt: NOW,
-    createdAt: NOW,
-    subtitle: null,
-    coverImage: "/uploads/hero.jpg",
-    isDzen: true,
-    isVk: true,
-    isExclusive: true,
-    is18plus: false,
-    category: { name: "Расследования", slug: "investigations" },
-  };
-
-  const fromLead = renderToStaticMarkup(
-    createElement(FrontPageHero as never, {
-      lead: { ...base, lead: "Лид, написанный редакцией.", contentHtml: "<p>Тело статьи.</p>" },
-      urgent: [],
-    }),
-  );
-  check(
-    "Лид главного: написанный редакцией лид выводится под заголовком",
-    fromLead.includes("Лид, написанный редакцией."),
-    "лид на месте",
-  );
-
-  const generated = renderToStaticMarkup(
-    createElement(FrontPageHero as never, {
-      lead: {
-        ...base,
-        lead: null,
-        contentHtml: `<p>${"предложение ".repeat(60)}</p>`,
-      },
-      urgent: [],
-    }),
-  );
-
-  const standfirst = /<p class="mt-3 mb-4[^"]*">([^<]+)<\/p>/.exec(generated)?.[1] ?? "";
-  check(
-    "Лид главного: без лида превью собирается из текста статьи",
-    standfirst.startsWith("предложение") && standfirst.length > 0,
-    JSON.stringify(standfirst.slice(0, 40)),
-  );
-  check(
-    "Лид главного: превью обрезано примерно на 180 знаках",
-    standfirst.length <= 181 && standfirst.endsWith("…"),
-    `${standfirst.length} символов`,
-  );
-
-  check(
-    "Главное фото: потолок высоты, чтобы лид и метаданные не ушли за первый экран",
-    generated.includes("max-h-[360px]") && generated.includes("md:max-h-[420px]"),
-    "360 / 420",
-  );
-
-  check(
-    "Главное фото: пропорции и кадрирование на месте",
-    generated.includes("aspect-video") && generated.includes("object-cover"),
-    "aspect-video + object-cover",
-  );
-
-  const empty = renderToStaticMarkup(
-    createElement(FrontPageHero as never, {
-      lead: { ...base, lead: null, contentHtml: "" },
-      urgent: [],
-    }),
-  );
-  check(
-    "Лид главного: у материала без текста блок просто не рисуется",
-    !empty.includes('class="mt-3 mb-4'),
-    "пустого блока нет",
-  );
-}
-/**
- * The top of the front page, rendered.
- *
- * This replaced the assertions on the old `lead` card variant. Two things were being
- * checked there that still hold — the 16:9 crop and the absence of a hard-coded height —
- * and one that changed: the lead story now prints its headline before its picture, with a
- * metadata line under it, so the order of the markup is itself part of the contract.
- */
-function checkFrontHero() {
-  const lead = {
-    id: "h1",
-    title: "Главный материал",
-    slug: "glavnyy-material",
-    publishedAt: NOW,
-    createdAt: NOW,
-    subtitle: null,
-    lead: "Лид в двух предложениях, который читатель видит под заголовком.",
-    coverImage: "/uploads/hero.jpg",
-    contentHtml: `<p>${"слово ".repeat(400)}</p>`,
-    isDzen: true,
-    isVk: true,
-    isExclusive: true,
-    is18plus: false,
-    category: { name: "Расследования", slug: "investigations" },
-  };
-
-  const urgent = [0, 1, 2, 3].map((index) => ({
-    id: `u${index}`,
-    title: `Срочный сюжет ${index + 1}`,
-    slug: `srochnyy-${index + 1}`,
-    publishedAt: NOW,
-    createdAt: NOW,
-    coverImage: `/uploads/u${index}.jpg`,
-    isDzen: true,
-    isVk: true,
-    isExclusive: false,
-    is18plus: false,
-    category: { name: "Происшествия", slug: "incidents" },
-  }));
-
-  const html = renderToStaticMarkup(
-    createElement(FrontPageHero as never, { lead, urgent }),
-  );
-
-  check(
-    "Первая полоса: обложка 16:9, без растягивания и без старого ratio",
-    html.includes("aspect-video") &&
-      html.includes("object-cover") &&
-      !html.includes("aspect-[16/9]"),
-    "aspect-video + object-cover",
-  );
-
-  check(
-    "Первая полоса: заголовок с засечками, крупный и плотный по трекингу",
-    html.includes("--font-lora") &&
-      html.includes("lg:text-4xl") &&
-      html.includes("leading-tight") &&
-      html.includes("tracking-tight"),
-    "Lora + text-4xl + leading-tight + tracking-tight",
-  );
-
-  check(
-    "Первая полоса: заголовок идёт раньше фотографии",
-    html.indexOf("Главный материал") < html.indexOf("aspect-video"),
-    "h1 выше по разметке",
-  );
-
-  check(
-    "Первая полоса: лид приглушённым шрифтом под заголовком",
-    html.includes("Лид в двух предложениях") && html.includes("text-ink-soft"),
-    "лид на месте",
-  );
-
-  check(
-    "Первая полоса: строка метаданных — дата, время чтения, источник",
-    html.includes("мин чтения") && html.includes("Ё-новости") && html.includes("<time"),
-    "дата · минуты · издание",
-  );
-
-  check(
-    "Первая полоса: асимметрия 7/5 с волосяной линией между колонками",
-    html.includes("lg:col-span-7") &&
-      html.includes("lg:col-span-5") &&
-      html.includes("lg:border-l"),
-    "7/5 + разделитель",
-  );
-
-  check(
-    "Первая полоса: замыкается двойной линией",
-    html.includes("rule-double"),
-    "rule-double",
-  );
-
-  check(
-    "Первая полоса: на телефоне одна колонка — лид сверху, срочное под ним",
-    !html.includes("lg:grid-cols-12") || html.includes("grid gap-x-10 gap-y-7"),
-    "одна колонка до lg",
-  );
-
-  check(
-    "Первая полоса: срочная колонка — четыре строки через тонкую линию",
-    occurrences(html, "border-b border-rule/70 py-4") === 4,
-    `${occurrences(html, "border-b border-rule/70 py-4")} строк(и)`,
-  );
-
-  check(
-    "Первая полоса: у срочного сюжета миниатюра справа, квадратная",
-    html.includes("size-24") && html.includes("self-start") && html.includes("flex items-start gap-4"),
-    "миниатюра справа, self-start",
-  );
-
-  check(
-    "Первая полоса: заголовок срочного сюжета с засечками и подчёркиванием при hover",
-    occurrences(html, "font-[family-name:var(--font-lora)] text-base") >= 4 &&
-      html.includes("underline-offset-4"),
-    "Lora + underline-offset-4",
-  );
-
-  const empty = renderToStaticMarkup(
-    createElement(FrontPageHero as never, { lead, urgent: [] }),
-  );
-  check(
-    "Первая полоса: без срочных сюжетов колонка не рисуется",
-    !empty.includes("Важное за сегодня") && empty.includes("Главный материал"),
-    "только лид",
-  );
-}
-
-/** The dense rubric strips below the fold. */
 function checkSectionGrid() {
   const articles = [0, 1, 2, 3].map((index) => ({
     id: `s${index}`,
@@ -1395,16 +1032,219 @@ function checkStickyHeader() {
   );
 }
 
+/**
+ * The story river and the two-column grid around it.
+ *
+ * What is asserted here is the layout the design names, and two of the assertions are about
+ * things a screenshot of a single viewport cannot show: that the picture comes *after* the
+ * text in the DOM at every width, and that the river and the sidebar draw from one shared
+ * claim set.
+ */
+function checkStoryRiver() {
+  const card = (
+    overrides: Partial<Parameters<typeof RiverArticleCard>[0]["article"]> = {},
+    props: { lead?: boolean } = {},
+  ) =>
+    renderToStaticMarkup(
+      createElement(RiverArticleCard as never, {
+        article: {
+          id: "r1",
+          title: "Материал для реки",
+          slug: "material-r",
+          subtitle: null,
+          lead: null,
+          coverImage: null,
+          contentHtml: `<p>${"слово ".repeat(400)}</p>`,
+          isExclusive: false,
+          is18plus: false,
+          isDzen: true,
+          isVk: true,
+          publishedAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+          createdAt: NOW,
+          photoAuthor: null,
+          photoSource: null,
+          category: { name: "Общество", slug: "society" },
+          ...overrides,
+        },
+        now: NOW,
+        ...props,
+      }),
+    );
+
+  const plain = card();
+  const withPhoto = card({
+    coverImage: "/uploads/river.jpg",
+    photoSource: "Фото: Reuters",
+  });
+
+  /* ---- the grid ---- */
+
+  const pageSource = readFileSync(
+    new URL("../src/app/(public)/page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  check(
+    "Река: газетная сетка 12 колонок",
+    pageSource.includes("grid-cols-1") &&
+      pageSource.includes("lg:grid-cols-12") &&
+      pageSource.includes("gap-8"),
+    "grid-cols-1 lg:grid-cols-12 gap-8",
+  );
+  check(
+    "Река: река на 8 колонок, сайдбар на 4",
+    occurrences(pageSource, "lg:col-span-8") === 1 &&
+      occurrences(pageSource, "lg:col-span-4") === 1,
+    "8 + 4",
+  );
+
+  /*
+   * DOM order is the whole of the mobile behaviour. `flex-col-reverse` puts the picture
+   * first on a phone, and it does so in one place rather than by reordering at a breakpoint —
+   * a card written as `flex-col` would read text-first at every width.
+   */
+  check(
+    "Река: фото сверху на телефоне, текст под ним",
+    plain.includes("flex-col-reverse") && plain.includes("md:flex-row"),
+    "flex-col-reverse + md:flex-row",
+  );
+
+  check(
+    "Река: на десктопе текст слева, фото справа",
+    plain.includes("md:basis-2/5") && withPhoto.includes("md:basis-3/5"),
+    "40% текст / 60% фото",
+  );
+
+  /* ---- the card itself ---- */
+
+  check(
+    "Река: заголовок антиквой Lora и крупный",
+    plain.includes("--font-lora") && plain.includes("text-xl leading-snug md:text-2xl"),
+    "Lora 20→24px",
+  );
+  check(
+    "Река: лид на 2–4 строки",
+    plain.includes("clamp-3 mt-2 text-sm leading-relaxed"),
+    "clamp-3 + text-sm",
+  );
+  check(
+    "Река: метаданные — время, час, минуты чтения",
+    plain.includes("мин</span>") && plain.includes("<time"),
+    "относительное + чтение",
+  );
+  check(
+    "Река: рубрика капсом акцентным цветом",
+    plain.includes("text-accent"),
+    "text-accent",
+  );
+  check(
+    "Река: фото 16:9 без скруглённых углов, object-cover",
+    withPhoto.includes("aspect-video") && withPhoto.includes("object-cover"),
+    "aspect-video + object-cover",
+  );
+  check(
+    "Река: подпись под фото",
+    withPhoto.includes("Фото: Reuters") && withPhoto.includes("text-[11px]"),
+    "кредит выводится",
+  );
+
+  /* ---- a story with no photograph ---- */
+
+  /*
+   * It runs the text across the full width rather than being squeezed into the 40% column or
+   * given a grey plate. The card's own layout does this: the media branch is absent, so the
+   * text element is the only child and takes the row.
+   */
+  check(
+    "Река: без фото карточка идёт во всю ширину, без заглушки",
+    !plain.includes("aspect-video") && !plain.includes("/placeholder.png"),
+    "ни кадра, ни серой плашки",
+  );
+  check(
+    "Река: без фото заголовок остаётся крупным",
+    plain.includes("text-xl leading-snug md:text-2xl"),
+    "те же кегли, что и у карточки с фото",
+  );
+
+  /* ---- the deck ---- */
+
+  /*
+   * Syndicated material carries a headline and a body but no lead, which is most of what
+   * arrives on this site. Without the body fallback a third of the river would be a headline
+   * with nothing under it.
+   */
+  check(
+    "Река: лид берётся из lead, иначе из текста",
+    card({ lead: "Лид из редакции" }).includes("Лид из редакции") &&
+      card({ subtitle: "Подзаголовок" }).includes("Подзаголовок") &&
+      card().includes("слово слово"),
+    "lead → subtitle → начало текста",
+  );
+
+  /* ---- deduplication ---- */
+
+  check(
+    "Река: лид забирается в общий used до всех остальных блоков",
+    pageSource.includes("new Set<string>(hero ? [hero.id] : [])") &&
+      pageSource.indexOf("new Set<string>(hero") <
+        pageSource.indexOf("const riverBody = take("),
+    "used создан до выборки реки",
+  );
+  check(
+    "Река: сайдбар забирается после реки, из того же used",
+    pageSource.indexOf("const riverBody = take(") <
+      pageSource.indexOf("const nowReading = take(") &&
+      /fillRanked\(\s*investigations,\s*specRest,\s*SPEC_TOPIC_COUNT,\s*used,?\s*\)/.test(
+        pageSource,
+      ),
+    "река → сайдбар, один набор",
+  );
+
+  /*
+   * `fillRanked` claims its picks in `used` itself. Wrapping it in `take` — which skips
+   * anything already claimed — filters out precisely the rows `fillRanked` just took, and
+   * the block renders empty under a heading that promises three. It shipped once: the
+   * sidebar had a heading and no rows, and no amount of looking at the query would have
+   * explained it.
+   */
+  check(
+    "Река: fillRanked не обёрнут в take — иначе он отфильтрует сам себя",
+    /const specItems = fillRanked\(/.test(pageSource) &&
+      !/const specItems = take\(\s*fillRanked/.test(pageSource),
+    "specItems = fillRanked(...) напрямую",
+  );
+
+  /* ---- the sidebar ---- */
+
+  check(
+    "Река: в сайдбаре мнения, читают и спецтема",
+    pageSource.indexOf("<OpinionsBlock") < pageSource.indexOf("<NowReading") &&
+      pageSource.indexOf("<NowReading") < pageSource.indexOf("<SpecTopicBlock"),
+    "мнения → читают → спецтема",
+  );
+  check(
+    "Река: левая река объявлена раньше сайдбара в DOM",
+    pageSource.indexOf("lg:col-span-8") < pageSource.indexOf("lg:col-span-4"),
+    "река → сайдбар",
+  );
+
+  /* ---- the lead card is the first one ---- */
+
+  check(
+    "Река: лид — первая карточка и на размер шаг больше",
+    card({}, { lead: true }).includes("lg:text-3xl") &&
+      !card({}, { lead: true }).includes("text-xl leading-snug md:text-2xl"),
+    "lead=true → text-2xl lg:text-3xl",
+  );
+}
+
+checkStoryRiver();
 checkStickyHeader();
 checkGrouping();
-checkMarkup();
 checkCompactPreview();
 checkRubricFill();
 checkSectionGrid();
-checkFeedColumn();
 checkNewShelves();
-checkFrontHero();
-checkHeroStandfirst();
 checkTypography();
 checkFonts();
 checkForumBlock();

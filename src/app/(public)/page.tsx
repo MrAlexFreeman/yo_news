@@ -1,9 +1,9 @@
 import { ArticleCard } from "@/components/article-card";
 import { ForumTopicsBlock } from "@/components/forum-topics";
-import { FrontPageHero } from "@/components/front-page-hero";
 import { Logo } from "@/components/logo";
-import { NewsTicker } from "@/components/news-ticker";
+import { NowReading } from "@/components/now-reading";
 import { OpinionsBlock } from "@/components/opinions-block";
+import { RiverArticleCard } from "@/components/river-article-card";
 import { SpecTopicBlock } from "@/components/spec-topic-block";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { SectionGrid } from "@/components/section-grid";
@@ -13,9 +13,9 @@ import {
   getHeroArticle,
   getMostReadArticles,
   getPublishedArticles,
+  getRiverArticles,
   getSectionsWithArticles,
   getTrendingArticles,
-  type ArticleListItem,
 } from "@/lib/public-queries";
 
 /**
@@ -25,97 +25,87 @@ import {
  */
 export const revalidate = 300;
 
-const TICKER_COUNT = 8;
 /**
- * The urgent column beside the lead story. Four fills it without running past the
- * lead's own height, which is what keeps the first screen's bottom edge straight.
+ * The river: the lead plus ten.
+ *
+ * Eleven, and the number is about screen height rather than about coverage. A river card is
+ * a headline, a deck, a picture and a caption — roughly 260px at `lg` — so eleven cards is
+ * about five screens of reading before the reader reaches anything else on the page. Twelve
+ * pushed the first rubric strip below the fold on a laptop, which is the one thing the strips
+ * below the river exist to offer.
  */
-const URGENT_COUNT = 4;
-/**
- * The rail is a summary, not the archive: eight is what a reader will actually scan
- * beside the hero. The rest of the list is one click away under "Вся лента новостей".
- * It used to be twelve, which pushed the subscribe card far enough down that nobody
- * reached it.
- */
-/**
- * The lead story plus the four urgent ones are removed from the feed before it renders,
- * and the lead may itself be the newest story, so the feed is fetched with room for all
- * five plus its own eight. Without the spare rows a fresh exclusive hero would cost the
- * rail two lines and the urgent column would show repeats.
- */
-const TICKER_FETCH = TICKER_COUNT + URGENT_COUNT + 1;
-const RAIL_COUNT = 4;
-/**
- * Cards per rubric strip. Four, because four is what fills the row at `lg`, and a strip
- * of three leaves a one-column hole exactly as bad as a strip of one.
- */
+const RIVER_AFTER_LEAD = 10;
+const RIVER_TOTAL = RIVER_AFTER_LEAD + 1;
+
+/** Cards per rubric strip. Four fills one dense row; three leaves a one-column hole. */
 const SECTION_SIZE = 4;
-/**
- * Below this a rubric strip is not printed at all.
- *
- * Two, not one: one card under a rubric heading is a link, not a section, and the row it
- * would occupy is mostly paper. The backfill below is what keeps this from firing on a
- * normal day — it only happens when the whole page has run out of material.
- */
+/** Below this a rubric strip is not printed at all: one card under a heading is a link. */
 const MIN_SECTION_CARDS = 2;
-/** Stories in "Другие события дня". Four fill one dense strip. */
+/** Stories in «Другие события дня». */
 const DAY_CARD_COUNT = 4;
-/** Threads in "Обсуждают на форуме". Four fills the column without running long. */
+/** Threads in «Обсуждают на форуме». */
 const TOPIC_COUNT = 4;
-/** Stories in the "Спецтема" block that balances the feed column. */
+/** Stories in «Спецтема» in the sidebar. */
 const SPEC_TOPIC_COUNT = 3;
-/** Stories in the "Мнения" block. Three cards with a portrait each. */
-const OPINIONS_COUNT = 3;
 /**
- * How many candidates the opinion block draws from.
+ * Candidates for «Спецтема».
  *
- * Six per card, not one: reads concentrate, so the most-read list overlaps heavily with
- * the stories the hero, the urgent column and the feed have already claimed, and every
- * one of those has to be skipped. Asking for three would return one or none and the
- * block would appear only on days when the paper's popular stories happen to be its least
- * read ones.
+ * Wide, and measured rather than guessed: on this database the eleven freshest stories are
+ * also eleven of the twelve most-read ones — reads follow the top of the feed, because that
+ * is where the readers arrive. A pool of twelve therefore arrived at the sidebar with one
+ * usable row and printed one line under a heading that promises three. Twenty-four clears
+ * it with room to spare on a quiet day and costs one indexed range scan.
+ */
+const SPEC_TOPIC_CANDIDATES = SPEC_TOPIC_COUNT * 8;
+/** Stories in «Мнения». Three cards with a roundel each. */
+const OPINIONS_COUNT = 3;
+/** Stories in «Сейчас читают». */
+const NOW_READING_COUNT = 5;
+
+/**
+ * Candidates per opinion card.
+ *
+ * Six, not one: reads concentrate, so the most-read list overlaps heavily with what the
+ * river has already claimed and each of those has to be skipped. Asking for three would
+ * return one or none, and the block would print only on days when the paper's popular
+ * stories happen to be its least read ones.
  */
 const OPINIONS_CANDIDATES = OPINIONS_COUNT * 6;
 
+/** Candidates per «Сейчас читают» row, for the same reason. */
+const NOW_READING_CANDIDATES = NOW_READING_COUNT * 6;
+
 export default async function HomePage() {
   /*
-    Every list on the page comes out of one round of queries, and none of them waits on
-    another. `pool` is the deep list: it feeds the rubric strips first and then whatever
-    the strips did not take, so "Другие события дня" is what is genuinely left over rather
-    than a second draw of the same stories.
+    One round of parallel queries. The lead is fetched before the river in *logic* but not
+    in *time*: it cannot be excluded from the river query before it is known, so the river
+    is fetched with room for the lead and the lead's id is filtered out afterwards — the
+    shared `used` set already claims it on the first line below.
   */
-  const [
-    hero,
-    ticker,
-    sections,
-    pool,
-    topics,
-    trending,
-    mostRead,
-    investigations,
-    restByReads,
-    opinions,
-  ] = await Promise.all([
-    getHeroArticle(),
-    getPublishedArticles(TICKER_FETCH),
-    getSectionsWithArticles(SECTION_SIZE, 9),
-    getPublishedArticles(160),
-    getActiveForumTopics(TOPIC_COUNT),
-    getTrendingArticles(URGENT_COUNT + 2),
-    getMostReadArticles(URGENT_COUNT * 3),
-    getMostReadArticles(SPEC_TOPIC_COUNT, { categorySlug: "investigations" }),
-    getMostReadArticles(SPEC_TOPIC_COUNT * 2),
-    getMostReadArticles(OPINIONS_CANDIDATES),
-  ]);
+  const [hero, riverRest, sections, pool, topics, trending, mostRead, investigations, specRest] =
+    await Promise.all([
+      getHeroArticle(),
+      getRiverArticles(RIVER_TOTAL),
+      getSectionsWithArticles(SECTION_SIZE, 9),
+      getPublishedArticles(160),
+      getActiveForumTopics(TOPIC_COUNT),
+      getTrendingArticles(NOW_READING_CANDIDATES),
+      getMostReadArticles(OPINIONS_CANDIDATES),
+      getMostReadArticles(SPEC_TOPIC_COUNT, { categorySlug: "investigations" }),
+      getMostReadArticles(SPEC_TOPIC_CANDIDATES),
+    ]);
 
-  const heroId = hero?.id;
+  /*
+    Everything already on the page. One set threaded through every block is the only way
+    "no headline appears twice on the front page" stays true as blocks are added — this was
+    a real bug, not a hypothetical: the AI-95 story was linked three times before
+    `fillRanked` was taught to read this set.
+  */
+  const used = new Set<string>(hero ? [hero.id] : []);
 
-  // Everything already on the page. One set, threaded through every block below, is the
-  // only way "no headline appears twice on the front page" stays true as blocks are added.
-  const used = new Set<string>(heroId ? [heroId] : []);
-
-  const take = (items: readonly ArticleListItem[], limit: number) => {
-    const out: ArticleListItem[] = [];
+  /** The first `limit` unused rows, claimed as they are taken. */
+  const take = <T extends { id: string }>(items: readonly T[], limit: number): T[] => {
+    const out: T[] = [];
     for (const article of items) {
       if (out.length >= limit) break;
       if (used.has(article.id)) continue;
@@ -126,44 +116,38 @@ export default async function HomePage() {
   };
 
   /*
-    "Важное за сегодня" is drawn from the most-read of the last two days rather than from
-    the freshest four, because the freshest four are exactly the top of the feed below it:
-    a column that repeated the first four rows of the ticker would not be a second
-    editorial voice, it would be a copy. "Важное" and "лента" answer different questions.
-
-    Both ranked blocks are given `used`. The lead story is already in it — seeded on the
-    line above — so the headline a reader sees first cannot turn up again two blocks down.
-    Before this, each of these two blocks kept a private dedupe set and the lead was linked
-    three times on the front page.
+    The lead leads, then the freshest. Not the lead plus "the next ten most read": a river
+    that mixes popularity into its own order stops being a chronology, and a reader who came
+    for the news of the hour should not meet yesterday's favourite halfway down.
   */
-  const urgentItems = fillRanked(trending, mostRead, URGENT_COUNT, used);
+  const riverBody = take(riverRest, RIVER_AFTER_LEAD);
+  const river = hero ? [hero, ...riverBody] : riverBody;
 
-  const tickerItems = take(ticker, TICKER_COUNT);
+  /*
+    The sidebar is drawn after the river and from ranked lists, so anything the river has
+    already shown is skipped rather than reprinted a column to the right.
+  */
+  const nowReading = take(trending, NOW_READING_COUNT);
+  const opinions = take(mostRead, OPINIONS_COUNT);
+
+  /*
+    `fillRanked` claims its picks in `used` itself, so it is not wrapped in `take`. Wrapping
+    it was a bug that returned an empty block every time: `take` skips anything already in
+    `used`, which by then held exactly the three stories `fillRanked` had just claimed, so
+    the block printed nothing under a heading that promises three. Measured — the sidebar
+    had a heading and no rows.
+  */
   const specItems = fillRanked(
     investigations,
-    restByReads,
+    specRest,
     SPEC_TOPIC_COUNT,
     used,
   );
 
   /*
-    The opinion column is drawn from all-time reads rather than from the pool, because it
-    is not "what is new" — it is "what readers keep coming back to", and a story that was
-    published last week may belong here while a story from an hour ago does not. The ids
-    still go through `used`, so nothing the reader has already scrolled past is offered a
-    second time lower down the page.
-  */
-  const opinionItems = take(opinions, OPINIONS_COUNT);
-  const railItems = take(pool, RAIL_COUNT);
-
-  /*
-    Rubric strips, filled.
-
-    `fillSection` takes the rubric's own stories and tops the row up from the pool, so a
-    rubric with one article prints a full row instead of one card beside three columns of
-    paper. Filler is claimed from the shared `used` set as it is taken, so two strips
-    never end up showing the same story, and the filler that reaches a section is
-    something no earlier block wanted.
+    Rubric strips, filled. `fillSection` takes the rubric's own stories and tops the row up
+    from the pool, so a rubric with one article prints a full row instead of one card beside
+    three columns of paper. Filler is claimed from the shared `used` set as it is taken.
   */
   const visibleSections = sections
     .map((section) => ({
@@ -178,51 +162,62 @@ export default async function HomePage() {
     }))
     .filter((section) => section.articles.length >= MIN_SECTION_CARDS);
 
-  // What the strips did not take, freshest first.
   const dayItems = take(pool, DAY_CARD_COUNT);
+
+  const now = new Date();
 
   return (
     <div className="space-y-8">
       {/*
-        The top of the page. Asymmetric on purpose: the lead story takes seven of twelve
-        columns and the urgent column five, with a hairline between them.
-      */}
-      {hero ? (
-        <FrontPageHero lead={hero} urgent={urgentItems} />
-      ) : (
-        <div className="rule-double pb-7">
-          <div className="rounded-sm border border-dashed border-rule p-10 text-center">
-            <h1 className="text-2xl">
-              <Logo size="md" />
-            </h1>
-            <p className="mt-3 text-sm text-ink-soft">
-              Опубликованных материалов пока нет. Они появятся здесь сразу
-              после публикации в редакции.
-            </p>
-          </div>
-        </div>
-      )}
+        The newspaper grid. Eight columns of river and four of opinion is the split the
+        design asks for and the one that works here: the river is the paper's product and it
+        gets two thirds, while the sidebar's four blocks stack to about the height of two
+        river cards and would look abandoned in half the width.
 
-      {/*
-        The feed and the column beside it.
-
-        The two are sized against each other on purpose. The feed is ten rows and grows
-        with the day; the column used to be one subscribe plate, which left a screen of
-        white under it — a layout that reads as broken regardless of what is actually
-        in it. Three blocks — the subscription plate, the spec-topic strip and the forum —
-        put the column's height within reach of the chronology's without either of them
-        pretending to be the other.
+        `lg:` on the grid and on both spans, so below 1024px this is one column and the
+        river reads top to bottom before the sidebar — which is the order a phone wants.
       */}
-      <div className="grid gap-8 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <NewsTicker articles={tickerItems} now={new Date()} />
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+        <div className="lg:col-span-8">
+          {river.length > 0 ? (
+            <section aria-label="Главные материалы" className="border-t-2 border-ink pt-1">
+              {river.map((article, index) => (
+                <RiverArticleCard
+                  key={article.id}
+                  article={article}
+                  lead={index === 0}
+                  now={now}
+                />
+              ))}
+            </section>
+          ) : (
+            <div className="rule-double pb-7">
+              <div className="rounded-sm border border-dashed border-rule p-10 text-center">
+                <h1 className="text-2xl">
+                  <Logo size="md" />
+                </h1>
+                <p className="mt-3 text-sm text-ink-soft">
+                  Опубликованных материалов пока нет. Они появятся здесь сразу
+                  после публикации в редакции.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/*
-          Normal flow, no sticky: a sticky column painted over the block below it is what
-          put the subscribe plate on top of the headlines in the first place.
+          The sidebar. Normal flow, not sticky: a sticky column painted over the block below
+          it is what put the subscribe plate on top of the headlines here once already.
         */}
-        <div className="space-y-6">
+        <div className="space-y-8 lg:col-span-4">
+          <OpinionsBlock
+            articles={opinions}
+            headingId="home-opinions"
+            now={now}
+          />
+
+          <NowReading articles={nowReading} />
+
           <SpecTopicBlock
             articles={specItems}
             heading="Спецтема"
@@ -230,12 +225,6 @@ export default async function HomePage() {
           />
 
           <SubscribeBlock />
-
-          <OpinionsBlock
-            articles={opinionItems}
-            headingId="home-opinions"
-            now={new Date()}
-          />
 
           <ForumTopicsBlock
             topics={topics}
@@ -258,27 +247,6 @@ export default async function HomePage() {
             />
           ))}
         </div>
-      ) : null}
-
-      {/* Reading rail. */}
-      {railItems.length > 0 ? (
-        <section aria-labelledby="reading-rail" className="border-t-2 border-ink pt-3">
-          <h2
-            id="reading-rail"
-            className="mb-3 text-xs font-bold tracking-[0.14em] text-ink uppercase"
-          >
-            Читайте сейчас
-          </h2>
-          <div className="grid gap-x-6 divide-y divide-rule/70 sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4">
-            {railItems.map((article) => (
-              <ArticleCard
-                key={article.id}
-                article={article}
-                variant="compact"
-              />
-            ))}
-          </div>
-        </section>
       ) : null}
 
       {/* Whatever the page has not shown yet, as one more dense strip. */}

@@ -20,13 +20,24 @@ import { prisma } from "@/lib/prisma";
  * later without it fails the suite instead of shipping.
  */
 
-const LIST_FIELDS = {
+/**
+ * Exported because `src/lib/search.ts` selects the same columns and used to keep its own
+ * copy. Two lists that are meant to be one drift the moment either grows a field, and the
+ * symptom is a type error in a file that has nothing to do with the change — which is what
+ * happened when `photoAuthor` was added here and not there.
+ */
+export const LIST_FIELDS = {
   id: true,
   title: true,
   subtitle: true,
   slug: true,
   lead: true,
   coverImage: true,
+  // The story river prints a credit under each photograph. Both are optional and most
+  // syndicated material carries neither, so a card without them prints no caption line at
+  // all rather than an empty one.
+  photoAuthor: true,
+  photoSource: true,
   isExclusive: true,
   is18plus: true,
   publishedAt: true,
@@ -241,6 +252,42 @@ export async function getPublishedArticleBySlug(slug: string) {
 const LOOP_FIELDS = { ...LIST_FIELDS, contentHtml: true } satisfies Prisma.ArticleSelect;
 
 export type LoopArticle = Prisma.ArticleGetPayload<{ select: typeof LOOP_FIELDS }>;
+
+/**
+ * The story river on the front page: freshest first, lead excluded, body included.
+ *
+ * `contentHtml` is here only to build the deck. Syndicators send a headline and a body but
+ * no lead, and on this site that is most of the incoming material — querying the list fields
+ * alone left a third of the river as a headline with nothing under it, which reads as a list
+ * of links rather than as journalism.
+ *
+ * The whole body is selected, not just its opening: Prisma cannot substring a column in a
+ * `select`, and the cost is server-side only. The card renders 220 characters of it and the
+ * rest never reaches the browser, so this is a larger query out of SQLite once per ISR
+ * revalidation rather than a heavier page.
+ *
+ * The river is long — eleven cards — so this is deliberately not `getPublishedArticles`:
+ * that one is used for lists that never print a deck, and widening it would make every one
+ * of them pay for the body.
+ */
+export async function getRiverArticles(
+  take: number,
+  excludeId?: string,
+): Promise<LoopArticle[]> {
+  return prisma.article.findMany({
+    where: {
+      status: "published",
+      deletedAt: null,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
+    orderBy: BY_FRESHNESS,
+    take,
+    select: {
+      ...LIST_FIELDS,
+      contentHtml: true,
+    },
+  });
+}
 
 /**
  * Stories the plate inside the article may point at: the freshest ones from the same
