@@ -2,6 +2,7 @@ import { Rss } from "lucide-react";
 import Link from "next/link";
 
 import { Logo } from "@/components/logo";
+import { CATEGORIES } from "@/lib/categories";
 import {
   SITE_LEGAL_NAME,
   SITE_TAGLINE_LONG,
@@ -10,9 +11,16 @@ import {
 
 // The CMS lives behind /admin and is deliberately absent here: a reader should
 // not be offered a link to the editorial desk.
+//
+// The rubric links are built from the one rubric list rather than typed out, so the
+// footer cannot offer a section the header does not have — or one the database no
+// longer does.
 const NAV_LINKS = [
   { href: "/", label: "Главная" },
-  { href: "/category/tech", label: "Технологии" },
+  ...CATEGORIES.map((category) => ({
+    href: `/category/${category.slug}`,
+    label: category.name,
+  })),
   { href: "/tags", label: "Тэги" },
   { href: "/forum", label: "Форум" },
   { href: "/about", label: "О редакции" },

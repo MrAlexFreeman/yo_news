@@ -34,6 +34,7 @@ import { NewsTicker } from "../src/components/news-ticker";
 import { dayLabel, formatTime, groupByDay } from "../src/lib/date";
 import type { ActiveForumTopic } from "../src/lib/forum";
 import { newsPageHref, parsePageSegment } from "../src/lib/pagination";
+import { countWords, readingMinutes } from "../src/lib/reading-time";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
@@ -396,6 +397,75 @@ function checkForumBlock() {
   );
 }
 
+function checkTypography() {
+  const article = {
+    id: "t1",
+    title: "Заголовок с типографикой",
+    slug: "tipografika",
+    publishedAt: NOW,
+    createdAt: NOW,
+    subtitle: null,
+    lead: "Лид материала.",
+    coverImage: null,
+    isDzen: true,
+    isVk: true,
+    isExclusive: false,
+    is18plus: false,
+    category: { name: "Расследования", slug: "investigations" },
+  };
+
+  const compact = renderToStaticMarkup(
+    createElement(ArticleCard as never, { article, variant: "compact" }),
+  );
+  const grid = renderToStaticMarkup(createElement(ArticleCard as never, { article }));
+
+  check(
+    "Типографика: рубрика — мелкий жирный капс над заголовком",
+    compact.includes("font-bold") &&
+      compact.includes("tracking-[0.14em]") &&
+      compact.includes("uppercase") &&
+      compact.includes("Расследования") &&
+      compact.indexOf("Расследования") < compact.indexOf(article.title),
+    "капс стоит до заголовка",
+  );
+
+  check(
+    "Типографика: заголовок подчёркивается при наведении на 1px с отступом",
+    compact.includes("hover:underline") &&
+      compact.includes("decoration-1") &&
+      compact.includes("underline-offset-4") &&
+      grid.includes("decoration-1") &&
+      grid.includes("underline-offset-4"),
+    "hover:underline + decoration-1 + underline-offset-4",
+  );
+
+  check(
+    "Типографика: заголовок заливается акцентом при наведении на карточку",
+    compact.includes("group-hover:text-accent") && grid.includes("group-hover:text-accent"),
+    "group-hover:text-accent",
+  );
+
+  check(
+    "Типографика: плотные строки разделены тонкой линией",
+    compact.includes("border-b border-rule/70") && compact.includes("py-2.5"),
+    "border-b + py-2.5",
+  );
+
+  check(
+    "Время чтения: считается по словам, минимум одна минута",
+    readingMinutes(`<p>${"слово ".repeat(360)}</p>`) === 2 &&
+      readingMinutes("<p>короткий текст</p>") === 1,
+    `${readingMinutes(`<p>${"слово ".repeat(360)}</p>`)} мин для 360 слов`,
+  );
+
+  check(
+    "Время чтения: теги, комментарии и сущности не считаются словами",
+    countWords("<p>привет<!-- скрыто -->&nbsp;мир</p>") === 2 &&
+      countWords("<script>var x = 1;</script><p>текст</p>") === 1,
+    `${countWords("<p>привет<!-- скрыто -->&nbsp;мир</p>")} слова`,
+  );
+}
+
 function checkArchive() {
   check(
     "Архив: страница 1 — это /news, а не /news/page/1",
@@ -421,6 +491,7 @@ checkGrouping();
 checkMarkup();
 checkCompactPreview();
 checkLeadCover();
+checkTypography();
 checkForumBlock();
 checkArchive();
 

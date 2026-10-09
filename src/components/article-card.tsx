@@ -6,6 +6,17 @@ import { formatDate, formatTime } from "@/lib/date";
 import { SITE_SHORT_NAME } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
+/**
+ * The headline link's hover behaviour, shared by every card variant.
+ *
+ * A one-pixel underline set a little away from the text (WaPo's house style) plus the
+ * accent colour. `group-hover` so the whole card is the target — pointing anywhere on
+ * it, including the picture, reacts — and the plain `hover` so the link still responds
+ * when the pointer is on the text itself and for the keyboard focus ring.
+ */
+const HEADLINE_LINK =
+  "transition-colors hover:text-accent group-hover:text-accent hover:underline group-hover:underline decoration-1 underline-offset-4";
+
 /** Small caps rubric label used above headlines. */
 export function RubricLabel({
   name,
@@ -18,7 +29,12 @@ export function RubricLabel({
 }) {
   if (!slug) {
     return (
-      <span className={cn("text-[10px] font-semibold tracking-wider uppercase", className)}>
+      <span
+        className={cn(
+          "text-[10px] font-bold tracking-[0.14em] uppercase",
+          className,
+        )}
+      >
         {name}
       </span>
     );
@@ -30,7 +46,7 @@ export function RubricLabel({
     <Link
       href={`/category/${slug}`}
       className={cn(
-        "inline-flex min-h-6 items-center py-0.5 text-[10px] font-semibold tracking-wider text-accent uppercase hover:underline",
+        "inline-flex min-h-6 items-center py-0.5 text-[10px] font-bold tracking-[0.14em] text-accent uppercase hover:underline decoration-1 underline-offset-4",
         className,
       )}
     >
@@ -169,7 +185,7 @@ export function ArticleCard({
     const thumb = COMPACT_PREVIEW[preview];
 
     return (
-      <article className="group flex gap-3 py-3">
+      <article className="group flex gap-3 border-b border-rule/70 py-2.5 last:border-b-0">
         {/*
           `self-start` is load-bearing, not decoration. The card is a flex row and
           flex items stretch across the cross axis by default, so the thumbnail was
@@ -198,10 +214,7 @@ export function ArticleCard({
               group rule already covers, and because it is the rule a keyboard focus
               ring inherits.
             */}
-            <Link
-              href={href}
-              className="transition-colors hover:text-accent group-hover:text-accent"
-            >
+            <Link href={href} className={HEADLINE_LINK}>
               {article.title}
             </Link>
           </h3>
@@ -264,7 +277,7 @@ export function ArticleCard({
         </div>
 
         <h1 className="mt-2 font-[family-name:var(--font-lora)] text-3xl leading-[1.12] font-bold text-ink sm:text-4xl lg:text-[2.75rem]">
-          <Link href={href} className="transition-colors hover:text-accent">
+          <Link href={href} className={HEADLINE_LINK}>
             {article.title}
           </Link>
         </h1>
@@ -296,7 +309,7 @@ export function ArticleCard({
           level={headingLevel}
           className="clamp-3 font-[family-name:var(--font-lora)] text-base leading-snug font-bold text-ink"
         >
-          <Link href={href} className="transition-colors hover:text-accent">
+          <Link href={href} className={HEADLINE_LINK}>
             {article.title}
           </Link>
         </Heading>

@@ -42,14 +42,13 @@ const force = process.argv.includes("--force");
  * whether anything in the headline said anything about society.
  */
 const BY_CATEGORY: Record<string, string[]> = {
-  politics: ["Политика", "Общество"],
+  investigations: ["Расследования", "Общество"],
+  lifestyle: ["Здоровье", "Общество"],
+  "home-garden": ["Дом", "Город"],
+  cinema: ["Культура", "Город"],
+  incidents: ["Происшествия", "Город"],
   society: ["Общество", "Город"],
   economy: ["Экономика", "Город"],
-  tech: ["Технологии", "Город"],
-  culture: ["Культура", "Город"],
-  sport: ["Спорт", "Общество"],
-  science: ["Наука", "Общество"],
-  incident: ["Происшествия", "Город"],
 };
 
 /** Only for a story with no rubric at all. */

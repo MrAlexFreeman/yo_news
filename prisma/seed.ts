@@ -1,6 +1,7 @@
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 import { PrismaClient } from "../src/generated/prisma/client";
+import { CATEGORIES } from "../src/lib/categories";
 
 const prisma = new PrismaClient({
   adapter: new PrismaBetterSqlite3({
@@ -8,23 +9,15 @@ const prisma = new PrismaClient({
   }),
 });
 
-const categories = [
-  { name: "Политика", slug: "politics" },
-  { name: "Экономика", slug: "economy" },
-  { name: "Технологии", slug: "tech" },
-  { name: "Спорт", slug: "sport" },
-  { name: "Культура", slug: "culture" },
-];
-
 async function main() {
-  for (const category of categories) {
+  for (const category of CATEGORIES) {
     await prisma.category.upsert({
       where: { slug: category.slug },
       update: { name: category.name },
       create: category,
     });
   }
-  console.log(`Seeded ${categories.length} categories.`);
+  console.log(`Seeded ${CATEGORIES.length} categories.`);
 }
 
 main()

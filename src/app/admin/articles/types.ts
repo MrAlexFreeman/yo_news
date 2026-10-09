@@ -1,5 +1,6 @@
 import type { ArticleStatus } from "@/lib/article-status";
 import type { MediaItem } from "@/lib/article-media";
+import { CATEGORIES } from "@/lib/categories";
 
 /**
  * Types shared between the article editor and its Server Actions.
@@ -111,17 +112,15 @@ export type CategoryOption = { id: string; name: string };
 /**
  * Rubric options used when the database has no categories yet, so a fresh
  * checkout still renders a usable dropdown.
+ *
+ * Derived from the one rubric list rather than copied: when the two were separate, a
+ * rework of the editorial grid left this dropdown offering rubrics the database no
+ * longer had.
  */
-export const FALLBACK_CATEGORIES: CategoryOption[] = [
-  { id: "politics", name: "Политика" },
-  { id: "science", name: "Наука" },
-  { id: "sport", name: "Спорт" },
-  { id: "economy", name: "Экономика" },
-  { id: "tech", name: "Технологии" },
-  { id: "culture", name: "Культура" },
-  { id: "society", name: "Общество" },
-  { id: "incident", name: "Происшествия" },
-];
+export const FALLBACK_CATEGORIES: CategoryOption[] = CATEGORIES.map((category) => ({
+  id: category.slug,
+  name: category.name,
+}));
 
 /**
  * Editorial soft limit for headlines; past this the editor is warned, never

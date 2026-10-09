@@ -8,6 +8,7 @@ import path from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 import { PrismaClient } from "../src/generated/prisma/client";
+import { CATEGORIES } from "../src/lib/categories";
 import { UPLOAD_DIR } from "../src/lib/upload-dir";
 import { coverFileName, renderCoverPng } from "./cover-art";
 
@@ -76,7 +77,7 @@ const DEMOS: Demo[] = [
     title: "Химики получили катализатор, удешевляющий производство водорода",
     lead: "Разработка сокращает число технологических операций почти вдвое, сообщают в лаборатории.",
     body: BODY,
-    category: "science",
+    category: "investigations",
     hoursAgo: 2,
   },
   {
@@ -84,7 +85,7 @@ const DEMOS: Demo[] = [
     title: "Финал Кубка города: счёт 2:1 и драма в добавленное время",
     lead: "Победу команде принёс гол на 94-й минуте. Трибуны не расходились до полуночи.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 3,
   },
   {
@@ -100,7 +101,7 @@ const DEMOS: Demo[] = [
     title: "На промышленной зоне произошёл пожар: эвакуированы 200 человек",
     lead: "Возгорание локализовано за час. Пострадавших нет, причины выясняются.",
     body: BODY,
-    category: "incident",
+    category: "incidents",
     hoursAgo: 5,
     is18plus: false,
   },
@@ -110,7 +111,7 @@ const DEMOS: Demo[] = [
     subtitle: "Проект рассмотрят в ноябре после доработки замечаний",
     lead: "Главный спор вызвали расходы на благоустройство набережной.",
     body: BODY,
-    category: "politics",
+    category: "society",
     hoursAgo: 6,
   },
   {
@@ -118,7 +119,7 @@ const DEMOS: Demo[] = [
     title: "В городе заработал новый дата-центр мощностью 18 мегаватт",
     lead: "Площадка рассчитана на размещение оборудования для региональных сервисов.",
     body: BODY,
-    category: "tech",
+    category: "society",
     hoursAgo: 7,
   },
   {
@@ -126,7 +127,7 @@ const DEMOS: Demo[] = [
     title: "В бывшем промышленном корпусе открыли выставку о городской истории",
     lead: "Экспозиция разместилась в цехах площадью 1,2 тысячи квадратных метров.",
     body: BODY,
-    category: "culture",
+    category: "cinema",
     hoursAgo: 8,
   },
   {
@@ -134,7 +135,7 @@ const DEMOS: Demo[] = [
     title: "На старт марафона вышли более 8 тысяч бегунов",
     lead: "Дистанция преодолена новым рекордом трассы, пасмурная погода не помешала.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 9,
   },
   {
@@ -150,7 +151,7 @@ const DEMOS: Demo[] = [
     title: "Исследователи описали изменения ледников за последние 30 лет",
     lead: "Данные получены со спутников и уточняют климатические прогнозы для региона.",
     body: BODY,
-    category: "science",
+    category: "investigations",
     hoursAgo: 13,
   },
   {
@@ -166,7 +167,7 @@ const DEMOS: Demo[] = [
     title: "Утверждены кандидатуры на пост главного инженера города",
     lead: "Конкурсная комиссия рассмотрела 14 резюме, окончательное решение — в октябре.",
     body: BODY,
-    category: "politics",
+    category: "society",
     hoursAgo: 18,
   },
   {
@@ -174,7 +175,7 @@ const DEMOS: Demo[] = [
     title: "В трёх районах обновят городскую сеть связи",
     lead: "Работы пройдут по ночам и не потребуют перебоев в сервисах.",
     body: BODY,
-    category: "tech",
+    category: "society",
     hoursAgo: 20,
   },
   {
@@ -182,7 +183,7 @@ const DEMOS: Demo[] = [
     title: "Театр представил спектакль по городским легендам",
     lead: "Премьера собрала полный зал в первый же вечер.",
     body: BODY,
-    category: "culture",
+    category: "cinema",
     hoursAgo: 22,
   },
   {
@@ -190,7 +191,7 @@ const DEMOS: Demo[] = [
     title: "В метро зафиксировано ДТП с участием служебного транспорта",
     lead: "Пострадавших нет, движение восстановлено в течение часа.",
     body: BODY,
-    category: "incident",
+    category: "incidents",
     hoursAgo: 26,
   },
   // Enough Спорт material to push the rubric past one 12-item page.
@@ -199,7 +200,7 @@ const DEMOS: Demo[] = [
     title: "Сборники команды отправились на летние сборы",
     lead: "В заявке 26 футболистов, тренерский штаб объявил состав на вторую неделю подготовки.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 28,
   },
   {
@@ -207,7 +208,7 @@ const DEMOS: Demo[] = [
     title: "Легендарный бомбардир завершил карьеру",
     lead: "Форвард провёл в клубе одиннадцать сезонов и провёл 340 матчей.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 30,
   },
   {
@@ -215,7 +216,7 @@ const DEMOS: Demo[] = [
     title: "Химический турнир сменил формат: теперь пятёрка на площадке",
     lead: "Организаторы объяснили решение ростом числа команд-участниц.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 32,
   },
   {
@@ -223,7 +224,7 @@ const DEMOS: Demo[] = [
     title: "На стадионе открыли восемь новых дорожек",
     lead: "Покрытие отвечает последним требованиям международных стандартов.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 34,
   },
   {
@@ -231,7 +232,7 @@ const DEMOS: Demo[] = [
     title: "Волейболистки вышли в финал плей-офф",
     lead: "Матч-пятисетка завершился победой хозяек площадки.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 36,
   },
   // Enough Спорт material to push the rubric past one 12-item page.
@@ -240,7 +241,7 @@ const DEMOS: Demo[] = [
     title: "Шахматист обыграл гроссмейстера в турнире претендентов",
     lead: "Партия завершилась на 38-м ходу и обещала ничью до последнего момента.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 38,
   },
   {
@@ -248,7 +249,7 @@ const DEMOS: Demo[] = [
     title: "Боксёр удержал пояс после самого короткого нокаута в году",
     lead: "Бой остановили на 47-й секунде второго раунда.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 40,
   },
   {
@@ -256,7 +257,7 @@ const DEMOS: Demo[] = [
     title: "Пловчиха установила рекорд турнира на дистанции 200 метров",
     lead: "Прежнее достижение продержалось четыре года.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 42,
   },
   {
@@ -264,7 +265,7 @@ const DEMOS: Demo[] = [
     title: "В городе открыли новый велопрокат на 800 велосипедов",
     lead: "Пункты выдачи работают круглосуточно, абонементы доступны онлайн.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 44,
   },
   {
@@ -272,7 +273,7 @@ const DEMOS: Demo[] = [
     title: "Стадион готов к чемпионату: осталось проверить трибуны",
     lead: "Проверку комиссии назначили на конец недели.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 46,
   },
   {
@@ -280,7 +281,7 @@ const DEMOS: Demo[] = [
     title: "Любительский спорт без ограничений: кто смотрит такие трансляции",
     lead: "Матчи любительских лиг собирают больше зрителей, чем ожидалось.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 48,
   },
   {
@@ -288,7 +289,7 @@ const DEMOS: Demo[] = [
     title: "Спортивная акция собрала средства на новые площадки",
     lead: "В акции приняли участие более двух тысяч человек.",
     body: BODY,
-    category: "sport",
+    category: "lifestyle",
     hoursAgo: 50,
   },
 ];
@@ -304,27 +305,16 @@ async function main() {
   });
   const bySlug = new Map(categories.map((c) => [c.slug, c.id]));
 
-  // Ensure every rubric used below exists.
-  const needed = [...new Set(DEMOS.map((demo) => demo.category))];
-  const names: Record<string, string> = {
-    politics: "Политика",
-    society: "Общество",
-    science: "Наука",
-    sport: "Спорт",
-    economy: "Экономика",
-    culture: "Культура",
-    tech: "Технологии",
-    incident: "Происшествия",
-  };
-
-  for (const slug of needed) {
-    if (!bySlug.has(slug)) {
-      const created = await prisma.category.create({
-        data: { slug, name: names[slug] ?? slug },
-        select: { id: true },
-      });
-      bySlug.set(slug, created.id);
-    }
+  // Ensure every rubric exists, including ones no demo story uses — the navigation and
+  // the admin dropdown read the same list, and a missing rubric would be a dead link on
+  // the front page.
+  for (const category of CATEGORIES) {
+    if (bySlug.has(category.slug)) continue;
+    const created = await prisma.category.create({
+      data: { slug: category.slug, name: category.name },
+      select: { id: true },
+    });
+    bySlug.set(category.slug, created.id);
   }
 
   const now = Date.now();

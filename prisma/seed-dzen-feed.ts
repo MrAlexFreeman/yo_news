@@ -78,8 +78,8 @@ coverImage: absoluteUrl("/placeholder.png"),
 
 async function main() {
   const now = Date.now();
-  const tech = await prisma.category.findUnique({
-    where: { slug: "tech" },
+  const society = await prisma.category.findUnique({
+    where: { slug: "society" },
     select: { id: true },
   });
 
@@ -98,7 +98,7 @@ async function main() {
         isVk: false,
         isExclusive: false,
         is18plus: false,
-        categoryId: tech?.id ?? null,
+        categoryId: society?.id ?? null,
         publishedAt,
       },
       create: {
@@ -107,7 +107,7 @@ async function main() {
         isVk: false,
         isExclusive: false,
         is18plus: false,
-        categoryId: tech?.id ?? null,
+        categoryId: society?.id ?? null,
         publishedAt,
       },
     });

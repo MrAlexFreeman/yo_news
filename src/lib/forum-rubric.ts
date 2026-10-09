@@ -4,9 +4,9 @@ import { FORUM_SEED_CATEGORIES } from "@/lib/forum";
  * Where a story's discussion belongs on the forum.
  *
  * The article rubric and the forum sections are separate taxonomies — the news desk
- * has Культура, Наука, Спорт, Технологии, the forum has four broader sections — so the
- * "discuss this" button needs a decision. Guessing at the moment of click is not an
- * option: the button is a link, and a link cannot ask.
+ * files by subject, the forum has four broader sections — so the "discuss this" button
+ * needs a decision. Guessing at the moment of click is not an option: the button is a
+ * link, and a link cannot ask.
  *
  * Tags first, rubric second.
  *
@@ -14,8 +14,8 @@ import { FORUM_SEED_CATEGORIES } from "@/lib/forum";
  * what a tag records; a rubric only records where the desk filed the piece. A story
  * about a fatal crash on the ring road is filed under «Происшествия» or «Общество» and
  * is still, unmistakably, a road story — and routing it by rubric would drop it in
- * "Городские проблемы и ЖКХ", where nobody follows traffic. Measured against the eight
- * rubrics actually in the database: `society` and `incident` do carry plenty of road
+ * "Городские проблемы и ЖКХ", where nobody follows traffic. Measured against the seven
+ * rubrics actually in the database: `society` and `incidents` do carry plenty of road
  * material, and that is exactly the case tags catch and rubrics cannot.
  *
  * The rubric is still the fallback, because a reader who wants to discuss a story
@@ -71,7 +71,7 @@ const ROAD_TAG_STEMS = [
  */
 const CATEGORY_TO_FORUM: Record<string, string> = {
   society: CITY,
-  incident: CITY,
+  incidents: CITY,
 };
 
 export type ForumSection = { slug: string; title: string };

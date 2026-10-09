@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Prisma } from "@/generated/prisma/client";
 
+import { categoryRank } from "@/lib/categories";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -86,10 +87,13 @@ export async function getHeroArticle(): Promise<ArticleListItem | null> {
 }
 
 export async function getCategories() {
-  return prisma.category.findMany({
-    orderBy: { name: "asc" },
+  const categories = await prisma.category.findMany({
     select: { id: true, name: true, slug: true },
   });
+
+  // The editorial grid, not alphabetical: the navigation leads with «Расследования».
+  // A rubric added straight to the database still appears, after the known ones.
+  return categories.sort((a, b) => categoryRank(a.slug) - categoryRank(b.slug));
 }
 
 /**
@@ -149,10 +153,9 @@ export async function getSectionsWithArticles(
   perSection: number,
   limit = 6,
 ): Promise<{ category: { name: string; slug: string }; articles: ArticleListItem[] }[]> {
-  const categories = await prisma.category.findMany({
-    orderBy: { name: "asc" },
-    select: { id: true, name: true, slug: true },
-  });
+  const categories = (
+    await prisma.category.findMany({ select: { id: true, name: true, slug: true } })
+  ).sort((a, b) => categoryRank(a.slug) - categoryRank(b.slug));
 
   const sections = await Promise.all(
     categories.map(async (category) => ({

@@ -608,8 +608,8 @@ function checkSidebarWiring() {
 
   // The real rubrics, measured from the database rather than assumed.
   const rubrics = [
-    "culture", "society", "politics", "incident",
-    "sport", "tech", "economy", "science",
+    "investigations", "lifestyle", "home-garden", "cinema",
+    "incidents", "society", "economy",
   ];
   const unresolved = rubrics.filter(
     (slug) => !known.has(forumSectionForArticle({ rubricSlug: slug }).slug),
@@ -636,7 +636,7 @@ function checkSidebarWiring() {
     ["метро", ["метро"], "avto-i-dorogi"],
   ];
   for (const [label, tags, expected] of roadCases) {
-    const actual = forumSectionForArticle({ rubricSlug: "incident", tags }).slug;
+    const actual = forumSectionForArticle({ rubricSlug: "incidents", tags }).slug;
     check(
       `Сайдбар: тег «${label}» ведёт в «Авто и дороги»`,
       actual === expected,
@@ -645,7 +645,7 @@ function checkSidebarWiring() {
   }
 
   // Case folding: the CMS has no idea an editor typed ё or an uppercase letter.
-  const folded = forumSectionForArticle({ rubricSlug: "sport", tags: ["ДТП"] });
+  const folded = forumSectionForArticle({ rubricSlug: "lifestyle", tags: ["ДТП"] });
   check(
     "Сайдбар: регистр и «ё» в теге не мешают",
     folded.slug === "avto-i-dorogi",
@@ -671,11 +671,11 @@ function checkSidebarWiring() {
 
   // Everything else lands in the news section, on purpose: a reader who wants to
   // discuss a story should always land somewhere.
-  const sport = forumSectionForArticle({ rubricSlug: "sport" });
+  const unmapped = forumSectionForArticle({ rubricSlug: "cinema" });
   check(
     "Сайдбар: неразмеченная рубрика идёт в «Новости и события»",
-    sport.slug === "novosti-i-sobytiya",
-    sport.slug,
+    unmapped.slug === "novosti-i-sobytiya",
+    unmapped.slug,
   );
 
   // A tag list that is too eager is worse than a short one: it would quietly move
@@ -684,7 +684,7 @@ function checkSidebarWiring() {
   // called "Авто и дороги" rather than "Дорожная безопасность".
   const notRoads = ["авиация", "железная дорога", "IT", "кино"];
   const leaked = notRoads.filter(
-    (tag) => forumSectionForArticle({ rubricSlug: "tech", tags: [tag] }).slug === "avto-i-dorogi",
+    (tag) => forumSectionForArticle({ rubricSlug: "cinema", tags: [tag] }).slug === "avto-i-dorogi",
   );
   check(
     "Сайдбар: посторонние теги не уводят в «Авто и дороги»",

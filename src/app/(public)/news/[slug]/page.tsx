@@ -12,6 +12,7 @@ import { SubscribeBlock } from "@/components/subscribe-block";
 import { ViewCounter } from "@/components/view-counter";
 import { parseMedia } from "@/lib/article-media";
 import { plainTextPreview } from "@/lib/article-html";
+import { readingMinutes } from "@/lib/reading-time";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
 import { forumSectionForArticle } from "@/lib/forum-rubric";
@@ -195,7 +196,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           {article.category ? (
             <Link
               href={`/category/${article.category.slug}`}
-              className="font-semibold tracking-wider text-accent uppercase hover:underline"
+              className="font-bold tracking-[0.14em] text-accent uppercase hover:underline decoration-1 underline-offset-4"
             >
               {article.category.name}
             </Link>
@@ -234,10 +235,17 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           </p>
         ) : null}
 
+        {/* The byline: date, reading time, the publication, views — one grey line, the
+            way a paper prints its furniture. The photo credit stays separate, under the
+            cover, because it belongs to the picture and not to the text. */}
         <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-soft">
           <time dateTime={timestamp.toISOString()}>
             {formatDateTime(timestamp)}
           </time>
+          <span aria-hidden>·</span>
+          <span>{readingMinutes(article.contentHtml)} мин чтения</span>
+          <span aria-hidden>·</span>
+          <span>{SITE_NAME}</span>
           <span aria-hidden>·</span>
           <ViewCounter
             articleId={article.id}
@@ -246,7 +254,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           <span aria-hidden>·</span>
           <a
             href={`mailto:?subject=${encodeURIComponent(article.title)}&body=${encodeURIComponent(absoluteUrl(`/news/${article.slug}`))}`}
-            className="hover:text-accent"
+            className="hover:text-accent hover:underline decoration-1 underline-offset-4"
           >
             Отправить материал
           </a>
