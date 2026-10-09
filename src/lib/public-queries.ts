@@ -365,6 +365,33 @@ export async function getTrendingArticles(
   });
 }
 
+/**
+ * The all-time most-read, for topping the trending list up.
+ *
+ * Separate from {@link getTrendingArticles} rather than a flag on it: "for the last two
+ * days" and "ever" are different questions, and a window widened until it returned five
+ * rows would quietly stop answering the first one. The caller combines the two with
+ * `fillRanked`, which keeps the window's stories in front.
+ *
+ * `excludeId` is honoured here as well, so the story being read cannot come back as its
+ * own filler even though the window already excluded it.
+ */
+export async function getMostReadArticles(
+  take: number,
+  options: { excludeId?: string } = {},
+): Promise<ArticleListItem[]> {
+  return prisma.article.findMany({
+    where: {
+      status: "published",
+      deletedAt: null,
+      ...(options.excludeId ? { id: { not: options.excludeId } } : {}),
+    },
+    orderBy: BY_POPULARITY,
+    take,
+    select: LIST_FIELDS,
+  });
+}
+
 export async function getCategoryBySlug(slug: string) {
   return prisma.category.findUnique({
     where: { slug },

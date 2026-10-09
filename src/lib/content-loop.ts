@@ -118,6 +118,44 @@ export function splitForLoop(
 }
 
 /**
+ * Top a ranked list up from a second one, without repeating anything.
+ *
+ * The sidebar's "most read right now" is a five-row list, and it is drawn from a
+ * two-day window. A quiet news day puts two stories in that window — the site publishes
+ * three or four a day — and the block then rendered two rows under a heading that
+ * promises a top five, which reads as a broken widget rather than as a quiet day.
+ *
+ * So the window decides the order and the all-time list only makes up the numbers: a
+ * story from the last 48 hours always outranks an all-time favourite, because "сейчас"
+ * is the claim the heading makes. Duplicates are dropped rather than reordered, so a
+ * story already in the window does not appear twice once the filler reaches it.
+ *
+ * `size` is a target, not a promise: a site with four published stories other than the
+ * one being read returns four, because there is no fifth to return.
+ *
+ * Generic over the row type: the page passes database rows, the tests pass literals.
+ */
+export function fillRanked<T extends { id: string }>(
+  primary: readonly T[],
+  fallback: readonly T[],
+  size: number,
+): T[] {
+  if (size <= 0) return [];
+
+  const taken = new Set<string>();
+  const result: T[] = [];
+
+  for (const row of [...primary, ...fallback]) {
+    if (result.length === size) break;
+    if (taken.has(row.id)) continue;
+    taken.add(row.id);
+    result.push(row);
+  }
+
+  return result;
+}
+
+/**
  * Fill two rows of `size` cards from two candidate lists.
  *
  * Three things have to hold at once, and handling them in order is the design:

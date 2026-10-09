@@ -4,9 +4,14 @@ import { ArticleShare } from "@/components/article-share";
 import { ForumTopicsBlock } from "@/components/forum-topics";
 import { NowReading } from "@/components/now-reading";
 import { SubscribeBlock } from "@/components/subscribe-block";
+import { fillRanked } from "@/lib/content-loop";
 import { formatDate, formatTime } from "@/lib/date";
 import { getActiveForumTopics } from "@/lib/forum";
-import { getPublishedArticles, getTrendingArticles } from "@/lib/public-queries";
+import {
+  getMostReadArticles,
+  getPublishedArticles,
+  getTrendingArticles,
+} from "@/lib/public-queries";
 
 /**
  * The column beside a story.
@@ -40,22 +45,32 @@ const TOPIC_COUNT = 3;
 const NOW_READING_COUNT = 5;
 /** The window "сейчас" means. A day and a night is what a reader calls "now". */
 const NOW_READING_HOURS = 48;
+/**
+ * How many all-time favourites to pull as filler.
+ *
+ * Twice the rail, because roughly half of them will already be in the two-day window —
+ * those are the duplicates `fillRanked` drops — and a filler list that runs dry leaves
+ * the rail short again, which is the thing this is here to prevent.
+ */
+const MOST_READ_CANDIDATES = NOW_READING_COUNT * 2;
 
 export async function ArticleSidebar({
   currentArticleId,
   currentTitle,
   currentUrl,
 }: ArticleSidebarProps) {
-  // One Promise.all for three lists: three sequential awaits would put the sidebar
-  // three round trips deep, and a sidebar that arrives after the article is the one the
-  // reader is already past.
-  const [latest, topics, trending] = await Promise.all([
+  // One Promise.all for four lists: four sequential awaits would put the sidebar four
+  // round trips deep, and a sidebar that arrives after the article is the one the reader
+  // is already past. The filler cannot be narrowed by the window's result — that would
+  // make it a second round trip — so `fillRanked` drops the overlap in memory instead.
+  const [latest, topics, trending, mostRead] = await Promise.all([
     getPublishedArticles(NEWS_COUNT, { excludeId: currentArticleId }),
     getActiveForumTopics(TOPIC_COUNT),
     getTrendingArticles(NOW_READING_COUNT, {
       excludeId: currentArticleId,
       hours: NOW_READING_HOURS,
     }),
+    getMostReadArticles(MOST_READ_CANDIDATES, { excludeId: currentArticleId }),
   ]);
 
   return (
@@ -77,7 +92,7 @@ export async function ArticleSidebar({
           rather than carrying its own — a second sticky inside a sticky parent is a
           sticky element that never moves relative to it.
         */}
-        <NowReading articles={trending} />
+        <NowReading articles={fillRanked(trending, mostRead, NOW_READING_COUNT)} />
 
         {latest.length > 0 ? (
           <section aria-labelledby="sidebar-latest">

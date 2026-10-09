@@ -5,6 +5,16 @@ import { formatDate, formatTime } from "@/lib/date";
 /**
  * "Сейчас читают": the five most-read stories of the last two days, beside the story.
  *
+ * The five is a promise this component inherits rather than one it makes: the caller
+ * combines the two-day window with the all-time list through `fillRanked`, so on a quiet
+ * news day — when the window holds two or three stories — the rail is still five rows
+ * rather than a heading with nothing under it. What arrives here is already deduplicated
+ * and already in order: the window's stories first, because "сейчас" is the claim the
+ * heading makes.
+ *
+ * It renders fewer rows only when the site has fewer published stories than that, and
+ * none at all rather than a heading over an empty list.
+ *
  * Placed at the top of the sidebar's sticky column, which is already pinned at
  * `lg:top-24` with `self-start` — see `article-sidebar.tsx`. A second sticky element
  * inside a sticky parent would never move relative to it, so the block is a normal child

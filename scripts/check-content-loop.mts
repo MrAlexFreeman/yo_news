@@ -23,6 +23,7 @@ import { ReadAlsoBlock } from "../src/components/read-also-block";
 import {
   composeLoopRows,
   countParagraphs,
+  fillRanked,
   LOOP_PLACEMENTS,
   MIN_PARAGRAPHS_FOR_LOOP,
   pickStable,
@@ -391,6 +392,73 @@ function checkGridMarkup() {
   );
 }
 
+function checkTrendingFallback() {
+  const rows = (ids: string[]) => ids.map((id) => ({ id }));
+  // The shape the failure had: two stories inside the two-day window, three slots short.
+  const window = rows(["w1", "w2"]);
+  const allTime = rows(["a1", "a2", "a3", "a4", "a5", "a6"]);
+  const filled = fillRanked(window, allTime, 5);
+
+  check(
+    "«Сейчас читают»: тихий день добирается до пяти",
+    filled.length === 5,
+    `${filled.length} из 5`,
+  );
+  check(
+    "«Сейчас читают»: сначала окно, потом общий список",
+    filled[0]?.id === "w1" && filled[1]?.id === "w2" && filled[2]?.id === "a1",
+    filled.map((row) => row.id).join(", "),
+  );
+  check(
+    "«Сейчас читают»: повторов нет",
+    new Set(filled.map((row) => row.id)).size === 5,
+    `${new Set(filled.map((row) => row.id)).size} уникальных`,
+  );
+
+  // The overlap is the case that bites: the all-time list starts with the window's own
+  // stories, and taking them twice would put a duplicate in the top five.
+  const overlapping = fillRanked(window, rows(["w2", "w1", "a1", "a2", "a3"]), 5);
+  check(
+    "«Сейчас читают»: сюжет из окна не повторяется в общем списке",
+    overlapping.length === 5 &&
+      new Set(overlapping.map((row) => row.id)).size === 5,
+    overlapping.map((row) => row.id).join(", "),
+  );
+
+  const full = fillRanked(rows(["w1", "w2", "w3", "w4", "w5"]), allTime, 5);
+  check(
+    "«Сейчас читают»: полное окно не разбавляется общим списком",
+    full.map((row) => row.id).join(",") === "w1,w2,w3,w4,w5",
+    full.map((row) => row.id).join(", "),
+  );
+
+  const short = fillRanked(window, rows(["a1"]), 5);
+  check(
+    "«Сейчас читают»: материала меньше пяти — отдаём что есть, без выдумок",
+    short.length === 3,
+    `${short.length} из 5`,
+  );
+
+  const none = fillRanked([], [], 5);
+  check(
+    "«Сейчас читают»: пустые оба списка дают пустой блок, а не заглушки",
+    none.length === 0,
+    "пусто",
+  );
+  check(
+    "«Сейчас читают»: нулевой размер не ломает сборку",
+    fillRanked(window, allTime, 0).length === 0,
+    "пусто",
+  );
+
+  const over = fillRanked(rows(["w1", "w2", "w3", "w4", "w5", "w6"]), allTime, 5);
+  check(
+    "«Сейчас читают»: лишнее отбрасывается",
+    over.length === 5,
+    `${over.length} из 6`,
+  );
+}
+
 function checkNowReadingMarkup() {
   const articles = Array.from({ length: 5 }, (_, index) => ({
     id: `trend-${index}`,
@@ -468,6 +536,7 @@ checkPicking();
 checkRows();
 checkPlateMarkup();
 checkGridMarkup();
+checkTrendingFallback();
 checkNowReadingMarkup();
 checkSingleCard();
 
