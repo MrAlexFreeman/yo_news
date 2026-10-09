@@ -1147,6 +1147,200 @@ function checkNewShelves() {
   );
 }
 
+/**
+ * The two-phase header: masthead at rest, a slim bar once the reader is 120px down.
+ *
+ * These read the source rather than a render, because the behaviour being asserted — what
+ * is in the document, what is in the tab order, what happens to the page height — is not
+ * visible in a snapshot of one of the two states. Each of these failures is invisible until
+ * a reader hits it.
+ */
+function checkStickyHeader() {
+  const shell = readFileSync(
+    new URL("../src/components/header-shell.tsx", import.meta.url),
+    "utf8",
+  );
+  const logo = readFileSync(
+    new URL("../src/components/logo.tsx", import.meta.url),
+    "utf8",
+  );
+  const layout = readFileSync(
+    new URL("../src/app/(public)/layout.tsx", import.meta.url),
+    "utf8",
+  );
+
+  /* ---- the two states ---- */
+
+  check(
+    "Шапка: порог схлопывания 120px",
+    /const COMPACT_AFTER_PX = 120;/.test(shell) &&
+      shell.includes("top: COMPACT_AFTER_PX"),
+    "маркер на 120px",
+  );
+
+  check(
+    "Шапка: маркер — тонкий, а не блок во всю ширину",
+    shell.includes("w-px") &&
+      shell.includes("height: 1 }") &&
+      shell.includes("pointer-events-none absolute"),
+    "1×1px, вне потока",
+  );
+
+  /*
+    The listener. An IntersectionObserver on a marker does its work twice per scroll — once
+    crossing the threshold, once crossing back — where a scroll handler runs on every frame
+    of every scroll on every page to compare a number against 120.
+   */
+  check(
+    "Шапка: порог ловится наблюдателем, а не слушателем scroll",
+    shell.includes("new IntersectionObserver(") &&
+      !shell.includes('addEventListener("scroll"'),
+    "IntersectionObserver, без scroll-слушателя",
+  );
+  check(
+    "Шапка: наблюдатель отпускается при размонтировании",
+    shell.includes("observer.disconnect()"),
+    "disconnect в cleanup",
+  );
+
+  /* ---- no jump: the reason the bar is fixed and not sticky ---- */
+
+  /*
+    The load-bearing assertion of this change. A sticky bar occupies flow space, so growing
+    it from 0 to 52px shoves the whole document down by 52px at the moment it appears —
+    exactly the jump the design asks to avoid. `fixed` is what makes the bar cost the page
+    nothing.
+   */
+  check(
+    "Шапка: компактная панель вне потока — контент не сдвигается",
+    shell.includes('"fixed inset-x-0 top-0 z-50"') &&
+      !/sticky[^"]*top-0[^"]*h-\[52px\]/.test(shell),
+    "fixed, не sticky",
+  );
+  /*
+    Exactly one *class*, not one mention: the file's own comment quotes the height too, and
+    a check that matched both would fail on a comment edit and pass on a second row.
+   */
+  const heightClasses = occurrences(shell, '"mx-auto flex h-[52px] max-w-7xl');
+  check(
+    "Шапка: высота 52px задана один раз и не зависит от состояния",
+    heightClasses === 1,
+    `${heightClasses} строка с высотой`,
+  );
+
+  /*
+    The bar covers the top of the page while scrolled, so it has to look like paper rather
+    than like a panel floating over an article.
+   */
+  check(
+    "Шапка: размытие и полупрозрачность фона",
+    shell.includes("bg-paper/95") && shell.includes("backdrop-blur-sm"),
+    "bg-paper/95 + backdrop-blur-sm",
+  );
+  check(
+    "Шапка: граница и тень, чтобы отделяться от текста",
+    shell.includes("border-b border-rule") && shell.includes("shadow-sm"),
+    "border-b + shadow-sm",
+  );
+
+  /* ---- accessibility: the off-screen masthead must leave the tab order ---- */
+
+  /*
+    Without `inert` the masthead keeps its links focusable while it is scrolled out of
+    view, so a keyboard user tabs into a header they cannot see and a screen reader reads a
+    navigation that is nowhere near the viewport.
+   */
+  check(
+    "Шапка: ушедшая мачта уходит из порядка табуляции",
+    shell.includes("inert={compact ? true : undefined}"),
+    "inert на мачте",
+  );
+  check(
+    "Шапка: невидимая панель тоже недоступна с клавиатуры",
+    shell.includes("inert={compact ? undefined : true}"),
+    "inert на скрытой панели",
+  );
+
+  /*
+    `hidden` instead of `inert` on the hidden bar would drop it from layout the instant
+    compact turns off, so the bar would blink out of existence rather than slide.
+   */
+  check(
+    "Шапка: скрытие анимацией, а не display:none",
+    shell.includes("-translate-y-full") &&
+      shell.includes("translate-y-0") &&
+      shell.includes("duration-300"),
+    "translate + transition",
+  );
+  check(
+    "Шапка: анимация уважает prefers-reduced-motion",
+    shell.includes("motion-reduce:transition-none"),
+    "motion-reduce:transition-none",
+  );
+
+  /* ---- what the compact bar carries ---- */
+
+  check(
+    "Шапка: компактный логотип рядом с поиском",
+    shell.includes('<Logo size="xs" />') &&
+      shell.includes('aria-label="Ё-новости — на главную"'),
+    "Logo xs + ссылка на главную",
+  );
+  check(
+    "Шапка: у логотипа есть размер xs в 24px",
+    /xs: \{ letter: "text-2xl"/.test(logo),
+    "letter: text-2xl",
+  );
+  check(
+    "Шапка: полоса тем заменяет развёрнутые рубрики",
+    shell.includes('aria-label="В центре внимания"') &&
+      shell.includes("overflow-x-auto"),
+    "горизонтальный скролл",
+  );
+  check(
+    "Шапка: полоса тем не отжимает кнопки",
+    shell.includes("min-w-0 flex-1") &&
+      shell.includes("shrink-0 items-center gap-1"),
+    "min-w-0 у полосы, shrink-0 у кнопок",
+  );
+  check(
+    "Шапка: эфир и поиск остаются доступны",
+    shell.includes("Прямой эфир") && shell.includes('href="/search"'),
+    "эфир + поиск",
+  );
+
+  /*
+    Without a spacer the strip vanishes when there are no tags, the logo and the controls
+    drift together as the window narrows, and the bar stops reading as two ends.
+   */
+  check(
+    "Шапка: без тем логотип и кнопки остаются по краям",
+    shell.includes('<div className="flex-1" />'),
+    "пустой распорка",
+  );
+
+  /* ---- wiring ---- */
+
+  /*
+    The masthead stays a server component and reaches the browser as `children` of a client
+    shell. The shell must not import it: that would pull the whole masthead — and the
+    category query that fills it — into the client bundle and give up the prerendering the
+    layout is built around.
+   */
+  check(
+    "Шапка: мачта рендерится на сервере и передаётся как children",
+    layout.includes("<HeaderShell trendingTags={trendingTags}>") &&
+      layout.includes('import { PublicHeader } from "@/components/public-header";'),
+    "мачта в layout, дети в HeaderShell",
+  );
+  check(
+    "Шапка: обёртка не импортирует мачту — она остаётся серверной",
+    !shell.includes('from "@/components/public-header"'),
+    "обёртка не знает о мачте",
+  );
+}
+
+checkStickyHeader();
 checkGrouping();
 checkMarkup();
 checkCompactPreview();

@@ -1,3 +1,4 @@
+import { HeaderShell } from "@/components/header-shell";
 import { MascotWidget } from "@/components/mascot-widget";
 import { PublicFooter } from "@/components/public-footer";
 import { PublicHeader } from "@/components/public-header";
@@ -35,11 +36,19 @@ export default async function PublicLayout({ children }: LayoutProps<"/">) {
 
   return (
     <>
-      <PublicHeader
-        categories={categories}
-        trendingTags={trendingTags}
-        now={now}
-      />
+      {/*
+        `HeaderShell` is the two-phase header. It wraps the server-rendered masthead as
+        `children` rather than rendering it, so the masthead is still prerendered and the
+        shell only owns what has to be client-side: the scroll threshold and the slim bar
+        that replaces the masthead once the reader is 120px down.
+      */}
+      <HeaderShell trendingTags={trendingTags}>
+        <PublicHeader
+          categories={categories}
+          trendingTags={trendingTags}
+          now={now}
+        />
+      </HeaderShell>
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
         {children}
       </main>

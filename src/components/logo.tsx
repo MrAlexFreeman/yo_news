@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-type LogoSize = "sm" | "md" | "lg";
+type LogoSize = "xs" | "sm" | "md" | "lg";
 
 type LogoProps = {
   /** `lg` for the masthead, `md` for the footer, `sm` for tight spots. */
@@ -12,6 +12,10 @@ const SIZES: Record<LogoSize, { letter: string; word: string }> = {
   lg: { letter: "text-4xl", word: "text-2xl" },
   md: { letter: "text-3xl", word: "text-xl" },
   sm: { letter: "text-xl", word: "text-sm" },
+  // The 24px lockup, for the collapsed sticky bar. `text-2xl` on the letter rather than
+  // `text-xl` because at a 52px bar height the masthead's `lg` no longer fits and `sm`
+  // reads as a smudge beside a search icon of the same visual weight.
+  xs: { letter: "text-2xl", word: "text-base" },
 };
 
 /**
