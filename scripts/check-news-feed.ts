@@ -1193,11 +1193,24 @@ function checkStoryRiver() {
   check(
     "Река: сайдбар забирается после реки, из того же used",
     pageSource.indexOf("const riverBody = take(") <
-      pageSource.indexOf("const nowReading = take(") &&
+      pageSource.indexOf("const nowReading = fillRanked(") &&
       /fillRanked\(\s*investigations,\s*specRest,\s*SPEC_TOPIC_COUNT,\s*used,?\s*\)/.test(
         pageSource,
       ),
     "река → сайдбар, один набор",
+  );
+
+  /*
+   * «Сейчас читают» is the block that fails silently. Drawn from the 48-hour window alone it
+   * prints nothing whenever the news goes quiet — and on this site it is always quiet,
+   * because the newest material is two days old. The article sidebar has always topped that
+   * window up from all-time reads; the front page originally did not, and shipped with the
+   * block empty while the very same block rendered correctly two clicks away.
+   */
+  check(
+    "Река: «Сейчас читают» добирается из общего списка, а не только из окна",
+    /const nowReading = fillRanked\(\s*trending,\s*mostRead/.test(pageSource),
+    "fillRanked(trending, mostRead, …)",
   );
 
   /*

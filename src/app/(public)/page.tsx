@@ -127,7 +127,23 @@ export default async function HomePage() {
     The sidebar is drawn after the river and from ranked lists, so anything the river has
     already shown is skipped rather than reprinted a column to the right.
   */
-  const nowReading = take(trending, NOW_READING_COUNT);
+  /*
+    «Сейчас читают» needs the same two-tier fallback the article sidebar uses: the last 48
+    hours, topped up from all-time reads. Without it the block printed nothing at all — not
+    on this site, where the newest material is two days old and the 48-hour window is
+    genuinely empty. It is the one block here that looks wrong the moment the news goes
+    quiet, because a heading with no rows under it is worse than no heading.
+  */
+  const nowReading = fillRanked(
+    trending,
+    mostRead,
+    NOW_READING_COUNT,
+    used,
+  );
+
+  /*
+    Drawn after, from the same all-time list, skipping whatever the five rows above claimed.
+  */
   const opinions = take(mostRead, OPINIONS_COUNT);
 
   /*
