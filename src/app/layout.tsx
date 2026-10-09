@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Lora } from "next/font/google";
 
 import { SITE_NAME, SITE_TAGLINE, SITE_TAGLINE_LONG, siteUrl } from "@/lib/site";
@@ -45,6 +45,29 @@ export const metadata: Metadata = {
   description: SITE_TAGLINE_LONG,
   applicationName: SITE_NAME,
   generator: "Next.js",
+  /*
+    The Android app, built as a TWA over this site.
+   *
+    Served from `public/manifest.json` rather than an `app/manifest.ts` route: Next's route
+    only answers at `/manifest.webmanifest` and its `path` export is not honoured, and when a
+    manifest route exists Next emits the `<link rel="manifest">` itself, overriding whatever
+    this field says. The `.json` file is the only way to land on the URL the TWA build is
+    configured with — measured, not assumed: `/manifest.json` 404s while `app/manifest.ts` is
+    in place.
+   */
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Ё-Новости",
+  },
+  icons: {
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
   alternates: {
     canonical: "/",
     types: {
@@ -69,6 +92,19 @@ export const metadata: Metadata = {
     follow: true,
     googleBot: { index: true, follow: true, "max-image-preview": "large" },
   },
+};
+
+/**
+ * `themeColor` lives here rather than in `metadata`.
+ *
+ * The `metadata` field of the same name has been deprecated since Next 14 and emits the
+ * identical `<meta name="theme-color">` tag from the viewport export — the moved field still
+ * works, but it is on its way out, and this app's whole reason for setting it is Android
+ * colouring the status bar. Both exports are needed: Next 16 warns when `viewport` sits inside
+ * `metadata`, and equally when a deprecated field is used in place of the viewport export.
+ */
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

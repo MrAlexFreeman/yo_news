@@ -113,6 +113,7 @@ import {
   normaliseQuery,
 } from "../src/lib/article-search";
 import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
+import { SITE_NAME, SITE_TAGLINE_LONG } from "../src/lib/site";
 import {
   DEFAULT_UPSCALE_OPTIONS,
   UPSCALE_MODEL,
@@ -1063,6 +1064,182 @@ function checkDeepInfraEnvelope() {
  * before it looks at a key, which is why an install with no fal key still answers all of
  * them rather than 503-ing.
  */
+/**
+ * The PWA surface: the manifest, the launcher icons and the head tags.
+ *
+ * A manifest is the one artefact on this site that a launcher reads *from outside the app*,
+ * before the first paint and without ever running this code — so the failure mode is an
+ * Android build that installs with a blank icon, and nothing in the browser to notice it. That
+ * is why these are asserted against what the server actually returns rather than against the
+ * source: a manifest naming an icon file that does not exist looks perfectly correct in review
+ * and only breaks on a device.
+ */
+async function checkPwaAssets(base: string) {
+  const manifestResponse = await fetch(`${base}/manifest.json`);
+  check(
+    "Манифест отдаётся как application/json",
+    manifestResponse.status === 200 &&
+      (manifestResponse.headers.get("content-type") ?? "").includes("json"),
+    `${manifestResponse.status} ${manifestResponse.headers.get("content-type")}`,
+  );
+
+  const manifest = (await manifestResponse.json()) as Record<string, unknown>;
+
+  check(
+    "Манифест: имя приложения и подпись как в задании",
+    manifest.name === "Ё-Новости" && manifest.short_name === "Ё-Новости",
+    `${String(manifest.name)} / ${String(manifest.short_name)}`,
+  );
+
+  check(
+    "Манифест: описание совпадает с описанием сайта",
+    manifest.description === SITE_TAGLINE_LONG,
+    String(manifest.description),
+  );
+
+  check(
+    "Манифест: standalone, portrait, белые цвета",
+    manifest.start_url === "/" &&
+      manifest.display === "standalone" &&
+      manifest.orientation === "portrait" &&
+      manifest.background_color === "#ffffff" &&
+      manifest.theme_color === "#ffffff",
+    `${String(manifest.display)} / ${String(manifest.orientation)} / ${String(manifest.theme_color)}`,
+  );
+
+  /*
+    The launcher name is deliberately capitalised and is *not* SITE_NAME, so the assertion
+    pins the divergence rather than papering over it: if somebody later "fixes" the manifest
+    to derive from SITE_NAME, this fails and they have to decide on purpose.
+  */
+  check(
+    "Манифест: имя приложения намеренно отличается от SITE_NAME",
+    manifest.name !== SITE_NAME && SITE_NAME === "Ё-новости",
+    `манифест «${String(manifest.name)}», сайт «${SITE_NAME}»`,
+  );
+
+  /* ---- icons: declared, present, and actually the size they claim ---- */
+  const icons = (manifest.icons ?? []) as {
+    src: string;
+    sizes: string;
+    type: string;
+    purpose: string;
+  }[];
+
+  const declared = new Set(icons.map((icon) => `${icon.src}|${icon.sizes}`));
+  check(
+    "Манифест: заявлены обе обязательные иконки",
+    declared.has("/icon-192.png|192x192") && declared.has("/icon-512.png|512x512"),
+    [...declared].join(", "),
+  );
+
+  /*
+    Purpose, checked per file rather than per entry.
+
+    An earlier version built its set from every declared src crossed with both purposes, so
+    the set always had exactly the size it was compared against and the check could not fail
+    — a mutation turning every "maskable" into "any" passed it. Enumerating the purposes
+    actually present on each file is the version that can be wrong.
+  */
+  const purposesByFile = new Map<string, Set<string>>();
+  for (const icon of icons) {
+    const purposes = purposesByFile.get(icon.src) ?? new Set<string>();
+    purposes.add(icon.purpose);
+    purposesByFile.set(icon.src, purposes);
+  }
+
+  check(
+    "Манифест: у каждого файла иконки заявлены оба назначения",
+    [...purposesByFile.values()].every(
+      (purposes) => purposes.has("any") && purposes.has("maskable"),
+    ),
+    [...purposesByFile]
+      .map(([src, purposes]) => `${src}: ${[...purposes].sort().join("+")}`)
+      .join(", "),
+  );
+
+  /*
+    Every declared icon, fetched, with its real dimensions read out of the PNG header.
+
+    Driven from the manifest rather than from a hardcoded pair of paths, because the failure
+    that matters is a manifest naming a file that is not there — and a check written against
+    `/icon-192.png` and `/icon-512.png` stays green when a third entry points at nothing.
+    The declared size is compared against the bytes rather than trusted: a manifest can claim
+    "512x512" over a 192px file, and the launcher rejects or silently rescales it.
+  */
+  const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47];
+  const declaredSizes = new Map(icons.map((icon) => [icon.src, icon.sizes]));
+
+  for (const [src, size] of declaredSizes) {
+    const response = await fetch(`${base}${src}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const isPng =
+      PNG_MAGIC.every((byte, index) => bytes[index] === byte) && bytes.length > 24;
+    // Width and height are big-endian uint32 at offset 16 and 20 in every PNG.
+    const view = new DataView(bytes.buffer);
+    const width = isPng ? view.getUint32(16) : 0;
+    const height = isPng ? view.getUint32(20) : 0;
+
+    check(
+      `Иконка ${src}: отдаётся и действительно ${size}`,
+      response.status === 200 && isPng && `${width}x${height}` === size,
+      `${response.status} ${width}×${height}, ${bytes.length} байт`,
+    );
+  }
+
+  /* ---- what the head has to say for the app to be installable ---- */
+  const html = await (await fetch(base)).text();
+
+  check(
+    "Манифест подключён в head",
+    html.includes('<link rel="manifest" href="/manifest.json"/>'),
+    'link rel="manifest"',
+  );
+  check(
+    "theme-color выставлен для цвета системной строки",
+    html.includes('<meta name="theme-color" content="#ffffff"/>'),
+    '<meta name="theme-color">',
+  );
+  check(
+    "appleWebApp: capable, стиль строки и подпись",
+    html.includes('<meta name="mobile-web-app-capable" content="yes"/>') &&
+      html.includes('<meta name="apple-mobile-web-app-status-bar-style" content="default"/>') &&
+      html.includes('<meta name="apple-mobile-web-app-title" content="Ё-Новости"/>'),
+    "три тега apple-web-app",
+  );
+  check(
+    "Иконки подключены в head, включая apple-touch-icon",
+    html.includes('rel="icon" href="/icon-192.png"') &&
+      html.includes('rel="icon" href="/icon-512.png"') &&
+      html.includes('rel="apple-touch-icon" href="/apple-touch-icon.png"'),
+    "icon 192, icon 512, apple-touch-icon",
+  );
+
+  /*
+    The deprecated `metadata.themeColor` would emit the same tag but warn at build time, and
+    Next 16 also rejects a `viewport` key inside `metadata` — so the assertion is on where the
+    setting lives in the source, not only on the tag appearing.
+
+    Positional rather than a regex over the file: `metadata` is declared before `viewport`,
+    so "the first themeColor comes after the viewport export begins" says exactly what is
+    meant. A pattern spanning the two would also match a perfectly correct file.
+  */
+  const layout = readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
+  const viewportAt = layout.indexOf("export const viewport");
+  const metadataAt = layout.indexOf("export const metadata");
+  // The assignment, not the word: the comment above the viewport export explains that
+  // themeColor lives there, and searching for the bare name matches that explanation first.
+  const themeAt = layout.indexOf('themeColor: "#ffffff"');
+  const metadataBlock = layout.slice(metadataAt, viewportAt);
+
+  check(
+    "themeColor объявлен через viewport, а не в устаревшем поле metadata",
+    viewportAt > -1 &&
+      themeAt > viewportAt &&
+      !metadataBlock.includes("themeColor:"),
+    "viewport.themeColor после metadata",
+  );
+}
 async function checkUpscaleRouteApi(base: string, auth: string) {
   const path = "/api/admin/articles/upscale-image";
   const headers = { "content-type": "application/json", authorization: auth };
@@ -4025,6 +4202,7 @@ checkSettingsWriteIsOptIn();
 
   await checkSettingsApi(base, auth);
   await checkUpscaleRouteApi(base, auth);
+  await checkPwaAssets(base);
 
   console.log("\nПроверки безопасности и интеграций\n");
   for (const { name, ok, detail } of checks) {
