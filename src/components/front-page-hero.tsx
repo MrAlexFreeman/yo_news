@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { Badges, RubricLabel } from "@/components/article-card";
 import { CoverImage } from "@/components/cover-image";
+import { plainTextPreview } from "@/lib/article-html";
 import { formatDate, formatTime } from "@/lib/date";
 import type { ArticleListItem, LoopArticle } from "@/lib/public-queries";
 import { readingMinutes } from "@/lib/reading-time";
@@ -36,9 +37,29 @@ type FrontPageHeroProps = {
 /** Square thumbnail beside an urgent headline. */
 const URGENT_THUMB = "size-24 sm:size-28";
 
+/**
+ * How much of the body becomes a standfirst when the desk wrote neither `lead` nor
+ * `subtitle`. Three sentences is what fits in the block without pushing the photograph
+ * past the cap above.
+ */
+const LEAD_PREVIEW_CHARS = 180;
+
 export function FrontPageHero({ lead, urgent }: FrontPageHeroProps) {
   const timestamp = lead.publishedAt ?? lead.createdAt;
   const href = `/news/${lead.slug}`;
+
+  /*
+    The standfirst is never empty on the front page.
+
+    `lead` is the field the desk writes for exactly this, so it goes first. `subtitle`
+    comes next because a deck that was written by hand beats a truncated paragraph, even
+    though it was not the field the brief named. Only when neither exists does the page
+    reach into the body: the first sentences of the story, tags stripped, is a worse
+    standfirst than a written one and a much better one than an empty block where the
+    headline is supposed to be explained.
+  */
+  const standfirst =
+    lead.lead ?? lead.subtitle ?? plainTextPreview(lead.contentHtml, LEAD_PREVIEW_CHARS);
 
   return (
     <section
@@ -67,13 +88,20 @@ export function FrontPageHero({ lead, urgent }: FrontPageHeroProps) {
             </Link>
           </h1>
 
-          {lead.subtitle || lead.lead ? (
-            <p className="mt-3 max-w-2xl text-base leading-relaxed text-ink-soft lg:text-lg">
-              {lead.subtitle ?? lead.lead}
+          {standfirst ? (
+            <p className="mt-3 mb-4 max-w-2xl text-base leading-relaxed text-ink-soft">
+              {standfirst}
             </p>
           ) : null}
 
-          <div className="relative mt-5 aspect-video overflow-hidden rounded-sm bg-paper-dim">
+          {/*
+            `max-h` is a ceiling, not part of the ratio. The 16:9 box of a 660px column is
+            already 371px tall, and on a taller column it grows past the fold — pushing
+            the metadata line, and with it the sentence that explains the headline, off
+            the first screen. The cap keeps the picture large and the headline readable
+            at the same time.
+          */}
+          <div className="relative aspect-video max-h-[360px] overflow-hidden rounded-sm bg-paper-dim md:max-h-[420px]">
             <CoverImage
               src={lead.coverImage ?? "/placeholder.png"}
               alt={lead.title}

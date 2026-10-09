@@ -389,13 +389,14 @@ export async function getTrendingArticles(
  */
 export async function getMostReadArticles(
   take: number,
-  options: { excludeId?: string } = {},
+  options: { excludeId?: string; categorySlug?: string } = {},
 ): Promise<ArticleListItem[]> {
   return prisma.article.findMany({
     where: {
       status: "published",
       deletedAt: null,
       ...(options.excludeId ? { id: { not: options.excludeId } } : {}),
+      ...(options.categorySlug ? { category: { slug: options.categorySlug } } : {}),
     },
     orderBy: BY_POPULARITY,
     take,

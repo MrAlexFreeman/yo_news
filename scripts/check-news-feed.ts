@@ -33,6 +33,8 @@ import { FrontPageHero } from "../src/components/front-page-hero";
 import { SectionGrid } from "../src/components/section-grid";
 import { ForumTopicsBlock } from "../src/components/forum-topics";
 import { NewsTicker } from "../src/components/news-ticker";
+import { SpecTopicBlock } from "../src/components/spec-topic-block";
+import { fillSection } from "../src/lib/content-loop";
 import { dayLabel, formatTime, groupByDay } from "../src/lib/date";
 import type { ActiveForumTopic } from "../src/lib/forum";
 import { newsPageHref, parsePageSegment } from "../src/lib/pagination";
@@ -270,6 +272,251 @@ function checkCompactPreview() {
 }
 
 /**
+ * Rubric strips, filled: the function that decides what sits in each cell.
+ *
+ * This is the whole answer to the orphan card. A rubric with one story printed one card
+ * beside three columns of paper; `fillSection` tops the row up from the pool the page has
+ * not spent yet. The cases below are the ones that actually happen on this site — a
+ * rubric with one article, several rubrics competing for the same filler, and a page with
+ * nothing left.
+ */
+function checkRubricFill() {
+  const rows = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, index) => ({ id: `${prefix}${index}` }));
+
+  const used = new Set<string>();
+  const full = fillSection(rows("own", 4), rows("pool", 10), 4, used);
+
+  check(
+    "Заполнение полосы: четыре карточки собственных материалов",
+    full.length === 4 && full.every((row) => row.id.startsWith("own")),
+    full.map((row) => row.id).join(", "),
+  );
+
+  // The case the brief is about: one article and three columns of nothing.
+  const lonely = new Set<string>();
+  const filled = fillSection([{ id: "own0" }], rows("pool", 10), 4, lonely);
+
+  check(
+    "Заполнение полосы: один материал не оставляет пустоты справа",
+    filled.length === 4,
+    `${filled.length} из 4`,
+  );
+  check(
+    "Заполнение полосы: сирота идёт первым, добор — после",
+    filled[0]?.id === "own0" && filled[3]?.id === "pool2",
+    filled.map((row) => row.id).join(", "),
+  );
+
+  /*
+    Two rubrics, one pool. Without the shared `used` set the first strip would take the
+    same four filler cards and the second would print them again — the same headline
+    twice on one page, which is the mistake the whole composition is guarded against.
+  */
+  const shared = new Set<string>();
+  const first = fillSection(rows("a", 1), rows("p", 6), 4, shared);
+  const second = fillSection(rows("b", 1), rows("p", 6), 4, shared);
+
+  check(
+    "Заполнение полосы: две рубрики не делят один и тот же добор",
+    first.length === 4 &&
+      second.length === 4 &&
+      first.every((row) => !second.some((other) => other.id === row.id)),
+    `${first.map((row) => row.id).join(",")} / ${second.map((row) => row.id).join(",")}`,
+  );
+
+  const dry = fillSection([], [], 4, new Set<string>());
+  check(
+    "Заполнение полосы: без материала полоса пуста, а не из заглушек",
+    dry.length === 0,
+    "пусто",
+  );
+
+  check(
+    "Заполнение полосы: собственный материал, уже показанный, не берётся дважды",
+    fillSection([{ id: "own0" }], [], 4, new Set(["own0"])).length === 0,
+    "пропущен",
+  );
+}
+
+/** The feed column, and the stack beside it that has to match its height. */
+function checkFeedColumn() {
+  const articles = [0, 1, 2].map((index) => ({
+    id: `t${index}`,
+    title: `Новость ленты ${index + 1}`,
+    slug: `lenta-${index + 1}`,
+    publishedAt: NOW,
+    createdAt: NOW,
+    lead: null,
+    subtitle: null,
+    coverImage: null,
+    isDzen: true,
+    isVk: true,
+    isExclusive: false,
+    is18plus: false,
+    category: { name: "Общество", slug: "society" },
+  }));
+
+  const html = renderToStaticMarkup(
+    createElement(NewsTicker as never, { articles, now: NOW }),
+  );
+
+  check(
+    "Лента: строки разряжены до py-3.5",
+    html.includes("py-3.5") && !html.includes("py-2.5"),
+    "py-3.5",
+  );
+  check(
+    "Лента: заголовок крупнее и контрастнее",
+    html.includes("md:text-base") && html.includes("text-ink"),
+    "text-sm md:text-base + text-ink",
+  );
+  check(
+    "Лента: время оранжевое и читаемое на мелком кегле",
+    html.includes("text-yo-ink"),
+    "text-yo-ink",
+  );
+  check(
+    "Лента: рубрика отдельной плашкой, а не серой массой",
+    html.includes("bg-paper-dim") && html.includes("Общество"),
+    "плашка рубрики",
+  );
+  check(
+    "Лента: время и рубрика разделены точкой",
+    // `aria-hidden="true"`, not `aria-hidden=""`: React renders a bare boolean ARIA
+    // attribute as the string "true", and asserting the empty form would pass on a
+    // hand-written fixture and fail on the real render.
+    html.includes('aria-hidden="true"') && html.includes("·"),
+    "разделитель есть",
+  );
+
+  const spec = renderToStaticMarkup(
+    createElement(SpecTopicBlock as never, {
+      articles,
+      headingId: "home-spec",
+    }),
+  );
+
+  check(
+    "Спецтема: три строки с засечными заголовками",
+    occurrences(spec, "py-3.5") === 3 &&
+      occurrences(spec, "font-[family-name:var(--font-lora)]") === 3,
+    `${occurrences(spec, "py-3.5")} строк(и)`,
+  );
+  check(
+    "Спецтема: без фотографий — иначе дыра вернётся в меньшем размере",
+    !spec.includes("<img"),
+    "картинок нет",
+  );
+  check(
+    "Спецтема: пустой блок не рисуется",
+    renderToStaticMarkup(
+      createElement(SpecTopicBlock as never, { articles: [], headingId: "home-spec" }),
+    ) === "",
+    "пусто",
+  );
+
+  /*
+    The balance is a property of the page, not of a component: the column beside the feed
+    has to carry as much as the chronology. Read from the source because rendering the
+    page would mean a database, and because the claim is about which components share the
+    column rather than about any one of their markup.
+  */
+  const pageSource = readFileSync(
+    new URL("../src/app/(public)/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const column = pageSource.slice(
+    pageSource.indexOf('<div className="space-y-6">'),
+    pageSource.indexOf("</div>\n      </div>\n\n      {/* Rubric strips"),
+  );
+
+  check(
+    "Баланс колонок: рядом с лентой стоят три блока, а не одна плашка",
+    occurrences(column, "<SpecTopicBlock") === 1 &&
+      occurrences(column, "<SubscribeBlock") === 1 &&
+      occurrences(column, "<ForumTopicsBlock") === 1,
+    "спецтема + подписка + форум",
+  );
+}
+
+/** The standfirst under the front page's headline is never empty. */
+function checkHeroStandfirst() {
+  const base = {
+    id: "h1",
+    title: "Главный материал",
+    slug: "glavnyy-material",
+    publishedAt: NOW,
+    createdAt: NOW,
+    subtitle: null,
+    coverImage: "/uploads/hero.jpg",
+    isDzen: true,
+    isVk: true,
+    isExclusive: true,
+    is18plus: false,
+    category: { name: "Расследования", slug: "investigations" },
+  };
+
+  const fromLead = renderToStaticMarkup(
+    createElement(FrontPageHero as never, {
+      lead: { ...base, lead: "Лид, написанный редакцией.", contentHtml: "<p>Тело статьи.</p>" },
+      urgent: [],
+    }),
+  );
+  check(
+    "Лид главного: написанный редакцией лид выводится под заголовком",
+    fromLead.includes("Лид, написанный редакцией."),
+    "лид на месте",
+  );
+
+  const generated = renderToStaticMarkup(
+    createElement(FrontPageHero as never, {
+      lead: {
+        ...base,
+        lead: null,
+        contentHtml: `<p>${"предложение ".repeat(60)}</p>`,
+      },
+      urgent: [],
+    }),
+  );
+
+  const standfirst = /<p class="mt-3 mb-4[^"]*">([^<]+)<\/p>/.exec(generated)?.[1] ?? "";
+  check(
+    "Лид главного: без лида превью собирается из текста статьи",
+    standfirst.startsWith("предложение") && standfirst.length > 0,
+    JSON.stringify(standfirst.slice(0, 40)),
+  );
+  check(
+    "Лид главного: превью обрезано примерно на 180 знаках",
+    standfirst.length <= 181 && standfirst.endsWith("…"),
+    `${standfirst.length} символов`,
+  );
+
+  check(
+    "Главное фото: потолок высоты, чтобы лид и метаданные не ушли за первый экран",
+    generated.includes("max-h-[360px]") && generated.includes("md:max-h-[420px]"),
+    "360 / 420",
+  );
+
+  check(
+    "Главное фото: пропорции и кадрирование на месте",
+    generated.includes("aspect-video") && generated.includes("object-cover"),
+    "aspect-video + object-cover",
+  );
+
+  const empty = renderToStaticMarkup(
+    createElement(FrontPageHero as never, {
+      lead: { ...base, lead: null, contentHtml: "" },
+      urgent: [],
+    }),
+  );
+  check(
+    "Лид главного: у материала без текста блок просто не рисуется",
+    !empty.includes('class="mt-3 mb-4'),
+    "пустого блока нет",
+  );
+}
+/**
  * The top of the front page, rendered.
  *
  * This replaced the assertions on the old `lead` card variant. Two things were being
@@ -433,6 +680,44 @@ function checkSectionGrid() {
     "Плотная витрина: заголовок рубрики с волосяной чертой во всю ширину",
     html.includes("rubric-line") && html.includes("border-t-2 border-ink"),
     "rubric-line + разделитель секции",
+  );
+
+  /*
+    The orphan, stated as the two things that produce it: a strip whose columns do not
+    match its card count, and a strip that caps itself to one narrow card while the page
+    is 1280px wide. Both were printed before, both read as a fault rather than as a
+    choice, and the page no longer sends a section with a single card at all.
+  */
+  check(
+    "Плотная витрина: число колонок равно числу карточек — сироты не остаётся",
+    !html.includes("max-w-md") && occurrences(html, "aspect-[3/2]") === 4,
+    "4 карточки, 4 колонки, без max-w-md",
+  );
+
+  const two = renderToStaticMarkup(
+    createElement(SectionGrid as never, {
+      title: "Происшествия",
+      slug: "incidents",
+      articles: articles.slice(0, 2),
+    }),
+  );
+  check(
+    "Плотная витрина: два материала — две колонки, а не четыре с двумя дырами",
+    two.includes("sm:grid-cols-2") && !two.includes("lg:grid-cols-4"),
+    "sm:grid-cols-2",
+  );
+
+  const three = renderToStaticMarkup(
+    createElement(SectionGrid as never, {
+      title: "Экономика",
+      slug: "economy",
+      articles: articles.slice(0, 3),
+    }),
+  );
+  check(
+    "Плотная витрина: три материала — три колонки",
+    three.includes("sm:grid-cols-3") && !three.includes("lg:grid-cols-4"),
+    "sm:grid-cols-3",
   );
 
   check(
@@ -732,8 +1017,11 @@ function checkArchive() {
 checkGrouping();
 checkMarkup();
 checkCompactPreview();
-checkFrontHero();
+checkRubricFill();
 checkSectionGrid();
+checkFeedColumn();
+checkFrontHero();
+checkHeroStandfirst();
 checkTypography();
 checkFonts();
 checkForumBlock();

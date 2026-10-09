@@ -2,8 +2,7 @@ import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
 import type { ArticleListItem } from "@/lib/public-queries";
-import { formatDate, formatTime } from "@/lib/date";
-import { SITE_SHORT_NAME } from "@/lib/site";
+import { formatDate } from "@/lib/date";
 import { cn } from "@/lib/utils";
 
 /**
@@ -83,8 +82,16 @@ export function Badges({ article }: { article: ArticleListItem }) {
 }
 
 /**
- * Cover image, or a typographic placeholder when the story has none. Keeps the
- * grid from collapsing without requiring every article to have artwork.
+ * The cover, or nothing at all.
+ *
+ * It used to be a tinted block with the rubric's name in masthead capitals, so that a
+ * story without artwork still occupied its slot in the grid. On a four-column strip that
+ * turned into three grey rectangles beside one photograph: a row that looked like four
+ * images had loaded one. Nothing is better than that — the card simply becomes a headline
+ * and a date, which is what a newspaper does with a story it has no picture for.
+ *
+ * Returns null rather than rendering an empty element, so the caller can decide the
+ * shape of the card instead of being handed a hole.
  */
 function Cover({
   article,
@@ -98,32 +105,18 @@ function Cover({
   preload?: boolean;
   className?: string;
 }) {
-  if (article.coverImage) {
-    return (
-      <CoverImage
-        src={article.coverImage}
-        alt=""
-        sizes={sizes}
-        // Next 16 deprecated `priority`; `preload` is the replacement and is
-        // only correct for the single LCP candidate on the page.
-        preload={preload}
-        className={className}
-      />
-    );
-  }
+  if (!article.coverImage) return null;
 
   return (
-    <div
-      aria-hidden
-      className={cn(
-        "flex items-center justify-center bg-gradient-to-br from-paper-dim to-rule/60",
-        className,
-      )}
-    >
-      <span className="masthead px-3 text-center text-2xl text-ink-soft/40">
-        {article.category?.name ?? SITE_SHORT_NAME}
-      </span>
-    </div>
+    <CoverImage
+      src={article.coverImage}
+      alt=""
+      sizes={sizes}
+      // Next 16 deprecated `priority`; `preload` is the replacement and is
+      // only correct for the single LCP candidate on the page.
+      preload={preload}
+      className={className}
+    />
   );
 }
 
@@ -251,11 +244,21 @@ export function ArticleCard({
 
   return (
     <article className="group flex h-full flex-col">
-      <div className="relative aspect-[3/2] overflow-hidden rounded-sm bg-paper-dim">
+      {/*
+        The 16:9 box is rendered only when there is a photograph. A reserved empty box
+        is the grey rectangle this card used to draw for every story the wire brought in
+        without artwork, and four of them in a row read as a layout fault.
+      */}
+      <div
+        className={cn(
+          "relative aspect-[3/2] overflow-hidden rounded-sm bg-paper-dim",
+          !article.coverImage && "hidden",
+        )}
+      >
         <Cover article={article} sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 300px" preload={preload} className="transition-transform duration-300 group-hover:scale-105" />
       </div>
 
-      <div className="mt-2.5 flex flex-1 flex-col">
+      <div className={cn("flex flex-1 flex-col", article.coverImage ? "mt-2.5" : "mt-0")}>
         <div className="mb-1 flex flex-wrap items-center gap-1.5">
           {article.category ? (
             <RubricLabel name={article.category.name} slug={article.category.slug} />

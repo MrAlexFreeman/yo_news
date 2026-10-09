@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 
-import { RubricLabel } from "@/components/article-card";
 import { formatTime, groupByDay, plural } from "@/lib/date";
 import type { ArticleListItem } from "@/lib/public-queries";
 
@@ -75,9 +74,17 @@ export function NewsTicker({ articles, now }: NewsTickerProps) {
                   return (
                     <li
                       key={article.id}
-                      className="border-b border-rule/70 py-2.5 last:border-b-0"
+                      className="border-b border-rule/70 py-3.5 last:border-b-0"
                     >
                       <div className="flex gap-3">
+                        {/*
+                          The clock in the left gutter, in the reading orange.
+
+                          `--color-yo-ink` rather than `--color-yo`: the display orange is
+                          specified for large text only, and at 12px on the paper
+                          background it does not carry enough contrast to be read as a
+                          number at a glance. The darker tone is the same hue and does.
+                        */}
                         <time
                           dateTime={timestamp.toISOString()}
                           title={
@@ -85,28 +92,38 @@ export function NewsTicker({ articles, now }: NewsTickerProps) {
                               ? `${ageHours} ${plural(ageHours, "час", "часа", "часов")} назад`
                               : "только что"
                           }
-                          className="shrink-0 pt-px font-mono text-xs font-semibold text-accent tabular-nums"
+                          className="shrink-0 pt-px font-mono text-xs font-semibold text-yo-ink tabular-nums"
                         >
                           {formatTime(timestamp)}
                         </time>
 
                         <div className="min-w-0">
-                          <h4 className="clamp-2 text-sm leading-snug font-medium text-ink">
+                          <h4 className="clamp-2 text-sm leading-snug font-medium text-ink md:text-base">
                             <Link
                               href={`/news/${article.slug}`}
-                              className="transition-colors hover:text-accent"
+                              className="transition-colors hover:text-accent hover:underline decoration-1 underline-offset-4"
                             >
                               {article.title}
                             </Link>
                           </h4>
-                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+
+                          {/*
+                            The clock and the rubric used to sit at the same weight and
+                            the same grey, so a row read as one undifferentiated mass. The
+                            leading dot and the plate give them separate jobs: one says
+                            when, the other says where from.
+                          */}
+                          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span aria-hidden className="text-ink-soft/50">
+                              ·
+                            </span>
+
                             {article.category ? (
-                              <RubricLabel
-                                name={article.category.name}
-                                slug={article.category.slug}
-                                className="text-ink-soft"
-                              />
+                              <span className="rounded-sm bg-paper-dim px-1.5 py-px text-[10px] font-semibold tracking-wide text-ink-soft uppercase">
+                                {article.category.name}
+                              </span>
                             ) : null}
+
                             {article.isExclusive ? (
                               <span className="text-[9px] font-bold tracking-wide text-accent uppercase">
                                 Эксклюзив

@@ -3,9 +3,10 @@ import { ForumTopicsBlock } from "@/components/forum-topics";
 import { FrontPageHero } from "@/components/front-page-hero";
 import { Logo } from "@/components/logo";
 import { NewsTicker } from "@/components/news-ticker";
+import { SpecTopicBlock } from "@/components/spec-topic-block";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { SectionGrid } from "@/components/section-grid";
-import { fillRanked } from "@/lib/content-loop";
+import { fillRanked, fillSection } from "@/lib/content-loop";
 import { getActiveForumTopics } from "@/lib/forum";
 import {
   getHeroArticle,
@@ -13,6 +14,7 @@ import {
   getPublishedArticles,
   getSectionsWithArticles,
   getTrendingArticles,
+  type ArticleListItem,
 } from "@/lib/public-queries";
 
 /**
@@ -42,88 +44,110 @@ const URGENT_COUNT = 4;
  */
 const TICKER_FETCH = TICKER_COUNT + URGENT_COUNT + 1;
 const RAIL_COUNT = 4;
+/**
+ * Cards per rubric strip. Four, because four is what fills the row at `lg`, and a strip
+ * of three leaves a one-column hole exactly as bad as a strip of one.
+ */
 const SECTION_SIZE = 4;
+/**
+ * Below this a rubric strip is not printed at all.
+ *
+ * Two, not one: one card under a rubric heading is a link, not a section, and the row it
+ * would occupy is mostly paper. The backfill below is what keeps this from firing on a
+ * normal day — it only happens when the whole page has run out of material.
+ */
+const MIN_SECTION_CARDS = 2;
 /** Stories in "Другие события дня". Four fill one dense strip. */
 const DAY_CARD_COUNT = 4;
 /** Threads in "Обсуждают на форуме". Four fills the column without running long. */
 const TOPIC_COUNT = 4;
+/** Stories in the "Спецтема" block that balances the feed column. */
+const SPEC_TOPIC_COUNT = 3;
 
 export default async function HomePage() {
   /*
-    One extra list for the "Другие события дня" block. It is fetched separately rather
-    than sliced out of the rail's array because it needs stories that appear *nowhere*
-    else on the page — hero, urgent column, ticker, rail and all nine rubric grids
-    included — and those are only known after the first queries resolve.
-
-    The urgent column is drawn from the most-read of the last two days rather than from
-    the freshest four, because the freshest four are exactly the top of the feed below it:
-    a column that repeated the first four rows of the ticker would not be a second
-    editorial voice, it would be a copy. "Важное" and "лента" answer different questions,
-    and the fallback to all time keeps it four long on a quiet day.
+    Every list on the page comes out of one round of queries, and none of them waits on
+    another. `pool` is the deep list: it feeds the rubric strips first and then whatever
+    the strips did not take, so "Другие события дня" is what is genuinely left over rather
+    than a second draw of the same stories.
   */
-  const [hero, ticker, sections, rail, dayPool, topics, trending, mostRead] =
-    await Promise.all([
-      getHeroArticle(),
-      getPublishedArticles(TICKER_FETCH),
-      getSectionsWithArticles(SECTION_SIZE, 9),
-      getPublishedArticles(RAIL_COUNT + 8),
-      getPublishedArticles(TICKER_FETCH + RAIL_COUNT + 60),
-      getActiveForumTopics(TOPIC_COUNT),
-      getTrendingArticles(URGENT_COUNT + 2, { excludeId: undefined }),
-      getMostReadArticles(URGENT_COUNT * 3),
-    ]);
+  const [
+    hero,
+    ticker,
+    sections,
+    pool,
+    topics,
+    trending,
+    mostRead,
+    investigations,
+    restByReads,
+  ] = await Promise.all([
+    getHeroArticle(),
+    getPublishedArticles(TICKER_FETCH),
+    getSectionsWithArticles(SECTION_SIZE, 9),
+    getPublishedArticles(160),
+    getActiveForumTopics(TOPIC_COUNT),
+    getTrendingArticles(URGENT_COUNT + 2),
+    getMostReadArticles(URGENT_COUNT * 3),
+    getMostReadArticles(SPEC_TOPIC_COUNT, { categorySlug: "investigations" }),
+    getMostReadArticles(SPEC_TOPIC_COUNT * 2),
+  ]);
 
   const heroId = hero?.id;
-  const urgentItems = fillRanked(
-    trending.filter((article) => article.id !== heroId),
-    mostRead.filter((article) => article.id !== heroId),
-    URGENT_COUNT,
-  );
-  const urgentIds = new Set(urgentItems.map((article) => article.id));
 
-  const tickerItems = ticker.filter(
-    (article) => article.id !== heroId && !urgentIds.has(article.id),
-  );
-  const railItems = rail
-    .filter((article) => article.id !== heroId && !urgentIds.has(article.id))
-    .slice(0, RAIL_COUNT);
+  // Everything already on the page. One set, threaded through every block below, is the
+  // only way "no headline appears twice on the front page" stays true as blocks are added.
+  const used = new Set<string>(heroId ? [heroId] : []);
 
-  // Stories already shown in the hero, the urgent column, the ticker or the rail are
-  // dropped from the rubric grids so the same headline does not appear twice on one
-  // screen.
-  const shown = new Set(
-    [
-      heroId,
-      ...urgentIds,
-      ...tickerItems.map((a) => a.id),
-      ...railItems.map((a) => a.id),
-    ].filter((id): id is string => Boolean(id)),
-  );
-
-  // Rubric grids only take stories the hero/ticker/rail have not already shown.
-  // A section can end up thin, which is preferable to the same headline
-  // appearing twice on one screen. SectionGrid returns null when empty.
-  const visibleSections = sections.map((section) => ({
-    ...section,
-    articles: section.articles.filter((article) => !shown.has(article.id)),
-  }));
+  const take = (items: readonly ArticleListItem[], limit: number) => {
+    const out: ArticleListItem[] = [];
+    for (const article of items) {
+      if (out.length >= limit) break;
+      if (used.has(article.id)) continue;
+      out.push(article);
+      used.add(article.id);
+    }
+    return out;
+  };
 
   /*
-    Stories for the strip at the foot of the page.
-
-    Excluded from the rubric grids as well, so this fills the page with material the
-    reader has not already scrolled past rather than repeating four headlines they saw
-    thirty lines up. The pool is already newest-first, so filtering from the front
-    yields the freshest leftovers.
+    "Важное за сегодня" is drawn from the most-read of the last two days rather than from
+    the freshest four, because the freshest four are exactly the top of the feed below it:
+    a column that repeated the first four rows of the ticker would not be a second
+    editorial voice, it would be a copy. "Важное" and "лента" answer different questions.
   */
-  const inSections = new Set(
-    visibleSections.flatMap((section) =>
-      section.articles.map((article) => article.id),
-    ),
-  );
-  const dayItems = dayPool
-    .filter((article) => !shown.has(article.id) && !inSections.has(article.id))
-    .slice(0, DAY_CARD_COUNT);
+  const urgentItems = fillRanked(trending, mostRead, URGENT_COUNT);
+  for (const article of urgentItems) used.add(article.id);
+
+  const tickerItems = take(ticker, TICKER_COUNT);
+  const specItems = fillRanked(investigations, restByReads, SPEC_TOPIC_COUNT);
+  for (const article of specItems) used.add(article.id);
+  const railItems = take(pool, RAIL_COUNT);
+
+  /*
+    Rubric strips, filled.
+
+    `fillSection` takes the rubric's own stories and tops the row up from the pool, so a
+    rubric with one article prints a full row instead of one card beside three columns of
+    paper. Filler is claimed from the shared `used` set as it is taken, so two strips
+    never end up showing the same story, and the filler that reaches a section is
+    something no earlier block wanted.
+  */
+  const visibleSections = sections
+    .map((section) => ({
+      title: section.category.name,
+      slug: section.category.slug,
+      articles: fillSection(
+        section.articles.filter((article) => !used.has(article.id)),
+        pool,
+        SECTION_SIZE,
+        used,
+      ),
+    }))
+    .filter((section) => section.articles.length >= MIN_SECTION_CARDS);
+
+  // What the strips did not take, freshest first.
+  const dayItems = take(pool, DAY_CARD_COUNT);
 
   return (
     <div className="space-y-8">
@@ -147,44 +171,51 @@ export default async function HomePage() {
         </div>
       )}
 
-      {/* The live feed, with the forum and the subscription plate in the third column. */}
+      {/*
+        The feed and the column beside it.
+
+        The two are sized against each other on purpose. The feed is ten rows and grows
+        with the day; the column used to be one subscribe plate, which left a screen of
+        white under it — a layout that reads as broken regardless of what is actually
+        in it. Three blocks — the subscription plate, the spec-topic strip and the forum —
+        put the column's height within reach of the chronology's without either of them
+        pretending to be the other.
+      */}
       <div className="grid gap-8 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <NewsTicker
-            articles={tickerItems.slice(0, TICKER_COUNT)}
-            now={new Date()}
-          />
+          <NewsTicker articles={tickerItems} now={new Date()} />
         </div>
 
         {/*
-          Both blocks are in normal flow with `space-y-6` between them, and the ticker
-          no longer pins itself — a sticky feed painted over the block below it, which
-          read as the subscribe card sitting on top of the headlines.
-
-          The forum sits above the subscribe plate because a reader who came from a search
-          result is often here to see what else is happening, or to argue, not to subscribe.
+          Normal flow, no sticky: a sticky column painted over the block below it is what
+          put the subscribe plate on top of the headlines in the first place.
         */}
         <div className="space-y-6">
+          <SpecTopicBlock
+            articles={specItems}
+            heading="Спецтема"
+            headingId="home-spec"
+          />
+
+          <SubscribeBlock />
+
           <ForumTopicsBlock
             topics={topics}
             heading="Обсуждают на форуме"
             headingId="home-forum"
             accented
           />
-
-          <SubscribeBlock />
         </div>
       </div>
 
-      {/* Rubric strips. Every rubric is shown; already-placed stories are
-          filtered out so nothing repeats within one screen. */}
+      {/* Rubric strips. Each row is filled to four cards or the section is not printed. */}
       {visibleSections.length > 0 ? (
         <div className="space-y-8">
           {visibleSections.map((section) => (
             <SectionGrid
-              key={section.category.slug}
-              title={section.category.name}
-              slug={section.category.slug}
+              key={section.slug}
+              title={section.title}
+              slug={section.slug}
               articles={section.articles}
             />
           ))}

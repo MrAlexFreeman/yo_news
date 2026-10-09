@@ -156,6 +156,42 @@ export function fillRanked<T extends { id: string }>(
 }
 
 /**
+ * One rubric strip's cards: its own stories first, topped up from a shared pool.
+ *
+ * A rubric strip is a full row or it is a hole. A section whose only story is a single
+ * card leaves the other three columns of a 1280px page empty, which reads as a broken
+ * layout rather than as a quiet rubric — and this site has seven rubrics of which one
+ * carries everything, so "its own stories only" would print one card per row for most of
+ * the front page.
+ *
+ * So the row is filled to `size` from the pool of material the page has not shown yet.
+ * The filler is not passed off as the rubric it sits under: every card prints its own
+ * rubric above its headline, so a reader looking at «Происшествия» sees «ОБЩЕСТВО» on the
+ * stories that came from elsewhere. The heading promises a desk, the cards name their own.
+ *
+ * `used` is shared across sections and mutated on purpose. It is the single place where
+ * "a story appears once on the front page" is decided, and threading a return value
+ * through every section in turn is how a page ends up with the same headline twice.
+ */
+export function fillSection<T extends { id: string }>(
+  own: readonly T[],
+  pool: readonly T[],
+  size: number,
+  used: Set<string>,
+): T[] {
+  const row: T[] = [];
+
+  for (const item of [...own, ...pool]) {
+    if (row.length >= size) break;
+    if (used.has(item.id)) continue;
+    row.push(item);
+    used.add(item.id);
+  }
+
+  return row;
+}
+
+/**
  * Fill two rows of `size` cards from two candidate lists.
  *
  * Three things have to hold at once, and handling them in order is the design:
