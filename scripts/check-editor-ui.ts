@@ -147,6 +147,8 @@ const panelDefaults = {
   onClose: noop,
 };
 
+import { UpscaleCoverButton } from "../src/app/admin/articles/components/upscale-cover-button";
+
 const aiClosedHtml = render(AiCoverGenerator as never, aiProps);
 const aiAutoHtml = render(AiCoverPanel as never, panelDefaults);
 const aiCustomHtml = render(AiCoverPanel as never, {
@@ -163,12 +165,103 @@ const aiResultHtml = render(AiCoverPanel as never, {
   result: { url: "/uploads/ai-cover-abc.webp", prompt: "a wet street at night" },
 });
 
+// --- Upscale button ---------------------------------------------------------
+/*
+  Rendered rather than grepped, because the two states this button has to get right are
+  both invisible in the source: it must not exist at all without a cover, and «Вернуть
+  оригинал» must not exist before there is something to return to. A source grep for the
+  word "Улучшить" passes in both cases.
+ */
+const upscaleHtml = render(UpscaleCoverButton as never, {
+  coverImage: "/uploads/cover.jpg",
+  onUpscaled: noop,
+});
+/*
+  `busy` is component state rather than a prop, so a static render can never show the working
+  state. What is asserted about it instead is the wiring in the source: that the button is
+  disabled while the request runs, and that the wait is explained rather than left as a dead
+  button. That is the part a render would not prove anyway.
+*/
+const upscaleSource = readFileSync(
+  new URL(
+    "../src/app/admin/articles/components/upscale-cover-button.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const upscaleNoCoverHtml = render(UpscaleCoverButton as never, {
+  coverImage: "",
+  onUpscaled: noop,
+});
+
+check(
+  "Апскейл: кнопка есть, когда обложка загружена",
+  upscaleHtml.includes("Улучшить качество"),
+  "контрол на месте",
+);
+check(
+  "Апскейл: без обложки кнопки нет вовсе",
+  upscaleNoCoverHtml === "",
+  upscaleNoCoverHtml === "" ? "пусто" : "выведена кнопка без повода",
+);
+check(
+  "Апскейл: возврат оригинала предлагается только после улучшения",
+  !upscaleHtml.includes("Вернуть оригинал"),
+  "нечего возвращать до первого улучшения",
+);
+/*
+  Asserted on the source because a static render cannot see this one: `canRevert` is false in
+  both the correct and the broken version until a cover has been upgraded, and the whole
+  failure is what happens *after* that. The invariant is that the revert targets the file the
+  improved one replaced — otherwise upgrading a second photo offers to restore the first.
+*/
+check(
+  "Апскейл: возврат привязан к тому файлу, который улучшили",
+  upscaleSource.includes("upgrade.to === coverImage"),
+  "canRevert сравнивает с текущей обложкой",
+);
+check(
+  "Апскейл: во время работы кнопка заблокирована",
+  upscaleSource.includes("disabled={busy}") &&
+    upscaleSource.includes("{busy ? \"Улучшаем…\" : \"Улучшить качество\"}"),
+  "disabled={busy} на время запроса",
+);
+check(
+  "Апскейл: ожидание объясняет, что происходит и сколько ждать",
+  upscaleSource.includes("артефакты") && upscaleSource.includes("резкость"),
+  "текст ожидания",
+);
+check(
+  "Апскейл: ошибка показывается как роль alert, а не молча",
+  upscaleSource.includes('role="alert"') &&
+    upscaleSource.includes("Не удалось улучшить фото, попробуйте позже."),
+  "есть куда выводить ошибку",
+);
+check(
+  "Апскейл: запрос уходит на свой роут с JSON и без обхода авторизации",
+  upscaleSource.includes("/api/admin/articles/upscale-image") &&
+    upscaleSource.includes('"Content-Type": "application/json"'),
+  "роут и заголовок",
+);
+
 // --- Settings form ----------------------------------------------------------
 const settingsDefaults = {
   deepseekApiKey: { isSet: false, masked: "", source: "unset" as const },
   deepinfraApiKey: { isSet: false, masked: "", source: "unset" as const },
   vkAccessToken: { isSet: false, masked: "", source: "unset" as const },
 };
+
+/**
+ * The API-key fields the form renders, by request field name.
+ *
+ * Derived from the form's own vocabulary rather than hardcoded as a count: the three
+ * assertions further down used to say "3", and adding a fourth provider broke all of them at
+ * once without any of them explaining why. Listing the ids fails with a name instead.
+ */
+const API_KEY_FIELDS = ["deepseekApiKey", "deepinfraApiKey", "vkAccessToken", "falApiKey"];
+
+/** Providers whose field carries a «Тест подключения» button. VK's says «Тест токена VK». */
+const TESTED_PROVIDERS = ["deepseekApiKey", "deepinfraApiKey", "falApiKey"];
 
 const settingsEmptyHtml = render(SettingsForm as never, { initial: settingsDefaults });
 const settingsFilledHtml = render(SettingsForm as never, {
@@ -627,21 +720,23 @@ check(
 );
 check(
   "Настройки: поля замаскированы и пусты",
-  (settingsEmptyHtml.match(/type="password"/g) ?? []).length === 3 &&
+  (settingsEmptyHtml.match(/type="password"/g) ?? []).length === API_KEY_FIELDS.length &&
     !/value="sk-/.test(settingsFilledHtml),
-  "три password без значения",
+  `${API_KEY_FIELDS.length} password без значения`,
 );
 check(
   "Настройки: кнопка показа/скрытия у каждого поля",
-  (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length === 3,
-  "3 кнопки",
+  (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length ===
+    API_KEY_FIELDS.length,
+  `${API_KEY_FIELDS.length} кнопок`,
 );
 // Counted as buttons, not as a substring: the explanatory section below the form
 // mentions the same phrase in prose.
 check(
   "Настройки: «Тест подключения» у каждого поля",
-  (settingsFilledHtml.match(/>Тест подключения<\/button>/g) ?? []).length === 2,
-  "2 кнопки",
+  (settingsFilledHtml.match(/>Тест подключения<\/button>/g) ?? []).length ===
+    TESTED_PROVIDERS.length,
+  `${TESTED_PROVIDERS.length} кнопки`,
 );
 check(
   "Настройки: маска из БД показана как источник",
@@ -695,9 +790,10 @@ check(
 );
 check(
   "Настройки: токен ВК — password с кнопкой показа",
-  (settingsFilledHtml.match(/type="password"/g) ?? []).length === 3 &&
-    (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length === 3,
-  "три поля",
+  (settingsFilledHtml.match(/type="password"/g) ?? []).length === API_KEY_FIELDS.length &&
+    (settingsFilledHtml.match(/aria-label="Показать ключ"/g) ?? []).length ===
+      API_KEY_FIELDS.length,
+  `${API_KEY_FIELDS.length} поля`,
 );
 check(
   "Настройки: кнопка «Тест токена VK»",

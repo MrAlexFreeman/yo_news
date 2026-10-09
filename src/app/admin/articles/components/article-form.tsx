@@ -34,6 +34,7 @@ import { TagInput } from "@/app/admin/articles/components/tag-input";
 import { TitleField } from "@/app/admin/articles/components/title-field";
 import { VkVideoDrop } from "@/app/admin/articles/components/vk-video-drop";
 import { AiCoverGenerator } from "@/app/admin/articles/components/ai-cover-generator";
+import { UpscaleCoverButton } from "@/app/admin/articles/components/upscale-cover-button";
 import { BalanceStrip } from "@/app/admin/articles/components/balance-strip";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
 import {
@@ -984,6 +985,26 @@ export function ArticleForm({
                     JPG, PNG или WebP, до 8 МБ
                   </span>
                 </div>
+
+                {/*
+                  Upscaling is offered next to the upload control because both act on the
+                  same field, and only when there is a stored file to improve — the button
+                  renders nothing otherwise rather than sitting there disabled, so the
+                  sidebar does not carry a control that cannot do anything.
+                */}
+                <UpscaleCoverButton
+                  coverImage={coverImage}
+                  onUpscaled={(url) => {
+                    setCoverImage(url);
+                    /*
+                      The upscaled file is wider than the original, so the narrow-cover
+                      warning no longer describes it — the same reasoning as adopting a
+                      generated cover.
+                    */
+                    setUploadWarning(null);
+                    setUploadError(null);
+                  }}
+                />
 
                 {/*
                   The generator writes to the same UPLOAD_DIR as the file input

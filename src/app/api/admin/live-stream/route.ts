@@ -3,8 +3,6 @@ import { NextResponse } from "next/server";
 
 import {
   LIVE_STREAM_DEFAULT_TITLE,
-  resolveLiveStreamHref,
-  resolveLiveStreamTitle,
   toLiveStreamView,
   validateLiveStreamTitle,
   validateLiveStreamUrl,

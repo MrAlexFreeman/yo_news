@@ -19,7 +19,17 @@ export const runtime = "nodejs";
 
 const TIMEOUT_MS = 15_000;
 
-type Provider = "deepseek" | "deepinfra" | "vk";
+/**
+ * A fal queue URL for a request id that cannot exist.
+ *
+ * Used only to prove a key is accepted, so it must cost nothing: the queue authenticates
+ * before it looks anything up and answers 404 for an unknown id once the key is good. See the
+ * `ENDPOINTS` note for why fal is the one provider whose success is not a 2xx.
+ */
+const FAL_STATUS_PROBE =
+  "https://queue.fal.run/fal-ai/esrgan/requests/00000000-0000-4000-8000-000000000000/status";
+
+type Provider = "deepseek" | "deepinfra" | "vk" | "fal";
 
 /**
  * Key → { setting, free validation endpoint }.
@@ -32,23 +42,47 @@ type Provider = "deepseek" | "deepinfra" | "vk";
  *
  * All three report success through a 2xx rather than through a body shape, so a
  * provider changing its payload cannot turn a working key into a red field.
+ *
+ * fal is the exception and the reason it has its own branch: its queue authenticates
+ * *before* it looks anything up, so asking about a request id that does not exist answers
+ * 401 for a bad key and 404 for a good one. There is no 2xx to wait for without spending
+ * money on a real inference, and a button whose purpose is to avoid spending money should not
+ * be the thing that spends it. `interpret` therefore treats 404 as success for fal alone.
  */
 const ENDPOINTS: Record<
   Provider,
-  { setting: "DEEPSEEK_API_KEY" | "DEEPINFRA_API_KEY" | "VK_ACCESS_TOKEN"; url: (token: string) => string }
+  {
+    setting:
+      | "DEEPSEEK_API_KEY"
+      | "DEEPINFRA_API_KEY"
+      | "VK_ACCESS_TOKEN"
+      | "FAL_API_KEY";
+    url: (token: string) => string;
+    /** Auth style: fal reads `Authorization: Key`, the others a bearer token. */
+    scheme: "bearer" | "key";
+  }
 > = {
   deepseek: {
     setting: "DEEPSEEK_API_KEY",
     url: () => "https://api.deepseek.com/user/balance",
+    scheme: "bearer",
   },
   deepinfra: {
     setting: "DEEPINFRA_API_KEY",
     url: () => "https://api.deepinfra.com/v1/models",
+    scheme: "bearer",
   },
   vk: {
     setting: "VK_ACCESS_TOKEN",
     url: (token) =>
       `https://api.vk.com/method/users.get?fields=screen_name&v=5.199&access_token=${encodeURIComponent(token)}`,
+    scheme: "bearer",
+  },
+  fal: {
+    setting: "FAL_API_KEY",
+    // A random id that cannot exist: the answer is about the key, not the request.
+    url: () => `${FAL_STATUS_PROBE}`,
+    scheme: "key",
   },
 };
 
@@ -56,6 +90,7 @@ const SUCCESS_MESSAGE: Record<Provider, string> = {
   deepseek: "Ключ принят, DeepSeek отвечает.",
   deepinfra: "Ключ принят, DeepInfra отвечает.",
   vk: "Токен принят, ВК отвечает.",
+  fal: "Ключ принят, fal.ai отвечает.",
 };
 
 function isJsonRequest(request: Request): boolean {
@@ -82,6 +117,17 @@ async function vkErrorInBody(response: Response): Promise<string | null> {
 
 /** Turns a status into an outcome the form can render as a sentence. */
 function interpret(provider: Provider, status: number): { ok: boolean; message: string } {
+  /*
+    fal only. Measured, not assumed: this endpoint answers 404 unauthenticated and 401 with a
+    wrong key, so 404 is what a valid key gets for an unknown request. Reading it as failure
+    would leave a correct key permanently red, and reading it as success unconditionally would
+    be wrong for every other provider — hence the narrow branch rather than a special case
+    bolted onto the 200 check.
+  */
+  if (provider === "fal" && status === 404) {
+    return { ok: true, message: SUCCESS_MESSAGE[provider] };
+  }
+
   if (status === 200) {
     return { ok: true, message: SUCCESS_MESSAGE[provider] };
   }
@@ -113,9 +159,17 @@ export async function POST(request: Request) {
   }
 
   const provider = body.provider as Provider;
-  if (provider !== "deepseek" && provider !== "deepinfra" && provider !== "vk") {
+  if (
+    provider !== "deepseek" &&
+    provider !== "deepinfra" &&
+    provider !== "vk" &&
+    provider !== "fal"
+  ) {
     return NextResponse.json(
-      { error: "Неизвестный провайдер: ожидается deepseek, deepinfra или vk." },
+      {
+        error:
+          "Неизвестный провайдер: ожидается deepseek, deepinfra, vk или fal.",
+      },
       { status: 400 },
     );
   }
@@ -132,16 +186,19 @@ export async function POST(request: Request) {
     );
   }
 
-  const { url } = ENDPOINTS[provider];
+  const { url, scheme } = ENDPOINTS[provider];
 
   try {
     // VK carries the token in the query string, so it must not also be sent as a
-    // bearer header it does not read.
+    // bearer header it does not read. fal reads `Key` rather than `Bearer`.
     const response =
       provider === "vk"
         ? await fetch(url(key), { signal: AbortSignal.timeout(TIMEOUT_MS) })
         : await fetch(url(key), {
-            headers: { Authorization: `Bearer ${key}` },
+            headers: {
+              Authorization:
+                scheme === "key" ? `Key ${key}` : `Bearer ${key}`,
+            },
             signal: AbortSignal.timeout(TIMEOUT_MS),
           });
 

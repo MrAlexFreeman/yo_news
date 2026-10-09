@@ -49,7 +49,6 @@ export type LiveStreamRaw = {
  * another page would render as text that says one thing and reads as another. Stripping them
  * is cheaper than explaining why the header looks wrong.
  */
-// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
 
 /**

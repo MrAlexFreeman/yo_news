@@ -20,7 +20,7 @@ const NO_BALANCES: Balances = {
 };
 
 /** Matches the server-side shape from src/lib/settings.ts. */
-type Provider = "deepseek" | "deepinfra" | "vk";
+type Provider = "deepseek" | "deepinfra" | "vk" | "fal";
 
 type Field = {
   provider: Provider;
@@ -72,6 +72,24 @@ const FIELDS: Field[] = [
       linkLabel: "Перейти по ссылке",
       link:
         "https://oauth.vk.com/authorize?client_id=ID_ПРИЛОЖЕНИЯ&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope=video,wall,offline,groups&response_type=token&v=5.199",
+    },
+  },
+  {
+    provider: "fal",
+    name: "falApiKey",
+    label: "Ключ fal.ai",
+    hint: "Улучшение обложек: повышает резкость и убирает артефакты сжатия.",
+    service: "fal.ai",
+    testLabel: "Тест подключения",
+    instructions: {
+      title: "Как получить ключ fal.ai?",
+      steps: [
+        "Зарегистрируйтесь на fal.ai и пополните баланс — генерация платная.",
+        "Откройте раздел API Keys в настройках профиля.",
+        "Скопируйте ключ и вставьте в поле слева.",
+      ],
+      linkLabel: "Открыть fal.ai",
+      link: "https://fal.ai/dashboard/keys",
     },
   },
 ];
@@ -283,8 +301,16 @@ export function SettingsForm({ initial }: SettingsFormProps) {
         {FIELDS.map((field) => {
           const current = views[field.name];
           const typed = values[field.name] ?? "";
+          /*
+            Only DeepSeek and DeepInfra are in `Balances`: this project's balance endpoint
+            does not query fal, which reports credit on its dashboard rather than through an
+            API. The `in` check rather than `=== "vk"` so a provider added later without a
+            balance of its own renders a field instead of crashing the page.
+          */
           const balanceOf = (provider: Provider) =>
-            provider === "vk" ? undefined : balances[provider];
+            provider === "deepseek" || provider === "deepinfra"
+              ? balances[provider]
+              : undefined;
           const isShown = revealed[field.name] ?? false;
           const testResult = tests[field.provider];
 

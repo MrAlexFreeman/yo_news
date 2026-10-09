@@ -44,6 +44,7 @@ export const ALLOWED_KEYS = [
   "LIVE_STREAM_ENABLED",
   "LIVE_STREAM_URL",
   "LIVE_STREAM_TITLE",
+  "FAL_API_KEY",
 ] as const;
 
 export type SettingKey = (typeof ALLOWED_KEYS)[number];
@@ -56,6 +57,7 @@ export const FIELD_BY_NAME: Record<string, SettingKey> = {
   deepseekApiKey: "DEEPSEEK_API_KEY",
   deepinfraApiKey: "DEEPINFRA_API_KEY",
   vkAccessToken: "VK_ACCESS_TOKEN",
+  falApiKey: "FAL_API_KEY",
 };
 
 /**

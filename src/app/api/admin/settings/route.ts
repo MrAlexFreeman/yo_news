@@ -43,23 +43,14 @@ function isJsonRequest(request: Request): boolean {
 }
 
 /**
- * Setting key → the request field name that carries it, the reverse of the map.
+ * Why this route walks `FIELD_BY_NAME` and not the allowlist.
  *
- * Partial on purpose, and that is the fix: this route serves the *API-key* form, so it walks
- * `FIELD_BY_NAME` and nothing else. Walking `ALLOWED_KEYS` instead — as it did — put every key
- * with no name in this map into `settings["undefined"]`, so all seven messenger keys collapsed
- * into one property and the last one won. The response was not merely wrong in shape: the
- * three API-key fields were still correct, which is exactly why nothing noticed, and adding
- * three more nameless keys to the allowlist would have made the collision larger rather than
- * exposing it.
- *
- * Type is `Record<string, FieldName | undefined>` rather than the older
- * `Record<SettingKey, FieldName>`, because that older type asserted a completeness that does
- * not exist: only 3 of 10 allowed keys are reachable here, by design.
+ * It used to walk `ALLOWED_KEYS`, which put every key with no name in the map into
+ * `settings["undefined"]` — so all seven messenger keys collapsed into one property and the
+ * last one won. The three API-key fields stayed correct, which is exactly why nothing
+ * noticed. The map is gone rather than repaired: nothing reads the reverse form, and leaving a
+ * reverse map here is what invited the mistake in the first place.
  */
-const NAME_BY_KEY: Partial<Record<SettingKey, FieldName>> = Object.fromEntries(
-  Object.entries(FIELD_BY_NAME).map(([name, key]) => [key, name]),
-);
 
 /**
  * GET → the current state of every API-key setting, with keys masked.

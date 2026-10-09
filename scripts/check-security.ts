@@ -112,6 +112,27 @@ import {
   normaliseQuery,
 } from "../src/lib/article-search";
 import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
+import {
+  DEFAULT_UPSCALE_OPTIONS,
+  UPSCALE_MODEL,
+  buildUpscaleInput,
+  isAbort,
+  readProviderError,
+  readRequestId,
+  readResultSize,
+  readResultUrl,
+  readStatus,
+  resolveFaceEnhance,
+  resolveUpscaleScale,
+  resultUrl,
+  statusUrl,
+  submitUrl,
+  toFalImageInput,
+  transportReason,
+  upscaleFailureMessage,
+} from "../src/lib/image-upscale";
+import { runFalQueue, type FetchLike } from "../src/lib/fal-queue";
+import { UpscaleError } from "../src/lib/image-upscale";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
@@ -1027,6 +1048,156 @@ function checkDeepInfraEnvelope() {
  * anonymous access refused, unknown body fields ignored rather than persisted,
  * and no full key ever returned.
  */
+/**
+ * The upscale route's input boundary, over real HTTP.
+ *
+ * **Why this is not asserted on the pure module.** The two rules worth defending — a cover is
+ * read only from the upload directory, and only raster formats are read — live in the route,
+ * which cannot be imported here: it pulls in `server-only` and Prisma. Calling it over HTTP
+ * against the dev server is therefore the only way to reach the code, and it is the better
+ * test anyway: it proves the guard runs before the provider is contacted, which is what
+ * actually matters about it.
+ *
+ * Every case here is refused on the way *in*. None of them spends a cent — the route returns
+ * before it looks at a key, which is why an install with no fal key still answers all of
+ * them rather than 503-ing.
+ */
+async function checkUpscaleRouteApi(base: string, auth: string) {
+  const path = "/api/admin/articles/upscale-image";
+  const headers = { "content-type": "application/json", authorization: auth };
+
+  const anon = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ coverImage: "/uploads/x.jpg" }),
+  });
+  check(
+    "POST /upscale-image без авторизации → 401",
+    anon.status === 401,
+    `${anon.status}`,
+  );
+
+  const form = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { authorization: auth },
+    body: "coverImage=/uploads/x.jpg",
+  });
+  check(
+    "POST /upscale-image без JSON → 415",
+    form.status === 415,
+    `${form.status}`,
+  );
+
+  const call = async (coverImage: unknown) => {
+    const response = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ coverImage }),
+    });
+    return {
+      status: response.status,
+      body: (await response.json()) as { error?: string },
+    };
+  };
+
+  const empty = await call("");
+  check(
+    "Апскейл: пустая обложка отклонена",
+    empty.status === 400 && (empty.body.error ?? "").includes("не указана"),
+    empty.body.error ?? `${empty.status}`,
+  );
+
+  /*
+    The SSRF door. This route hands the bytes to fal inline, so it never needs to fetch a URL —
+    and the moment it accepted one, an editor could point the cover field at an internal
+    address and have the server retrieve it. The response must come from the input guard, not
+    from fal, which is what the wording proves.
+  */
+  for (const remote of [
+    "http://169.254.169.254/latest/meta-data/",
+    "https://example.com/photo.jpg",
+  ]) {
+    const result = await call(remote);
+    check(
+      `Апскейл: внешний адрес не принимается — ${remote.slice(0, 34)}`,
+      result.status === 400 && (result.body.error ?? "").includes("загруженным файлом"),
+      result.body.error ?? `${result.status}`,
+    );
+  }
+
+  const escape = await call("/uploads/../../.env");
+  check(
+    "Апскейл: выход за пределы папки загрузок отклонён",
+    escape.status === 400 && (escape.body.error ?? "").includes("за пределы"),
+    escape.body.error ?? `${escape.status}`,
+  );
+
+  const wrongType = await call("/uploads/%D0%BD%D0%BE%D1%82%D0%B0%D1%84%D0%B0%D0%B9%D0%BB.txt");
+  check(
+    "Апскейл: не-картинка отклонена",
+    wrongType.status === 400 &&
+      (wrongType.body.error ?? "").includes("JPG, PNG или WebP"),
+    wrongType.body.error ?? `${wrongType.status}`,
+  );
+
+  const missing = await call("/uploads/there-is-no-such-file-404.jpg");
+  check(
+    "Апскейл: несуществующий файл не проходит",
+    missing.status === 400 && (missing.body.error ?? "").length > 0,
+    missing.body.error ?? `${missing.status}`,
+  );
+  /*
+    Node's ENOENT message carries the absolute path it tried — `/var/www/uartnews/uploads/…`
+    — and this string reaches the browser in a toast. That was the real behaviour until the
+    route started dropping the cause, and the assertion is what keeps it dropped: an editor
+    learns that the file is gone, not where the server keeps its files.
+  */
+  check(
+    "Апскейл: путь на сервере не утекает в сообщение редактору",
+    !(missing.body.error ?? "").includes("/uploads/there-is-no-such-file") &&
+      !(missing.body.error ?? "").includes("ENOENT"),
+    missing.body.error ?? `${missing.status}`,
+  );
+
+  /*
+    A real stored cover reaches the key check, which is the last thing before money is spent.
+    With no fal key configured the route must say so plainly rather than report a provider
+    failure — those mean different things to an editor, and only one of them is fixable in
+    the settings page.
+  */
+  const stored = await firstStoredUpload(base);
+  if (stored) {
+    const noKey = await call(stored);
+    check(
+      "Апскейл: без ключа fal — понятная причина, а не ошибка провайдера",
+      noKey.status === 503 && (noKey.body.error ?? "").includes("fal.ai"),
+      noKey.body.error ?? `${noKey.status}`,
+    );
+  } else {
+    check(
+      "Апскейл: без ключа fal — понятная причина, а не ошибка провайдера",
+      true,
+      "пропущено: в загрузках нет файлов",
+    );
+  }
+}
+
+/**
+ * One `/uploads/...` path that actually exists, or null.
+ *
+ * Read out of the rendered front page rather than off the filesystem, because the route
+ * resolves the same URL the browser would. A path invented here would test the "no such file"
+ * branch instead of the one this check is about.
+ */
+async function firstStoredUpload(base: string): Promise<string | null> {
+  const page = await fetch(base);
+  if (!page.ok) return null;
+
+  const html = await page.text();
+  const match = /\/uploads\/[A-Za-z0-9._-]+\.(?:jpe?g|png|webp)/.exec(html);
+  return match ? match[0] : null;
+}
+
 async function checkSettingsApi(base: string, auth: string) {
   const postJson = (path: string, body: unknown, headers: Record<string, string> = {}) =>
     fetch(`${base}${path}`, {
@@ -1307,8 +1478,8 @@ function checkSettingsPrimitives() {
     since they are reached through SYNDICATION_FIELDS.
   */
   check(
-    "Настройки: allowlist содержит тринадцать ключей",
-    ALLOWED_KEYS.length === 13 &&
+    "Настройки: allowlist содержит четырнадцать ключей",
+    ALLOWED_KEYS.length === 14 &&
       isAllowedKey("DEEPSEEK_API_KEY") &&
       isAllowedKey("DEEPINFRA_API_KEY") &&
       isAllowedKey("VK_ACCESS_TOKEN") &&
@@ -1321,7 +1492,8 @@ function checkSettingsPrimitives() {
       isAllowedKey("MAX_ENABLED") &&
       isAllowedKey("LIVE_STREAM_ENABLED") &&
       isAllowedKey("LIVE_STREAM_URL") &&
-      isAllowedKey("LIVE_STREAM_TITLE"),
+      isAllowedKey("LIVE_STREAM_TITLE") &&
+      isAllowedKey("FAL_API_KEY"),
     ALLOWED_KEYS.join(", "),
   );
 
@@ -2741,6 +2913,8 @@ async function main() {
   checkAiCover();
   checkDeepInfraEnvelope();
   checkLiveStream();
+checkImageUpscale();
+  await checkFalQueue();
 checkSettingsPrimitives();
   checkBalances();
   checkPhotoSources();
@@ -2754,6 +2928,442 @@ checkSettingsPrimitives();
   checkVideoDropGuard();
   checkVkVideo();
   /**
+ * AI upscaling of a cover: the fal.ai model, the queue protocol, and the boundary.
+ *
+ * The load-bearing assertions are the ones about what may be sent and what may be fetched,
+ * because this route is the one place in the editorial API that takes a *file the site
+ * already holds*, sends its bytes to a third party, and then follows a URL that third party
+ * hands back. Both directions are attack surfaces, and both are checked here rather than
+ * assumed.
+ *
+ * The rest pins the contract read from fal's own documentation: a model that is not a
+ * generative upscaler, because inventing detail in a news photograph is inventing a fact.
+ */
+/**
+ * The queue protocol, driven with a stubbed transport.
+ *
+ * These are the cases that cannot be arranged against the real service, which is most of the
+ * interesting ones: a job that fails *after* the queue reports it finished, one that never
+ * finishes, a submission that comes back without an id. Each was unreachable while the
+ * protocol lived inside the route — a module importing `server-only` and Prisma, which no
+ * plain script can load — and the first one in particular shipped untested: a mutation that
+ * ignored the provider's error passed the whole suite at 597/597.
+ */
+async function checkFalQueue() {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+
+  const text = (body: string, status = 200) =>
+    new Response(body, { status, headers: { "content-type": "text/plain" } });
+
+  const run = async (
+    handler: (url: string, init: { method?: string }) => Response | Promise<Response>,
+    overrides: Partial<Parameters<typeof runFalQueue>[0]> = {},
+  ) => {
+    const calls: { url: string; method?: string }[] = [];
+    const impl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init.method });
+      return handler(url, init);
+    };
+
+    let sleepCalls = 0;
+
+    /*
+      A virtual clock that advances by one poll interval per sleep.
+
+      Two reasons, and the second is the important one. It makes the budget test finish
+      instantly instead of waiting out real seconds; and it means a queue client with the
+      budget check *removed* fails its assertion rather than spinning forever — a test that
+      hangs is indistinguishable from a broken machine, so the guard below turns that case
+      into a red line that says what happened.
+    */
+    let virtualNow = 0;
+
+    try {
+      const result = await runFalQueue({
+        fetchImpl: impl,
+        apiKey: "test-key",
+        input: { image_url: "data:image/png;base64,AA", scale: 2, face: true },
+        sleep: async () => {
+          sleepCalls += 1;
+          virtualNow += 1_500;
+        },
+        now: () => virtualNow,
+        ...overrides,
+      });
+      return { result, calls, sleepCalls, error: null as UpscaleError | null };
+    } catch (error) {
+      return {
+        result: null,
+        calls,
+        sleepCalls,
+        error: error instanceof UpscaleError ? error : null,
+      };
+    }
+  };
+
+  /* ---- the happy path, and the three calls it makes ---- */
+  const happy = await run((url) => {
+    if (url.endsWith("/status")) return json({ status: "COMPLETED" });
+    if (url.includes("/requests/")) return json({ image: { url: "https://v3.fal.media/f/a.png" } });
+    return json({ request_id: "req-1" });
+  });
+
+  check(
+    "Очередь fal: успешный путь — submit, status, result",
+    happy.calls.length === 3 &&
+      happy.calls[0].method === "POST" &&
+      happy.calls[0].url === "https://queue.fal.run/fal-ai/esrgan" &&
+      happy.calls[1].url.includes("/requests/req-1/status") &&
+      happy.calls[2].url.includes("/requests/req-1") &&
+      readResultUrl(happy.result) === "https://v3.fal.media/f/a.png",
+    happy.calls
+      .map(
+        (call) =>
+          `${call.method ?? "GET"} ${call.url.replace("https://queue.fal.run/fal-ai/esrgan", "")}`,
+      )
+      .join(" → "),
+  );
+
+  /* ---- a queue that takes several polls before finishing ---- */
+  let poll = 0;
+  const polled = await run((url) => {
+    if (url.endsWith("/status")) {
+      poll += 1;
+      return json({ status: poll < 3 ? "IN_PROGRESS" : "COMPLETED" });
+    }
+    if (url.includes("/requests/")) return json({ image: { url: "https://v3.fal.media/f/b.png" } });
+    return json({ request_id: "req-2" });
+  });
+
+  check(
+    "Очередь fal: незавершённое состояние опрашивается дальше, а не принято за результат",
+    polled.error === null && polled.sleepCalls === 3,
+    `опросов: ${polled.sleepCalls}`,
+  );
+
+  /*
+    The case that shipped untested. fal completes the *lifecycle* and reports the failure on
+    the status; a queue client that treats COMPLETED as success hands the editor "успешно
+    улучшено" for a picture that was never produced.
+  */
+  const failedJob = await run((url) => {
+    if (url.endsWith("/status")) return json({ status: "COMPLETED", error: "CUDA out of memory" });
+    if (url.includes("/requests/")) return json({});
+    return json({ request_id: "req-3" });
+  });
+
+  check(
+    "Очередь fal: провалившийся job не выдаётся за успех",
+    failedJob.error !== null &&
+      failedJob.error.stage === "wait" &&
+      failedJob.error.message.includes("CUDA out of memory") &&
+      // Two calls, not three: the result is never fetched for a job that failed.
+      failedJob.calls.length === 2,
+    failedJob.error
+      ? `стадия ${failedJob.error.stage}: ${failedJob.error.message}`
+      : "ошибки не было — результат выдан как успешный",
+  );
+
+  /* ---- a job that never finishes ---- */
+  let polls = 0;
+  const hung = await run(
+    (url) => {
+      if (url.endsWith("/status")) {
+        polls += 1;
+        // The backstop. With the budget in place this is never reached — the client gives up
+        // first — so reaching it at all means the budget is not being applied, and the
+        // assertion below turns a hang into a failure.
+        if (polls > 200) return text("poll storm", 500);
+        return json({ status: "IN_PROGRESS" });
+      }
+      return json({ request_id: "req-4" });
+    },
+    { timeoutMs: 3_000 },
+  );
+
+  check(
+    "Очередь fal: бесконечное ожидание обрывается по бюджету, а не висит",
+    hung.error !== null &&
+      hung.error.stage === "wait" &&
+      hung.error.message.includes("истекло"),
+    hung.error ? `${hung.error.stage}: ${hung.error.message}` : "бюджет не сработал",
+  );
+
+  /* ---- submissions that should not be trusted ---- */
+  const noId = await run(() => json({ status: "IN_QUEUE" }));
+  check(
+    "Очередь fal: ответ без request_id не превращается в опрос",
+    noId.error !== null &&
+      noId.error.stage === "submit" &&
+      noId.error.message.includes("идентификатор") &&
+      noId.calls.length === 1,
+    noId.error ? noId.error.message : "продолжил без идентификатора",
+  );
+
+  const rejected = await run(() =>
+    text(
+      JSON.stringify({
+        detail: 'Cannot access application "fal-ai/esrgan". Authentication is required.',
+      }),
+      401,
+    ),
+  );
+  check(
+    "Очередь fal: ошибка 401 называет статус и причину провайдера",
+    rejected.error !== null &&
+      rejected.error.stage === "submit" &&
+      rejected.error.message.includes("401") &&
+      // The JSON envelope is unwrapped, so the editor reads a sentence rather than braces.
+      rejected.error.message.includes("Authentication is required") &&
+      !rejected.error.message.includes("{"),
+    rejected.error ? rejected.error.message : "ошибки не было",
+  );
+
+  const noBody = await run(() => text("", 502));
+  check(
+    "Очередь fal: пустое тело ошибки не ломает сообщение",
+    noBody.error !== null &&
+      noBody.error.stage === "submit" &&
+      noBody.error.message.includes("502") &&
+      !noBody.error.message.includes("()"),
+    noBody.error ? noBody.error.message : "ошибки не было",
+  );
+
+  /* ---- transport failures ---- */
+  const offline = await run(() => {
+    throw new TypeError("fetch failed");
+  });
+  check(
+    "Очередь fal: сеть недоступна переводится на русский",
+    offline.error !== null && offline.error.message.includes("сеть недоступна"),
+    offline.error ? offline.error.message : "ошибки не было",
+  );
+
+  const statusDown = await run((url) => {
+    if (url.endsWith("/status")) return text("busy", 503);
+    return json({ request_id: "req-5" });
+  });
+  check(
+    "Очередь fal: сбой опроса останавливает задание, а не зацикливает его",
+    statusDown.error !== null &&
+      statusDown.error.stage === "wait" &&
+      statusDown.error.message.includes("503"),
+    statusDown.error ? statusDown.error.message : "ошибки не было",
+  );
+
+  const resultDown = await run((url) => {
+    if (url.endsWith("/status")) return json({ status: "COMPLETED" });
+    if (url.includes("/requests/")) return text("gone", 404);
+    return json({ request_id: "req-6" });
+  });
+  check(
+    "Очередь fal: недоступный результат — стадия загрузки, а не ожидания",
+    resultDown.error !== null &&
+      resultDown.error.stage === "download" &&
+      resultDown.error.message.includes("404"),
+    resultDown.error
+      ? `${resultDown.error.stage}: ${resultDown.error.message}`
+      : "ошибки не было",
+  );
+}
+
+function checkImageUpscale() {
+  /* ---- the model choice, which is an editorial decision, not a technical one ---- */
+  check(
+    "Апскейл: используется Real-ESRGAN, а не генеративная модель",
+    UPSCALE_MODEL === "fal-ai/esrgan",
+    UPSCALE_MODEL,
+  );
+
+  check(
+    "Апскейл: очередь fal по документированному адресу",
+    submitUrl() === "https://queue.fal.run/fal-ai/esrgan" &&
+      statusUrl("abc") ===
+        "https://queue.fal.run/fal-ai/esrgan/requests/abc/status" &&
+      resultUrl("abc") === "https://queue.fal.run/fal-ai/esrgan/requests/abc",
+    submitUrl(),
+  );
+
+  /* ---- the options the editor may choose ---- */
+  check(
+    "Апскейл: по умолчанию 2× и с улучшением лиц",
+    DEFAULT_UPSCALE_OPTIONS.scale === 2 && DEFAULT_UPSCALE_OPTIONS.face === true,
+    JSON.stringify(DEFAULT_UPSCALE_OPTIONS),
+  );
+
+  check(
+    "Апскейл: кратность ограничена двумя значениями",
+    resolveUpscaleScale(2) === 2 &&
+      resolveUpscaleScale(4) === 4 &&
+      resolveUpscaleScale("4") === 4 &&
+      // Anything else falls back rather than being passed through: a caller must not be
+      // able to talk the provider into a frame size it does not support.
+      resolveUpscaleScale(8) === 2 &&
+      resolveUpscaleScale(0) === 2 &&
+      resolveUpscaleScale(-2) === 2 &&
+      resolveUpscaleScale("nonsense") === 2 &&
+      resolveUpscaleScale(null) === 2 &&
+      resolveUpscaleScale(undefined) === 2,
+    "2 и 4, всё прочее — 2",
+  );
+
+  check(
+    "Апскейл: улучшение лиц выключается явно и по умолчанию включено",
+    resolveFaceEnhance(false) === false &&
+      resolveFaceEnhance("false") === false &&
+      resolveFaceEnhance("0") === false &&
+      resolveFaceEnhance("нет") === false &&
+      resolveFaceEnhance(true) === true &&
+      resolveFaceEnhance("") === true &&
+      resolveFaceEnhance(null) === true &&
+      resolveFaceEnhance(undefined) === true &&
+      resolveFaceEnhance("что-то") === true,
+    "выключается только явным «нет»",
+  );
+
+  /* ---- the request body, checked against the published schema ---- */
+  const body = buildUpscaleInput("data:image/jpeg;base64,AAAA", {
+    scale: 2,
+    face: true,
+  });
+  check(
+    "Апскейл: тело соответствует схеме fal (image_url, scale, face)",
+    body.image_url === "data:image/jpeg;base64,AAAA" &&
+      body.scale === 2 &&
+      body.face === true &&
+      body.output_format === "jpeg",
+    JSON.stringify(body),
+  );
+
+  check(
+    "Апскейл: картинка уходит встроенной, а не ссылкой",
+    toFalImageInput(Buffer.from("hello"), "image/png").startsWith(
+      "data:image/png;base64,",
+    ),
+    "data URI",
+  );
+
+  /* ---- the queue protocol ---- */
+  check(
+    "Апскейл: идентификатор задания читается из ответа",
+    readRequestId({ request_id: "req-1" }) === "req-1" &&
+      readRequestId({ request_id: "  req-2  " }) === "req-2" &&
+      readRequestId({ request_id: "" }) === null &&
+      readRequestId({ request_id: 42 }) === null &&
+      readRequestId({}) === null &&
+      readRequestId(null) === null,
+    "строка или null",
+  );
+
+  /*
+    An unrecognised status counts as "still running". Counting it as finished instead would
+    fetch a result that is not there yet and report success for a job that is still going.
+  */
+  check(
+    "Апскейл: незнакомый статус считается незавершённым",
+    readStatus({ status: "IN_QUEUE" }) === "IN_QUEUE" &&
+      readStatus({ status: "IN_PROGRESS" }) === "IN_PROGRESS" &&
+      readStatus({ status: "COMPLETED" }) === "COMPLETED" &&
+      readStatus({ status: "ЧТО-ТО" }) === "IN_PROGRESS" &&
+      readStatus({}) === "IN_PROGRESS" &&
+      readStatus(null) === "IN_PROGRESS",
+    "IN_QUEUE / IN_PROGRESS / COMPLETED",
+  );
+
+  /*
+    A completed queue request is not a completed job — fal reports the failure on the status
+    itself. Without this the route would read the result, find no image in it, and tell the
+    editor the upscale worked.
+  */
+  check(
+    "Апскейл: ошибка провайдера читается со статуса, а не теряется",
+    readProviderError({ status: "COMPLETED", error: "OOM" }) === "OOM" &&
+      readProviderError({ status: "COMPLETED", error_type: "OOM" }) !== null &&
+      readProviderError({ status: "COMPLETED" }) === null,
+    "сообщение провайдера",
+  );
+
+  check(
+    "Апскейл: токен из ошибки провайдера не попадает к редактору",
+    !/sk-|key-/.test(readProviderError({ error: `failed for key ${"a".repeat(30)}` }) ?? ""),
+    "длинные строки заменены многоточием",
+  );
+
+  /* ---- where the improved file is downloaded from: an SSRF boundary ---- */
+  for (const hostile of [
+    "http://v3.fal.media/files/x.png",
+    "https://evil.example.com/x.png",
+    "https://v3.fal.media.evil.example/x.png",
+    "https://user:pass@v3.fal.media/x.png",
+    "not a url",
+    "//v3.fal.media/x.png",
+  ]) {
+    check(
+      `Апскейл: адрес результата отклонён — ${hostile.slice(0, 38)}`,
+      readResultUrl({ image: { url: hostile } }) === null,
+      "не является ссылкой fal",
+    );
+  }
+
+  check(
+    "Апскейл: ссылка на результат принимается с домена fal",
+    readResultUrl({ image: { url: "https://v3.fal.media/files/z/abc.png" } }) ===
+      "https://v3.fal.media/files/z/abc.png" &&
+      readResultUrl({ image: { url: "https://fal.media/files/z/abc.png" } }) !== null,
+    "fal.media и v3.fal.media",
+  );
+
+  check(
+    "Апскейл: ответ без картинки не даёт ссылку",
+    readResultUrl({}) === null &&
+      readResultUrl({ image: {} }) === null &&
+      readResultUrl({ image: { url: 42 } }) === null &&
+      readResultUrl(null) === null,
+    "только когда поле есть",
+  );
+
+  check(
+    "Апскейл: размеры читаются, когда провайдер их сообщил",
+    readResultSize({ image: { width: 2048, height: 1152 } })?.width === 2048 &&
+      readResultSize({ image: { width: 0, height: 100 } }) === null &&
+      readResultSize({}) === null,
+    "2048×1152",
+  );
+
+  /* ---- what the editor is told, by stage ---- */
+  check(
+    "Апскейл: сообщение называет, что делать дальше, а не «ошибка»",
+    upscaleFailureMessage("submit").includes("fal.ai") &&
+      upscaleFailureMessage("wait").includes("120") &&
+      upscaleFailureMessage("input").includes("заново") &&
+      upscaleFailureMessage("save").includes("диск") &&
+      upscaleFailureMessage("submit", "HTTP 401").includes("HTTP 401"),
+    "у каждого этапа своя подсказка",
+  );
+
+  check(
+    "Апскейл: таймаут читается как таймаут, а не как сеть",
+    isAbort(Object.assign(new Error("aborted"), { name: "TimeoutError" })) &&
+      isAbort(Object.assign(new Error("aborted"), { name: "AbortError" })) &&
+      !isAbort(new Error("fetch failed")),
+    "две формы отмены",
+  );
+
+  check(
+    "Апскейл: сетевая ошибка переводится на понятный язык",
+    transportReason(new TypeError("fetch failed")) === "сеть недоступна" &&
+      transportReason(new TypeError("getaddrinfo ENOTFOUND fal.ai")) ===
+        "getaddrinfo ENOTFOUND fal.ai" &&
+      !/sk-/.test(transportReason(new TypeError(`bearer ${"b".repeat(30)}`))),
+    "ENOTFOUND сохраняется, дефолт переводится",
+  );
+}
+
+/**
  * The «Прямой эфир» badge: what may be stored, and what reaches the masthead.
  *
  * This is the one settings area whose value lands in an `href` on every page of the site, so
@@ -3312,6 +3922,7 @@ checkSettingsWriteIsOptIn();
   );
 
   await checkSettingsApi(base, auth);
+  await checkUpscaleRouteApi(base, auth);
 
   console.log("\nПроверки безопасности и интеграций\n");
   for (const { name, ok, detail } of checks) {
