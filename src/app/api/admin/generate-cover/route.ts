@@ -50,7 +50,10 @@ type RequestBody = {
   /** Accepted only so a tab open across a deploy keeps its hint. */
   prompt?: unknown;
   style?: unknown;
+  /** The picker sends this. `modelId` and `model` are accepted as aliases. */
   fluxModel?: unknown;
+  modelId?: unknown;
+  model?: unknown;
   title?: unknown;
   lead?: unknown;
   content?: unknown;
@@ -106,9 +109,19 @@ export async function POST(request: Request) {
   // crafted value out of the DeepSeek system prompt.
   const style = resolveCoverStyle(body.style);
 
-  // Resolved through the allowlist, falling back to schnell. klein-9b measures about
-  // 7.5x dearer per image, so an unrecognised value must not silently cost that much.
-  const fluxModel = resolveFluxModel(body.fluxModel);
+  /*
+   * Resolved through the allowlist, falling back to schnell. klein-9b measures about
+   * 7.5x dearer per image, so an unrecognised value must not silently cost that much.
+   *
+   * `modelId` and `model` are accepted as aliases of `fluxModel`. The picker has always
+   * sent `fluxModel`, but the field is also called "model" everywhere else in the API's
+   * vocabulary, and a caller sending `model` used to get a silent fallback to the cheap
+   * model: no error, a perfectly good picture, and an editor who chose the premium one
+   * and got the everyday one without being told.
+   */
+  const fluxModel = resolveFluxModel(
+    body.fluxModel ?? body.modelId ?? body.model,
+  );
 
   // Cheap validation first, rate limit second. A rejected request must not burn
   // the editor's window: someone who mistypes a hint and immediately retries

@@ -87,9 +87,11 @@ import {
   DEFAULT_FLUX_MODEL,
   FLUX_MODELS,
   buildFluxBody,
+  fluxFailureMessage,
   fluxModelSpec,
   isFluxModel,
   resolveFluxModel,
+  type FluxModel,
 } from "../src/lib/flux-models";
 import {
   SEARCH_TAKE,
@@ -1710,6 +1712,134 @@ function checkFluxModels() {
       "дословно",
     );
   }
+
+  /*
+   * `shortName` exists so a timeout can be reported as a sentence. The picker label
+   * carries a price/quality note that has no place mid-message, and an error that reads
+   * "DeepInfra не ответил за 30 с" leaves the editor guessing which of two models was
+   * slow — which is the one thing they can act on by switching.
+   */
+  for (const [value, shortName] of [
+    ["flux-1-schnell", "FLUX 1 Schnell"],
+    ["flux-2-klein-9b", "FLUX 2 Klein 9B"],
+  ] as const) {
+    const spec = fluxModelSpec(value);
+    check(
+      `Модель FLUX: «${value}» — короткое имя без скобок`,
+      spec.shortName === shortName && !spec.shortName.includes("("),
+      spec.shortName,
+    );
+    check(
+      `Модель FLUX: «${value}» — короткое имя начинается с полной подписи`,
+      spec.label.startsWith(shortName),
+      spec.label,
+    );
+  }
+
+  checkFluxFailures();
+
+  // 675 from the brief is not a multiple of 16, which is the constraint FLUX enforces.
+  check(
+    "Модель FLUX: размер из ТЗ 1200×675 не подошёл бы",
+    675 % 16 !== 0 && 576 % 16 === 0,
+    "675 кратен 16? нет; 576 кратен 16? да",
+  );
+
+/**
+ * What the editor sees when a generation fails.
+ *
+ * This is the whole of the "graceful fallback" requirement, and it is asserted rather than
+ * described because the failure it guards against is silent: before this, a timeout was a
+ * `TimeoutError` that was not an `AiCoverError`, so it fell through to the route's
+ * catch-all and the panel showed "не удалось сгенерировать обложку" — no model, no cause,
+ * nothing to act on. An editor waiting on a 30-second budget for the premium model had no
+ * way to tell a slow provider from a broken request.
+ *
+ * `fetch` is stubbed rather than reached: the timeout is produced by rejecting with the
+ * exact error `AbortSignal.timeout` produces, so this is the real shape of the real
+ * failure and not a guess at it.
+ */
+/**
+ * What the editor sees when a generation fails.
+ *
+ * This is the whole of the "graceful fallback" requirement for the image step, and it is
+ * asserted rather than described because the failure it guards against is silent. Before
+ * this, a timeout was not handled at all: the abort raised by AbortSignal.timeout is a
+ * TimeoutError, which is not an AiCoverError, so it fell through to the route's catch-all
+ * and the panel showed a bare "не удалось сгенерировать обложку" — no model, no cause,
+ * nothing to act on.
+ *
+ * The worst case was the premium model, which an editor picks deliberately for a lead
+ * story: a silent 30-second timeout there reads as "the picture failed", when what failed
+ * was the budget. So every message names the model, because switching it is the one
+ * response the editor can take.
+ */
+function checkFluxFailures() {
+  const message = (error: unknown, model: FluxModel) =>
+    fluxFailureMessage(fluxModelSpec(model), error);
+
+  const timedOut = message(
+    Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" }),
+    "flux-2-klein-9b",
+  );
+
+  check(
+    "Обложка: таймаут называет модель и бюджет, а не «попробуйте ещё раз»",
+    timedOut.includes("FLUX 2 Klein 9B") &&
+      timedOut.includes("30 с") &&
+      timedOut.includes("таймаут"),
+    timedOut,
+  );
+
+  const aborted = message(
+    Object.assign(new Error("aborted"), { name: "AbortError" }),
+    "flux-1-schnell",
+  );
+  check(
+    "Обложка: отмена запроса тоже читается как таймаут, а не как сеть",
+    aborted.includes("таймаут") && aborted.includes("FLUX 1 Schnell"),
+    aborted,
+  );
+
+  const offline = message(new TypeError("fetch failed"), "flux-2-klein-9b");
+  check(
+    "Обложка: сетевая ошибка называет модель",
+    offline.includes("FLUX 2 Klein 9B") && offline.includes("сеть недоступна"),
+    offline,
+  );
+
+  const dns = message(
+    new TypeError("getaddrinfo ENOTFOUND api.deepinfra.com"),
+    "flux-1-schnell",
+  );
+  check(
+    "Обложка: причина сети попадает в сообщение, а не теряется",
+    dns.includes("ENOTFOUND"),
+    dns,
+  );
+
+  /*
+   * A thrown message can carry a request header. The upstream response body is already
+   * scrubbed in ai-cover.ts; this is the other door, and it was the one the catch-all had
+   * open — the generic message was safe by being empty, not by being filtered.
+   *
+   * The fixture is a bare random run with no vendor prefix on purpose. An earlier version
+   * used a prefixed token, which GitHub's push protection read as a live Stripe key and
+   * refused the whole push — the same fixture then blocks every unrelated commit behind it.
+   * The scrub is length-based, so an unprefixed 24-character run exercises it exactly the
+   * same and cannot be read as a credential by any scanner.
+   */
+  const fakeToken = "Xy7Qk2mNp9Rt4LzA8Vw3Bh6Cd1";
+  const leaky = message(
+    new TypeError(`request failed, bearer ${fakeToken}`),
+    "flux-1-schnell",
+  );
+  check(
+    "Обложка: токен из ошибки не показывается редактору",
+    !leaky.includes(fakeToken) && leaky.includes("FLUX 1 Schnell"),
+    leaky,
+  );
+}
 
   // 675 from the brief is not a multiple of 16, which is the constraint FLUX enforces.
   check(

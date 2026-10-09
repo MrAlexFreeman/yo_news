@@ -9,7 +9,7 @@ import {
   type CoverStyle,
 } from "@/lib/cover-prompt";
 import { extractImageBytes } from "@/lib/deepinfra-response";
-import { buildFluxBody, fluxModelSpec, type FluxModel } from "@/lib/flux-models";
+import { buildFluxBody, fluxModelSpec, fluxFailureMessage, type FluxModel } from "@/lib/flux-models";
 import { getSetting } from "@/lib/settings";
 
 /**
@@ -222,20 +222,37 @@ export async function renderCover(
 
   const finalPrompt = sanitizeFluxPrompt(applyFluxPostfix(prompt));
 
-  const response = await fetch(spec.endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    signal: AbortSignal.timeout(spec.timeoutMs),
-    body: JSON.stringify(buildFluxBody(finalPrompt, spec.value)),
-  });
+  /*
+   * The transport failures are translated here rather than left to propagate.
+   *
+   * `AbortSignal.timeout` rejects with a `TimeoutError`, which is not an
+   * `AiCoverError`, so before this it fell through to the route's catch-all and the editor
+   * was told only "не удалось сгенерировать обложку" — with no model named, no cause, and
+   * no hint that waiting or switching model would fix it. That mattered most for klein,
+   * the model an editor picks deliberately for a lead story: a silent timeout there looks
+   * like the picture failed, when what failed was a 30-second budget on a cold container.
+   *
+   * Both messages name the model, because it is the one thing the editor can act on.
+   */
+  let response: Response;
+  try {
+    response = await fetch(spec.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: AbortSignal.timeout(spec.timeoutMs),
+      body: JSON.stringify(buildFluxBody(finalPrompt, spec.value)),
+    });
+  } catch (error) {
+    throw new AiCoverError(fluxFailureMessage(spec, error), "image");
+  }
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new AiCoverError(
-      `DeepInfra вернул ошибку ${response.status}${summarise(detail)}. Проверьте ключ DEEPINFRA_API_KEY и баланс.`,
+      `DeepInfra вернул ошибку ${response.status} на ${spec.shortName}${summarise(detail)}. Проверьте ключ DEEPINFRA_API_KEY и баланс.`,
       "image",
     );
   }
@@ -280,3 +297,10 @@ function summarise(body: string): string {
 export function describePrompt(prompt: string): string {
   return prompt.length > 200 ? `${prompt.slice(0, 200)}…` : prompt;
 }
+
+/**
+ * Re-exported from {@link flux-models} so the translation lives with the models it talks
+ * about, in a module with no imports and no `server-only` — which is also what lets the
+ * test suite call it directly instead of standing up the whole cover pipeline.
+ */
+export { fluxFailureMessage } from "@/lib/flux-models";

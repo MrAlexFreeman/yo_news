@@ -48,7 +48,10 @@ const FIELDS: Field[] = [
     provider: "deepinfra",
     name: "deepinfraApiKey",
     label: "Ключ DeepInfra API",
-    hint: "Рисует картинку моделью FLUX-1-schnell.",
+    // Not "моделью FLUX-1-schnell": the picker in the article editor offers two models and
+    // schnell is only the default, so naming one of them here told an editor reading the
+    // settings that the other did not exist.
+    hint: "Рисует обложки: FLUX 1 Schnell по умолчанию, FLUX 2 Klein 9B по выбору.",
     service: "api.deepinfra.com",
     testLabel: "Тест подключения",
   },
