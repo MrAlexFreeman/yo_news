@@ -106,9 +106,15 @@ export function FrontPageHero({ lead, urgent }: FrontPageHeroProps) {
             drawing — and the top of the front page became a grey rectangle above the
             headline it was meant to illustrate. A headline and its standfirst hold the
             space on their own.
+
+            The inner ring is the whole of the "light overlay" asked for here, and it earns
+            its place: a pale photograph on warm paper has no edge of its own and dissolves
+            into the page. A one-pixel inset line gives it one. A darkening scrim would have
+            been the other reading of the brief, but nothing is printed on this photograph
+            for it to protect — it would only dim a news picture.
           */}
           {lead.coverImage ? (
-            <div className="relative aspect-video max-h-[360px] overflow-hidden rounded-sm bg-paper-dim md:max-h-[420px]">
+            <div className="relative aspect-video max-h-[360px] overflow-hidden rounded-sm bg-paper-dim ring-1 ring-ink/5 ring-inset md:max-h-[420px]">
               <CoverImage
                 src={lead.coverImage}
                 alt={lead.title}

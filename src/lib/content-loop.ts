@@ -133,16 +133,26 @@ export function splitForLoop(
  * `size` is a target, not a promise: a site with four published stories other than the
  * one being read returns four, because there is no fifth to return.
  *
+ * `used` is the page's shared "already on screen" set, and it is optional only so the
+ * sidebar, which has no front page to share state with, can keep calling this with three
+ * arguments. It is not optional in practice, and leaving it off was a real bug: measured on
+ * the live front page, the AI-95 story was linked three times — once as the lead, once in
+ * «Важное» and once in «Спецтема» — because each of those two blocks built its own private
+ * `taken` set and never heard of the lead. The internal set is still needed to keep the
+ * block from repeating itself between its two candidate lists; it is now seeded from the
+ * page's set rather than replacing it.
+ *
  * Generic over the row type: the page passes database rows, the tests pass literals.
  */
 export function fillRanked<T extends { id: string }>(
   primary: readonly T[],
   fallback: readonly T[],
   size: number,
+  used?: Set<string>,
 ): T[] {
   if (size <= 0) return [];
 
-  const taken = new Set<string>();
+  const taken = new Set<string>(used);
   const result: T[] = [];
 
   for (const row of [...primary, ...fallback]) {
@@ -150,6 +160,10 @@ export function fillRanked<T extends { id: string }>(
     if (taken.has(row.id)) continue;
     taken.add(row.id);
     result.push(row);
+  }
+
+  if (used) {
+    for (const row of result) used.add(row.id);
   }
 
   return result;

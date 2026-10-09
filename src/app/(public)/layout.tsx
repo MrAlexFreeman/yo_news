@@ -42,7 +42,7 @@ export default async function PublicLayout({ children }: LayoutProps<"/">) {
         shell only owns what has to be client-side: the scroll threshold and the slim bar
         that replaces the masthead once the reader is 120px down.
       */}
-      <HeaderShell trendingTags={trendingTags}>
+      <HeaderShell categories={categories}>
         <PublicHeader
           categories={categories}
           trendingTags={trendingTags}

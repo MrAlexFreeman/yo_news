@@ -1221,7 +1221,7 @@ function checkStickyHeader() {
     Exactly one *class*, not one mention: the file's own comment quotes the height too, and
     a check that matched both would fail on a comment edit and pass on a second row.
    */
-  const heightClasses = occurrences(shell, '"mx-auto flex h-[52px] max-w-7xl');
+  const heightClasses = occurrences(shell, "flex h-[52px] max-w-7xl");
   check(
     "Шапка: высота 52px задана один раз и не зависит от состояния",
     heightClasses === 1,
@@ -1291,17 +1291,72 @@ function checkStickyHeader() {
     /xs: \{ letter: "text-2xl"/.test(logo),
     "letter: text-2xl",
   );
+  /*
+   * The regression this rework exists for. The bar used to hold the trending words between
+   * the wordmark and the controls, and in the built page they ran into the logo with nothing
+   * marking the join: one unbroken run of small type where the reader could not tell where
+   * «Ё-новости» ended and the labels began. Three controls and nothing else is the fix, so
+   * the absence of the list is the assertion.
+   */
   check(
-    "Шапка: полоса тем заменяет развёрнутые рубрики",
-    shell.includes('aria-label="В центре внимания"') &&
-      shell.includes("overflow-x-auto"),
-    "горизонтальный скролл",
+    "Шапка: в панели нет списка тем — каша у логотипа устранена",
+    !shell.includes('aria-label="В центре внимания"') &&
+      !shell.includes("trendingTags"),
+    "тем в панели нет",
   );
   check(
-    "Шапка: полоса тем не отжимает кнопки",
-    shell.includes("min-w-0 flex-1") &&
-      shell.includes("shrink-0 items-center gap-1"),
-    "min-w-0 у полосы, shrink-0 у кнопок",
+    "Шапка: в панели ровно три элемента — меню, логотип, кнопки",
+    shell.includes("<Menu ") &&
+      shell.includes("<Search ") &&
+      occurrences(shell, "<Logo ") === 1,
+    "бургер + поиск + один логотип",
+  );
+  check(
+    "Шапка: кнопка меню подписана и сообщает своё состояние",
+    shell.includes("Разделы") && shell.includes("aria-expanded={menuOpen}"),
+    "подпись + aria-expanded",
+  );
+
+  /*
+   * The pills used to live in the masthead row this bar replaces. Without a menu a reader
+   * who is scrolled cannot reach a rubric at all, and on a phone the pills were the only
+   * route to one — so the drawer is the load-bearing half of this change, not a nicety.
+   */
+  check(
+    "Шапка: рубрики доступны из панели, а не потеряны",
+    shell.includes('aria-label="Разделы"') &&
+      shell.includes("categories.map") &&
+      shell.includes('href="/forum"'),
+    "все рубрики + форум в меню",
+  );
+  check(
+    "Шапка: меню закрывается по Escape",
+    shell.includes('event.key === "Escape"'),
+    "клавиша Escape",
+  );
+  /*
+   * The drawer is closed by derivation, not by an effect. Both things that have to close it
+   * — navigating away, and scrolling back to the top so the bar leaves the screen while the
+   * panel is still anchored under it — are conditions the render already knows about. An
+   * effect calling `setState` for either one is a second render pass for no reason, and the
+   * linter is right to object to it.
+   */
+  check(
+    "Шапка: меню закрывается при переходе и при уходе шапки",
+    shell.includes("menu.open && menu.at === pathname && compact") &&
+      !shell.includes("setMenuOpen"),
+    "вывод из состояния, без эффекта",
+  );
+  check(
+    "Шапка: закрытое меню недоступно с клавиатуры",
+    shell.includes("hidden={!menuOpen}") &&
+      shell.includes("inert={menuOpen ? undefined : true}"),
+    "hidden + inert",
+  );
+  check(
+    "Шапка: логотип по центру, а не по течению",
+    shell.includes("absolute left-1/2 -translate-x-1/2"),
+    "left-1/2 + -translate-x-1/2",
   );
   check(
     "Шапка: эфир и поиск остаются доступны",
@@ -1315,8 +1370,8 @@ function checkStickyHeader() {
    */
   check(
     "Шапка: без тем логотип и кнопки остаются по краям",
-    shell.includes('<div className="flex-1" />'),
-    "пустой распорка",
+    shell.includes("ml-auto flex shrink-0 items-center gap-1"),
+    "кнопки прижаты вправо",
   );
 
   /* ---- wiring ---- */
@@ -1329,7 +1384,7 @@ function checkStickyHeader() {
    */
   check(
     "Шапка: мачта рендерится на сервере и передаётся как children",
-    layout.includes("<HeaderShell trendingTags={trendingTags}>") &&
+    layout.includes("<HeaderShell categories={categories}>") &&
       layout.includes('import { PublicHeader } from "@/components/public-header";'),
     "мачта в layout, дети в HeaderShell",
   );

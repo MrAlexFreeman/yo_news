@@ -457,6 +457,58 @@ function checkTrendingFallback() {
     over.length === 5,
     `${over.length} из 6`,
   );
+
+  /*
+    The page-level contract, and the bug it fixes.
+    `fillRanked` used to build a private dedupe set, so it knew nothing about what the rest
+    of the page had already printed. The lead story is in the page's `used` set from the
+    moment it is chosen, and on the live front page it was then linked a second time in
+    «Важное» and a third in «Спецтема» — measured, not predicted: one slug, three links.
+
+    `window` holds w1 and w2, `allTime` holds a1..a6.
+  */
+  const used = new Set<string>(["w1"]);
+  const urgent = fillRanked(window, allTime, 3, used);
+  check(
+    "Главная: лид не повторяется в «Важном»",
+    urgent.map((row) => row.id).join() === "w2,a1,a2",
+    urgent.map((row) => row.id).join(", "),
+  );
+  check(
+    "Главная: ранжированный блок занимает свои места в used",
+    used.has("w2") && used.has("a1") && used.has("a2"),
+    "w2, a1, a2 в used",
+  );
+
+  const spec = fillRanked(allTime, allTime, 3, used);
+  check(
+    "Главная: «Спецтема» не берёт то, что уже показано",
+    spec.map((row) => row.id).join() === "a3,a4,a5",
+    spec.map((row) => row.id).join(", "),
+  );
+  const shownTogether = [...urgent, ...spec].map((row) => row.id);
+  check(
+    "Главная: два блока подряд не печатают один заголовок дважды",
+    new Set(shownTogether).size === shownTogether.length,
+    `${new Set(shownTogether).size} уникальных из ${shownTogether.length}`,
+  );
+
+  /*
+    The exact sequence the front page runs: the lead is claimed, then two ranked blocks
+    draw from overlapping candidate lists against one shared set. Before the fix, the second
+    block handed back the lead.
+  */
+  const shared = new Set<string>(["lead"]);
+  const first = fillRanked(rows(["lead", "b1", "b2"]), rows(["b3", "b4"]), 2, shared);
+  const second = fillRanked(rows(["lead", "b1"]), rows(["b2", "b3", "b4", "b5"]), 2, shared);
+  // `first` took b1 and b2 only — b3 was in its candidate list but did not make the cut, so
+  // it stays available. `second` therefore returns b3 and b4, and never the lead.
+  check(
+    "Главная: лид не возвращается вторым блоком",
+    first.map((r) => r.id).join() === "b1,b2" &&
+      second.map((r) => r.id).join() === "b3,b4",
+    `${first.map((r) => r.id).join(",")} / ${second.map((r) => r.id).join(",")}`,
+  );
 }
 
 function checkNowReadingMarkup() {

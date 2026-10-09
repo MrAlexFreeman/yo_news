@@ -130,13 +130,21 @@ export default async function HomePage() {
     the freshest four, because the freshest four are exactly the top of the feed below it:
     a column that repeated the first four rows of the ticker would not be a second
     editorial voice, it would be a copy. "Важное" and "лента" answer different questions.
+
+    Both ranked blocks are given `used`. The lead story is already in it — seeded on the
+    line above — so the headline a reader sees first cannot turn up again two blocks down.
+    Before this, each of these two blocks kept a private dedupe set and the lead was linked
+    three times on the front page.
   */
-  const urgentItems = fillRanked(trending, mostRead, URGENT_COUNT);
-  for (const article of urgentItems) used.add(article.id);
+  const urgentItems = fillRanked(trending, mostRead, URGENT_COUNT, used);
 
   const tickerItems = take(ticker, TICKER_COUNT);
-  const specItems = fillRanked(investigations, restByReads, SPEC_TOPIC_COUNT);
-  for (const article of specItems) used.add(article.id);
+  const specItems = fillRanked(
+    investigations,
+    restByReads,
+    SPEC_TOPIC_COUNT,
+    used,
+  );
 
   /*
     The opinion column is drawn from all-time reads rather than from the pool, because it
