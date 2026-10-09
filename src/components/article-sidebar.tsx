@@ -2,18 +2,23 @@ import Link from "next/link";
 
 import { ArticleShare } from "@/components/article-share";
 import { ForumTopicsBlock } from "@/components/forum-topics";
+import { NowReading } from "@/components/now-reading";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { formatDate, formatTime } from "@/lib/date";
 import { getActiveForumTopics } from "@/lib/forum";
-import { getPublishedArticles } from "@/lib/public-queries";
+import { getPublishedArticles, getTrendingArticles } from "@/lib/public-queries";
 
 /**
  * The column beside a story.
  *
- * Three blocks, in descending order of how likely a reader is to want them: the news
- * they have not read, the conversations happening now, and how to follow the paper.
- * The forum block sits above the subscribe plate for the same reason — a reader who
- * came from a search result is often here to argue about the story, not to subscribe.
+ * Four blocks, in descending order of how likely a reader is to want them: what other
+ * readers are on right now, the news they have not read, the conversations happening,
+ * and how to follow the paper. The forum block sits above the subscribe plate for the
+ * same reason the trending rail leads — a reader who came from a search result is often
+ * here to see what else is happening, or to argue about the story, not to subscribe.
+ *
+ * The whole column is one sticky element from `lg` up; see the note on the wrapper for
+ * why "Сейчас читают" carries no pinning of its own.
  *
  * Rendered on the server. Nothing in it needs the browser, and the article page is
  * statically cached, so a client component here would ship JavaScript to re-render a
@@ -31,15 +36,26 @@ type ArticleSidebarProps = {
 /** How many rows each list carries. Four is what fits without the block running long. */
 const NEWS_COUNT = 4;
 const TOPIC_COUNT = 3;
+/** The "most read" rail. Five rows fit the sticky column without pushing the share row off. */
+const NOW_READING_COUNT = 5;
+/** The window "сейчас" means. A day and a night is what a reader calls "now". */
+const NOW_READING_HOURS = 48;
 
 export async function ArticleSidebar({
   currentArticleId,
   currentTitle,
   currentUrl,
 }: ArticleSidebarProps) {
-  const [latest, topics] = await Promise.all([
+  // One Promise.all for three lists: three sequential awaits would put the sidebar
+  // three round trips deep, and a sidebar that arrives after the article is the one the
+  // reader is already past.
+  const [latest, topics, trending] = await Promise.all([
     getPublishedArticles(NEWS_COUNT, { excludeId: currentArticleId }),
     getActiveForumTopics(TOPIC_COUNT),
+    getTrendingArticles(NOW_READING_COUNT, {
+      excludeId: currentArticleId,
+      hours: NOW_READING_HOURS,
+    }),
   ]);
 
   return (
@@ -54,6 +70,15 @@ export async function ArticleSidebar({
         row height by default, and a stretched element has nothing to stick.
       */}
       <div className="space-y-6 lg:sticky lg:top-24 lg:self-start">
+        {/*
+          First in the column: what other readers are on right now is the strongest
+          argument for staying, and it is the block that has to be in view before the
+          reader reaches the bottom of the article. It inherits the column's pinning
+          rather than carrying its own — a second sticky inside a sticky parent is a
+          sticky element that never moves relative to it.
+        */}
+        <NowReading articles={trending} />
+
         {latest.length > 0 ? (
           <section aria-labelledby="sidebar-latest">
             <h2

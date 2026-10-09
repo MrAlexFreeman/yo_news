@@ -3,27 +3,44 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronRight, MessageSquare } from "lucide-react";
 
-import { ArticleCard } from "@/components/article-card";
 import { ArticleGallery } from "@/components/article-gallery";
 import { ArticleSidebar } from "@/components/article-sidebar";
 import { ArticleVideo } from "@/components/article-video";
+import { ContinueReading } from "@/components/continue-reading";
 import { CoverImage } from "@/components/cover-image";
+import { ReadAlsoBlock } from "@/components/read-also-block";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { ViewCounter } from "@/components/view-counter";
 import { parseMedia } from "@/lib/article-media";
 import { plainTextPreview } from "@/lib/article-html";
+import { composeLoopRows, pickStable, splitForLoop } from "@/lib/content-loop";
 import { readingMinutes } from "@/lib/reading-time";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
 import { forumSectionForArticle } from "@/lib/forum-rubric";
 import { sanitizeArticleHtml } from "@/lib/sanitize";
 import {
+  getLoopHighlights,
+  getLoopReadAlso,
+  getLoopRubricPopular,
   getPublishedArticleBySlug,
   getPublishedArticles,
-  getRelatedArticles,
 } from "@/lib/public-queries";
 
 export const revalidate = 300;
+
+/**
+ * How many cards each group of the closing grid shows. Three across on a wide screen is
+ * two rows of three — the whole grid — and one per line on a phone.
+ */
+const LOOP_ROW_SIZE = 3;
+
+/**
+ * How many stories each loop query returns. More than the three a row shows, so the page
+ * still has three cards left after it has excluded the current story and the one the
+ * plate offered, without a second round trip.
+ */
+const LOOP_CANDIDATES = 5;
 
 type PageParams = { slug: string };
 
@@ -125,16 +142,43 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   const { slug } = await params;
   const article = await loadArticle(slug);
 
-  const related = await getRelatedArticles(
-    article.category?.slug ?? null,
-    article.id,
-    // Three, not four: the main column is now eight of twelve and a fourth card
-    // wraps onto a row of its own, which reads as a mistake rather than a choice.
-    3,
+  const rubricSlug = article.category?.slug ?? null;
+
+  /*
+    One round of fetches for the whole engagement loop, and none of them waits on
+    another. Three sequential awaits would put the last card three query round trips
+    past the first byte of the article, which is the one thing the loop must not do: its
+    whole purpose is to be there when the reader reaches the end of the story.
+
+    The candidate lists are longer than the blocks they fill, because the page then
+    chooses from them in memory. The plate has to be picked before the grid can exclude
+    it, and a second round trip to find that out would be a waterfall over a decision
+    that costs a hash.
+  */
+  const [readAlsoCandidates, popularCandidates, highlightCandidates] = await Promise.all([
+    getLoopReadAlso(rubricSlug, article.id, LOOP_CANDIDATES),
+    getLoopRubricPopular(rubricSlug, article.id, LOOP_CANDIDATES),
+    getLoopHighlights([article.id], LOOP_CANDIDATES),
+  ]);
+
+  // One story, chosen by a hash of this article's id: varied between stories, identical
+  // for this one on every render, so the cached HTML and the next regeneration agree.
+  const plateStory = pickStable(readAlsoCandidates, `${article.id}:plate`);
+
+  // Whatever is already on the page is off limits to the grid: the story being read, and
+  // the story the plate just offered.
+  const rows = composeLoopRows(
+    popularCandidates,
+    highlightCandidates,
+    [article.id, plateStory?.id ?? null],
+    LOOP_ROW_SIZE,
   );
 
+  const body = sanitizeArticleHtml(article.contentHtml);
+  const bodySplit = plateStory ? splitForLoop(body, article.id) : null;
+
   const forumSection = forumSectionForArticle({
-    rubricSlug: article.category?.slug ?? null,
+    rubricSlug,
     tags: article.tags.map((entry) => entry.tag.name),
   });
 
@@ -303,14 +347,35 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         </figure>
       ) : null}
 
-      {/* Authored in the editorial CMS, so it is sanitised before rendering:
-          <script>, inline on* handlers and javascript: URLs are removed. */}
-      <div
-        className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
-        dangerouslySetInnerHTML={{
-          __html: sanitizeArticleHtml(article.contentHtml),
-        }}
-      />
+      {/*
+        The body. Authored in the editorial CMS, so it is sanitised before rendering:
+        <script>, inline on* handlers and javascript: URLs are removed.
+
+        One container when there is no plate, and three — head, plate, tail — when there
+        is. The cut lands after a closing paragraph tag, so each half is a complete
+        document and still renders through the same `.article-body` rules; the drop cap
+        stays on the first paragraph because it is still the first `<p>` of the first
+        half. A short article gets the single container it always had: see
+        `splitForLoop`, which returns null rather than a cut it cannot place.
+      */}
+      {bodySplit && plateStory ? (
+        <>
+          <div
+            className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
+            dangerouslySetInnerHTML={{ __html: bodySplit.before }}
+          />
+          <ReadAlsoBlock story={plateStory} />
+          <div
+            className="article-body prose prose-slate mt-6 max-w-none lg:prose-lg"
+            dangerouslySetInnerHTML={{ __html: bodySplit.after }}
+          />
+        </>
+      ) : (
+        <div
+          className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
+          dangerouslySetInnerHTML={{ __html: body }}
+        />
+      )}
 
       {videoUrl ? <ArticleVideo url={videoUrl} /> : null}
 
@@ -354,24 +419,13 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           </span>
         </div>
 
-        {related.length > 0 ? (
-          <aside
-            aria-labelledby="related-heading"
-            className="mt-10 border-t border-rule pt-4"
-          >
-            <h2
-              id="related-heading"
-              className="mb-4 text-xs font-bold tracking-[0.14em] text-ink uppercase"
-            >
-              Читайте также
-            </h2>
-            <div className="grid gap-5 sm:grid-cols-3">
-              {related.map((item) => (
-                <ArticleCard key={item.id} article={item} variant="compact" />
-              ))}
-            </div>
-          </aside>
-        ) : null}
+        {/*
+          The closing grid. It replaces the three-card "Читайте также" aside that used to
+          sit here: both answered "what else is there", the new one answers it with two
+          labelled rows and six cards, and keeping both would put two near-identical
+          blocks within a screen of each other.
+        */}
+        <ContinueReading popular={rows.popular} highlights={rows.highlights} />
 
         <SubscribeBlock variant="inline" className="mt-10" />
       </article>

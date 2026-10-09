@@ -42,6 +42,22 @@ export const RETIRED_CATEGORY_SLUGS = [
   "culture",
 ] as const;
 
+/**
+ * Rubrics the "события дня" row of the article loop is drawn from.
+ *
+ * A short list on purpose: the row answers "what else happened today", and a rubric
+ * that does not produce daily news does not belong in it. «Общество» is last so a row
+ * is never filled with city news that a reader in another city cannot use. When the list
+ * yields fewer stories than the row needs, the query widens to every rubric rather than
+ * showing a short row.
+ */
+export const LOOP_HIGHLIGHT_RUBRICS = [
+  "investigations",
+  "incidents",
+  "economy",
+  "society",
+] as const;
+
 /** Display order for a slug. Unknown slugs sort last, together. */
 export function categoryRank(slug: string): number {
   const index = CATEGORIES.findIndex((category) => category.slug === slug);
