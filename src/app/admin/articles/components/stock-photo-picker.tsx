@@ -88,6 +88,15 @@ export function StockPhotoPicker({
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  /*
+    What Unsplash was last asked for, quoted back in the empty state.
+
+    An empty grid is the normal outcome of a plausible-looking query — every query carrying
+    a city name comes back with nothing, because no stock library has Yekaterinburg — and
+    without the query on screen the editor can only guess which word killed the search.
+    Naming it turns "the picker is broken" into "drop that word".
+  */
+  const [searchedQuery, setSearchedQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   /*
@@ -162,6 +171,7 @@ export function StockPhotoPicker({
       if (typeof payload.limit === "number") setLimit(payload.limit);
       setPage(nextPage);
       setSearched(true);
+      setSearchedQuery(payload.query ?? term);
 
       // The field adopts what Unsplash was actually asked for, so a search typed in
       // Russian leaves the editor looking at the English that produced these results
@@ -288,11 +298,19 @@ export function StockPhotoPicker({
 
         <div className="max-h-[26rem] overflow-y-auto px-3 pb-3">
           {photos.length === 0 ? (
-            <p className="py-10 text-center text-sm text-neutral-500">
-              {searched
-                ? "Ничего не нашлось. Попробуйте другие слова — поиск идёт по описанию снимка на английском."
-                : "Введите запрос и нажмите «Найти». Ключевые слова подставлены из заголовка."}
-            </p>
+            <div className="space-y-2 py-10 text-center">
+              {searchedQuery ? (
+                <p className="text-sm text-neutral-500">
+                  Ничего не нашлось по запросу{" "}
+                  <span className="font-medium text-neutral-700">«{searchedQuery}»</span>
+                </p>
+              ) : null}
+              <p className="px-6 text-xs text-neutral-400">
+                {searched
+                  ? "Unsplash ищет по описанию снимка на английском. Названия городов, улиц и организаций в стоках обычно нет — уберите их, оставив сцену."
+                  : "Введите запрос и нажмите «Найти». Ключевые слова подставлены из заголовка."}
+              </p>
+            </div>
           ) : (
             <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {photos.map((photo) => (

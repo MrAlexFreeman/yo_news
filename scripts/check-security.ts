@@ -3290,6 +3290,19 @@ async function checkStockQuery() {
       STOCK_QUERY_SYSTEM_PROMPT.includes("no quotes"),
     "формат задан",
   );
+  /*
+    Load-bearing and measured: every query carrying a city name came back empty
+    (Yekaterinburg → 0, Ekaterinburg → 0, the same words without it → 21), while generic
+    scenes return 120. The picker looked broken rather than mis-queried. If this sentence is
+    ever trimmed for brevity the empty-grid bug comes straight back, so it is asserted.
+  */
+  check(
+    "Перевод запроса: промпт запрещает географию, которой нет в стоках",
+    /omit/i.test(STOCK_QUERY_SYSTEM_PROMPT) &&
+      /cit(y|ies)/i.test(STOCK_QUERY_SYSTEM_PROMPT) &&
+      /organisation/i.test(STOCK_QUERY_SYSTEM_PROMPT),
+    "названия мест и организаций исключены",
+  );
   check(
     "Перевод запроса: текст заголовка обрезается перед отправкой",
     buildStockQueryUserMessage("x".repeat(1000)).length < 700,

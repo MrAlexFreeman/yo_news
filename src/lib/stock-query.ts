@@ -29,10 +29,24 @@ export const STOCK_QUERY_MAX = 120;
  * matches photographs. "Visual" and "concrete" are there because the model otherwise
  * reaches for what the story is *about* («депутаты обсудили бюджет» → «politics budget»)
  * rather than what a camera could have photographed.
+ *
+ * The place-name prohibition is the one that earns its place, and it is measured rather
+ * than guessed. On the key this project uses, every one of these returns nothing:
+ *
+ *   Yekaterinburg, Ecological Park, Embankment, Urban Park   → 0
+ *   Ekaterinburg, Ecological Park, Park Opening, Urban Nature → 0
+ *
+ * while the same words without the city return 21, and generic scenes return 120. Unsplash
+ * is a global library with no Russian regional coverage, and its matcher is strict enough
+ * that one unmatchable term discards the whole query. Left to itself the model transcribes
+ * the city faithfully, the grid comes back empty, and an editor concludes the picker is
+ * broken — which it is not; the query is simply impossible.
  */
 export const STOCK_QUERY_SYSTEM_PROMPT = [
   "Extract 2-4 concrete English visual search keywords for an Unsplash stock photo query",
   "from this Russian news title/text.",
+  "Omit names of cities, regions, streets, villages and organisations: a stock photo library",
+  "rarely has them, and a single such word empties the results.",
   "Output ONLY comma-separated English keywords, no markdown, no quotes, no explanation.",
 ].join(" ");
 
