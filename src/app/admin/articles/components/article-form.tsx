@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   FileText,
   Image as ImageIcon,
+  Images,
   Search,
   Tag,
   Upload,
@@ -35,6 +36,13 @@ import { TitleField } from "@/app/admin/articles/components/title-field";
 import { VkVideoDrop } from "@/app/admin/articles/components/vk-video-drop";
 import { AiCoverGenerator } from "@/app/admin/articles/components/ai-cover-generator";
 import { UpscaleCoverButton } from "@/app/admin/articles/components/upscale-cover-button";
+import {
+  StockPhotoPicker,
+  type StockPhotoChosen,
+} from "@/app/admin/articles/components/stock-photo-picker";
+
+/** The four fields the Unsplash licence requires to be clickable. */
+type StockCredit = StockPhotoChosen["stock"];
 import { BalanceStrip } from "@/app/admin/articles/components/balance-strip";
 import { MediaEditor } from "@/app/admin/articles/components/media-editor";
 import {
@@ -216,6 +224,25 @@ export function ArticleForm({
   const [photoAuthor, setPhotoAuthor] = useState(initial?.photoAuthor ?? "");
   const [photoSource, setPhotoSource] = useState(initial?.photoSource ?? "");
   const [photoSourceOptions, setPhotoSourceOptions] = useState<string[]>([]);
+  /*
+    The Unsplash credit, held separately from `photoSource`.
+
+    `photoSource` is the plain credit the datalist offers and the RSS feed prints; these
+    four are what the licence requires to be *clickable* on the article page. They are
+    cleared whenever a cover is replaced by something else, so a photograph from a press
+    service never keeps a stock photographer's name under it.
+  */
+  const [stockPhoto, setStockPhoto] = useState<StockCredit | null>(
+    initial?.stockPhotoId && initial?.stockAuthorName && initial?.stockAuthorUrl && initial?.stockPhotoUrl
+      ? {
+          photoId: initial.stockPhotoId,
+          authorName: initial.stockAuthorName,
+          authorUrl: initial.stockAuthorUrl,
+          photoUrl: initial.stockPhotoUrl,
+        }
+      : null,
+  );
+  const [stockOpen, setStockOpen] = useState(false);
   const [seoTitle, setSeoTitle] = useState(initial?.seoTitle ?? "");
   const [seoDescription, setSeoDescription] = useState(
     initial?.seoDescription ?? "",
@@ -372,6 +399,10 @@ export function ArticleForm({
           coverImage: initial.coverImage,
           photoAuthor: initial.photoAuthor,
           photoSource: initial.photoSource,
+          stockPhotoId: initial.stockPhotoId,
+          stockAuthorName: initial.stockAuthorName,
+          stockAuthorUrl: initial.stockAuthorUrl,
+          stockPhotoUrl: initial.stockPhotoUrl,
           categoryId: initial.categoryId,
           status: initial.status,
           publishedAt: initial.publishedAt || defaultPublishedAt,
@@ -409,6 +440,13 @@ export function ArticleForm({
     coverImage,
     photoAuthor,
     photoSource,
+    // The Unsplash credit as one comparable string: it is set and cleared as a unit, so
+    // tracking it separately would let "one field cleared" read as a change while the
+    // credit is unchanged.
+    stockPhotoId: stockPhoto?.photoId ?? "",
+    stockAuthorName: stockPhoto?.authorName ?? "",
+    stockAuthorUrl: stockPhoto?.authorUrl ?? "",
+    stockPhotoUrl: stockPhoto?.photoUrl ?? "",
     categoryId,
     status,
     publishedAt,
@@ -540,6 +578,9 @@ export function ArticleForm({
       }
 
       setCoverImage(payload.url);
+      // A different photograph, so the previous one's credit does not survive it —
+      // otherwise a stock photographer's name ends up under a press-service file.
+      setStockPhoto(null);
       // Advisory, never blocking: the editor may be syndicating elsewhere today
       // and widening the photo for Dzen before tomorrow's repost.
       setUploadWarning(
@@ -581,6 +622,7 @@ export function ArticleForm({
       setCoverImage("");
       setPhotoAuthor("");
       setPhotoSource("");
+      setStockPhoto(null);
       setSeoTitle("");
       setSeoDescription("");
       setSeoCanonicalUrl("");
@@ -668,6 +710,32 @@ export function ArticleForm({
       <input type="hidden" name="coverImage" value={coverImage} readOnly />
       <input type="hidden" name="photoAuthor" value={photoAuthor} readOnly />
       <input type="hidden" name="photoSource" value={photoSource} readOnly />
+      {/*
+        The four stock fields, empty when the cover is not from Unsplash. Written as
+        empty strings rather than omitted so that replacing a stock cover with an uploaded
+        one *clears* the credit on save — an absent field would be read as "unchanged",
+        and the previous photographer's name would end up printed under a different
+        picture.
+      */}
+      <input type="hidden" name="stockPhotoId" value={stockPhoto?.photoId ?? ""} readOnly />
+      <input
+        type="hidden"
+        name="stockAuthorName"
+        value={stockPhoto?.authorName ?? ""}
+        readOnly
+      />
+      <input
+        type="hidden"
+        name="stockAuthorUrl"
+        value={stockPhoto?.authorUrl ?? ""}
+        readOnly
+      />
+      <input
+        type="hidden"
+        name="stockPhotoUrl"
+        value={stockPhoto?.photoUrl ?? ""}
+        readOnly
+      />
       <input type="hidden" name="seoTitle" value={seoTitle} readOnly />
       <input
         type="hidden"
@@ -838,6 +906,9 @@ export function ArticleForm({
                     setCoverImage(url);
                     setUploadWarning(null);
                     setUploadError(null);
+                    // A generated picture is not an Unsplash photograph, so any stock
+                    // credit on this article is dropped with the cover it described.
+                    setStockPhoto(null);
                     // Same rule as the cover panel: only into an empty credit field.
                     setPhotoSource((current) => current.trim() || AI_GENERATED_SOURCE);
                   }}
@@ -955,6 +1026,10 @@ export function ArticleForm({
                     value={coverImage}
                     onChange={(event) => {
                       setCoverImage(event.target.value);
+                      // Same reason as the upload: whatever address is typed here is not
+                      // the stock photograph the credit names, so the credit is dropped
+                      // rather than left to describe a different picture.
+                      setStockPhoto(null);
                       // A pasted URL replaces whatever file was uploaded, so the
                       // old file's measurement no longer describes this cover.
                       setUploadWarning(null);
@@ -1054,6 +1129,38 @@ export function ArticleForm({
                     {uploadWarning}
                   </p>
                 ) : null}
+
+                <StockPhotoPicker
+                  open={stockOpen}
+                  title={title}
+                  onClose={() => setStockOpen(false)}
+                  onPicked={(chosen) => {
+                    setCoverImage(chosen.url);
+                    setStockPhoto(chosen.stock);
+                    /*
+                      The credit goes in only into an empty field, for the reason the AI
+                      generator has it too: a credit already there is a real one — a
+                      press-service photograph the editor is reusing — and overwriting it
+                      would put a photographer's name under a picture that is not theirs.
+                      Both credit fields stay visible and editable, so the editor can move
+                      the credit to whichever of the two belongs on this cover.
+                    */
+                    setPhotoSource((current) => current.trim() || chosen.credit);
+                    setPhotoAuthor((current) => current.trim());
+                    // 1080px wide by construction, like a generated cover.
+                    setUploadWarning(null);
+                    setUploadError(null);
+                  }}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => setStockOpen(true)}
+                  className="flex w-fit items-center gap-2 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
+                >
+                  <Images className="size-4" aria-hidden />
+                  Подобрать на стоках
+                </button>
 
                 {coverImage ? (
                   <div className="space-y-1.5">

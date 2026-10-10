@@ -113,6 +113,20 @@ import {
   normaliseQuery,
 } from "../src/lib/article-search";
 import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
+import { stockCreditColumns } from "../src/lib/stock-credit";
+import {
+  buildSearchUrl,
+  formatStockCredit,
+  isFetchableUnsplashImage,
+  keywordsFromTitle,
+  readSearchResponse,
+  searchUnsplash,
+  stockCreditLinks,
+  UNSPLASH_HOURLY_LIMIT,
+  UNSPLASH_MAX_PAGES,
+  UNSPLASH_PER_PAGE,
+  UnsplashError,
+} from "../src/lib/unsplash";
 import {
   ENTITY_MAX_IMAGES,
   entityHref,
@@ -3136,6 +3150,267 @@ checkImageUpscale();
   await checkFalQueue();
   await checkHuggingFace();
   checkEntityCards();
+  checkUnsplash();
+
+/**
+ * The Unsplash picker: what may be fetched, what a credit may say, and what the hourly
+ * budget does to the answers.
+ *
+ * The provider calls are stubbed because the live ones cost the editor one of fifty
+ * requests an hour, and because the cases that matter — a rejected key, an exhausted
+ * budget, an answer naming a host that is not Unsplash — are exactly the ones a working
+ * installation never produces on its own.
+ */
+async function checkUnsplash() {
+  const answer = {
+    total: 120,
+    results: [
+      {
+        id: "vJDbPuxUS_s",
+        width: 3461,
+        height: 2336,
+        alt_description: "people relaxing and biking in sunny park",
+        urls: { regular: "https://images.unsplash.com/photo-1?w=1080" },
+        user: {
+          name: "Ignacio Brosa",
+          links: { html: "https://unsplash.com/@ignaciobrosa" },
+        },
+        links: {
+          html: "https://unsplash.com/photos/a-vJDbPuxUS_s",
+          download_location: "https://api.unsplash.com/photos/vJDbPuxUS_s/download?ixid=1",
+        },
+      },
+    ],
+  };
+
+  const withHeaders = (
+    payload: unknown,
+    status = 200,
+    headers: Record<string, string> = { "x-ratelimit-remaining": "47", "x-ratelimit-limit": "50" },
+  ) => new Response(JSON.stringify(payload), { status, headers });
+
+  const run = async (
+    handler: () => Response,
+    query = "park",
+    page = 1,
+  ) => {
+    try {
+      return {
+        result: await searchUnsplash(
+          async () => handler(),
+          "test-key",
+          query,
+          page,
+        ),
+        error: null as UnsplashError | null,
+      };
+    } catch (error) {
+      return {
+        result: null,
+        error: error instanceof UnsplashError ? error : null,
+      };
+    }
+  };
+
+  /* ---- the request itself ---- */
+  const happy = await run(() => withHeaders(answer));
+  check(
+    "Unsplash: поиск уходит на официальный адрес с ключом в Client-ID",
+    happy.result !== null &&
+      happy.result.photos.length === 1 &&
+      happy.result.photos[0].id === "vJDbPuxUS_s" &&
+      happy.result.photos[0].authorName === "Ignacio Brosa" &&
+      happy.result.photos[0].previewUrl.startsWith("https://images.unsplash.com/"),
+    `${happy.result?.photos.length ?? 0} фото, осталось ${happy.result?.remaining ?? "?"}`,
+  );
+
+  check(
+    "Unsplash: остаток часового лимита читается из заголовков",
+    // `total` is capped at what the editor can actually page through: Unsplash reports
+    // 120 here, and promising ten pages of three is all the dialog will ever show, so the
+    // cap is the honest number rather than the provider's.
+    happy.result?.remaining === 47 &&
+      happy.result?.total === UNSPLASH_MAX_PAGES * UNSPLASH_PER_PAGE,
+    `осталось ${happy.result?.remaining} из ${UNSPLASH_HOURLY_LIMIT}, всего показать ${happy.result?.total}`,
+  );
+
+  /* ---- 403 means two different things, and the editor must be told which ---- */
+  const exhausted = await run(() => withHeaders({ errors: ["Rate Limit Exceeded"] }, 403));
+  const rejected = await run(() => withHeaders({ errors: ["Unauthorized"] }, 401));
+
+  check(
+    "Unsplash: исчерпанный лимит отличается от отклонённого ключа",
+    // On the `kind`, not the message. The message here is the internal technical string;
+    // the Russian sentences an editor reads are written by the route from this kind, and
+    // asserting on wording here would only pin a string nothing displays.
+    exhausted.error !== null &&
+      exhausted.error.kind === "hourly limit reached" &&
+      // And the two really are distinguishable, which is the whole point of the branch.
+      rejected.error?.kind !== exhausted.error.kind,
+    exhausted.error ? exhausted.error.kind : "ошибки не было",
+  );
+
+  check(
+    "Unsplash: отклонённый ключ — это про ключ, а не про лимит",
+    rejected.error !== null &&
+      rejected.error.kind === "auth" &&
+      rejected.error.message.includes("ключ"),
+    rejected.error ? rejected.error.kind : "ошибки не было",
+  );
+
+  /* ---- what may be fetched by the server ---- */
+  check(
+    "Unsplash: скачивать можно только с CDN Unsplash",
+    isFetchableUnsplashImage("https://images.unsplash.com/photo-1?w=1080") &&
+      // The shape an SSRF needs: the same path on a host the route does not know.
+      !isFetchableUnsplashImage("http://169.254.169.254/latest/meta-data/") &&
+      !isFetchableUnsplashImage("https://evil.example/photo.jpg") &&
+      !isFetchableUnsplashImage("https://images.unsplash.com.evil.example/x.jpg") &&
+      /*
+        These two are the ones that catch the checks that actually weaken the rule, and
+        both were missing when the first mutations ran:
+          - `evil-unsplash.com` passes an `endsWith("unsplash.com")` replacement while
+            `images.unsplash.com.evil.example` does not, so asserting only on the latter
+            reported a suffix match as safe;
+          - plaintext http on the *allowed* host is what a removed protocol check lets
+            through, since the host check catches everything else anyway.
+      */
+      !isFetchableUnsplashImage("https://evil-unsplash.com/x.jpg") &&
+      !isFetchableUnsplashImage("http://images.unsplash.com/x.jpg") &&
+      !isFetchableUnsplashImage("https://user:pass@images.unsplash.com/x.jpg") &&
+      !isFetchableUnsplashImage("не адрес"),
+    "только https на images.unsplash.com",
+  );
+
+  /*
+    The gallery of a search answer is rendered straight into an `<img src>`, so a photo
+    whose preview points at somebody else's server would be a tracker in the grid — and
+    the download route would then fetch from it too.
+  */
+  check(
+    "Unsplash: снимок с чужим адресом не попадает в результаты",
+    readSearchResponse({
+      results: [{ ...answer.results[0], urls: { regular: "https://tracker.example/p.gif" } }],
+    }).length === 0,
+    "отброшен",
+  );
+
+  /*
+    The credit is not decoration. Unsplash's attribution rules require the photographer's
+    name to link to their profile, so a photo whose author cannot be named and linked is
+    not offered — rather than offered unattributed and downloaded.
+  */
+  check(
+    "Unsplash: снимок без автора или без его профиля не предлагается",
+    readSearchResponse({ results: [{ ...answer.results[0], user: undefined }] }).length === 0 &&
+      readSearchResponse({
+        results: [
+          {
+            ...answer.results[0],
+            user: { name: "X", links: { html: "https://evil.example/x" } },
+          },
+        ],
+      }).length === 0,
+    "без подписи — не показываем",
+  );
+
+  /* ---- the credit the editor gets ---- */
+  check(
+    "Unsplash: строка подписи собирается как в задании",
+    formatStockCredit({ authorName: "Ignacio Brosa" }) === "Фото: Ignacio Brosa / Unsplash",
+    formatStockCredit({ authorName: "Ignacio Brosa" }),
+  );
+
+  check(
+    "Unsplash: подпись принимает только ссылки на unsplash.com",
+    stockCreditLinks({
+      authorName: "Ignacio Brosa",
+      authorUrl: "https://unsplash.com/@ignaciobrosa",
+      photoUrl: "https://unsplash.com/photos/x",
+    }) !== null &&
+      // These two are what a hand-written hidden field would carry otherwise, and they
+      // end up in `href` on a public page.
+      stockCreditLinks({
+        authorName: "X",
+        authorUrl: "javascript:alert(1)",
+        photoUrl: "https://unsplash.com/photos/x",
+      }) === null &&
+      stockCreditLinks({
+        authorName: "X",
+        authorUrl: "https://unsplash.com.evil.example/@x",
+        photoUrl: "https://unsplash.com/photos/x",
+      }) === null &&
+      stockCreditLinks({ authorName: "", authorUrl: "https://unsplash.com/@x", photoUrl: "https://unsplash.com/photos/x" }) === null,
+    "https без userinfo",
+  );
+
+  /*
+    The four hidden fields ride in the same FormData as everything else, so they are as
+    editable as any other. Half a credit is worse than none: the caption would print a name
+    with no link while looking complete.
+  */
+  const form = (values: Record<string, string>) => {
+    const data = new FormData();
+    for (const [name, value] of Object.entries(values)) data.append(name, value);
+    return data;
+  };
+  const goodCredit = {
+    stockPhotoId: "vJDbPuxUS_s",
+    stockAuthorName: "Ignacio Brosa",
+    stockAuthorUrl: "https://unsplash.com/@ignaciobrosa",
+    stockPhotoUrl: "https://unsplash.com/photos/x",
+  };
+  check(
+    "Unsplash: заполненная подпись сохраняется целиком",
+    stockCreditColumns(form(goodCredit)).stockAuthorUrl === "https://unsplash.com/@ignaciobrosa",
+    "сохранено",
+  );
+  const partial = stockCreditColumns(form({ ...goodCredit, stockAuthorUrl: "" }));
+  const foreign = stockCreditColumns(
+    form({ ...goodCredit, stockAuthorUrl: "https://evil.example/@x" }),
+  );
+  const badId = stockCreditColumns(form({ ...goodCredit, stockPhotoId: "../../admin" }));
+  check(
+    "Unsplash: неполная или чужая подпись отбрасывается целиком",
+    partial.stockPhotoId === null &&
+      partial.stockAuthorName === null &&
+      foreign.stockPhotoId === null &&
+      badId.stockAuthorName === null,
+    "все четыре поля пусты",
+  );
+
+  /* ---- the query the editor starts from ---- */
+  check(
+    "Unsplash: ключевые слова берутся из заголовка без стоп-слов",
+    // Five words at most, and only the grammar stop-words go: «новый» is kept because it
+    // is a word a photographer would search for, unlike «в» or «по».
+    keywordsFromTitle("В Екатеринбурге открыли новый экологический парк") ===
+      "екатеринбурге открыли новый экологический парк" &&
+      // The five-word cap bites before the stop words run out: «и ещё один» is past it,
+      // not filtered by it, and the assertion would be checking the wrong rule.
+      keywordsFromTitle("В Екатеринбурге открыли новый экологический парк и ещё один") ===
+      "екатеринбурге открыли новый экологический парк" &&
+      // Here they do bite — «в» and «вновь» aside, «в» is gone and «центре» is not.
+      keywordsFromTitle("В центре Екатеринбурга вновь открылся парк") ===
+      "центре екатеринбурга вновь открылся парк" &&
+      keywordsFromTitle("") === "",
+    "стоп-слова убраны, первые пять слов",
+  );
+
+  /* ---- the request the route builds ---- */
+  const firstPage = buildSearchUrl("park", 1);
+  check(
+    "Unsplash: запрос содержит три горизонтальных снимка и не повторяет первую страницу",
+    firstPage.includes("per_page=3") &&
+      firstPage.includes("orientation=landscape") &&
+      firstPage.includes("query=park") &&
+      // `&page=`, not `page=` — which `per_page=3` contains, and which made this
+      // assertion pass or fail for a reason that had nothing to do with paging.
+      !firstPage.includes("&page=") &&
+      buildSearchUrl("park", 2).includes("&page=2"),
+    firstPage,
+  );
+}
 
 /**
  * The entity-card rules, and what the sanitiser does to a link to one.
@@ -4187,6 +4462,7 @@ function checkApiKeyCharsets() {
     "vkAccessToken",
     "falApiKey",
     "huggingfaceApiKey",
+    "unsplashAccessKey",
   ];
   check(
     "Правила записи и правила теста не расходятся по набору полей",

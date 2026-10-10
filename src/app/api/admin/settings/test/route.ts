@@ -29,7 +29,7 @@ const TIMEOUT_MS = 15_000;
 const FAL_STATUS_PROBE =
   "https://queue.fal.run/fal-ai/esrgan/requests/00000000-0000-4000-8000-000000000000/status";
 
-type Provider = "deepseek" | "deepinfra" | "vk" | "fal" | "huggingface";
+type Provider = "deepseek" | "deepinfra" | "vk" | "fal" | "huggingface" | "unsplash";
 
 /**
  * Key → { setting, free validation endpoint }.
@@ -57,10 +57,15 @@ const ENDPOINTS: Record<
       | "DEEPINFRA_API_KEY"
       | "VK_ACCESS_TOKEN"
       | "FAL_API_KEY"
-      | "HUGGINGFACE_API_KEY";
+      | "HUGGINGFACE_API_KEY"
+      | "UNSPLASH_ACCESS_KEY";
     url: (token: string) => string;
-    /** Auth style: fal reads `Authorization: Key`, the others a bearer token. */
-    scheme: "bearer" | "key";
+    /**
+     * Auth style, per provider: fal reads `Authorization: Key`, most read a bearer token,
+     * and Unsplash reads `Authorization: Client-ID` — a third spelling for a third API,
+     * which is why this is a field rather than a flag on the one common case.
+     */
+    scheme: "bearer" | "key" | "client-id";
   }
 > = {
   deepseek: {
@@ -97,6 +102,22 @@ const ENDPOINTS: Record<
     url: () => "https://huggingface.co/api/whoami-v2",
     scheme: "bearer",
   },
+  unsplash: {
+    setting: "UNSPLASH_ACCESS_KEY",
+    /*
+      The search endpoint with `per_page=1`, which is the only request that both
+      authenticates and is not the thing the editor is about to do for real.
+
+      It does spend one of the fifty hourly calls, and that is stated in the button's own
+      message rather than hidden: the alternative — an endpoint that says nothing about a
+      Client-ID — does not exist. Unsplash answers 401 for a wrong key and 403 for an
+      exhausted budget, which are different problems for the editor and are told apart
+      below.
+    */
+    url: () =>
+      "https://api.unsplash.com/search/photos?query=a&per_page=1&orientation=landscape",
+    scheme: "client-id",
+  },
 };
 
 const SUCCESS_MESSAGE: Record<Provider, string> = {
@@ -105,6 +126,7 @@ const SUCCESS_MESSAGE: Record<Provider, string> = {
   vk: "Токен принят, ВК отвечает.",
   fal: "Ключ принят, fal.ai отвечает.",
   huggingface: "Токен принят, Hugging Face отвечает.",
+  unsplash: "Ключ принят, Unsplash отвечает. Проверка потратила 1 из 50 запросов в час.",
 };
 
 function isJsonRequest(request: Request): boolean {
@@ -145,6 +167,19 @@ function interpret(provider: Provider, status: number): { ok: boolean; message: 
   if (status === 200) {
     return { ok: true, message: SUCCESS_MESSAGE[provider] };
   }
+  /*
+    Unsplash only, and the distinction matters: it answers 403 for an exhausted hourly
+    budget as well as for a refused key. The shared branch below would tell an editor whose
+    key is perfectly good to go and fix it, which is the wrong instruction and would send
+    them re-pasting a working key until the hour turned over.
+  */
+  if (provider === "unsplash" && status === 403) {
+    return {
+      ok: false,
+      message:
+        "Unsplash не отклонил ключ — исчерпан часовой лимит (50 запросов). Ключ оставьте как есть.",
+    };
+  }
   if (status === 401 || status === 403) {
     return { ok: false, message: "Ключ отклонён провайдером — проверьте его целиком." };
   }
@@ -178,12 +213,13 @@ export async function POST(request: Request) {
     provider !== "deepinfra" &&
     provider !== "vk" &&
     provider !== "fal" &&
-    provider !== "huggingface"
+    provider !== "huggingface" &&
+    provider !== "unsplash"
   ) {
     return NextResponse.json(
       {
         error:
-          "Неизвестный провайдер: ожидается deepseek, deepinfra, vk, fal или huggingface.",
+          "Неизвестный провайдер: ожидается deepseek, deepinfra, vk, fal, huggingface или unsplash.",
       },
       { status: 400 },
     );
@@ -212,7 +248,13 @@ export async function POST(request: Request) {
         : await fetch(url(key), {
             headers: {
               Authorization:
-                scheme === "key" ? `Key ${key}` : `Bearer ${key}`,
+                scheme === "key"
+                  ? `Key ${key}`
+                  : scheme === "client-id"
+                    // Unsplash's own spelling. Sending it as a bearer token is the failure
+                    // this map exists to prevent: it returns 401 on a perfectly good key.
+                    ? `Client-ID ${key}`
+                    : `Bearer ${key}`,
             },
             signal: AbortSignal.timeout(TIMEOUT_MS),
           });

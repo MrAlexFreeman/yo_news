@@ -25,6 +25,7 @@ import { takeFeedItem } from "@/lib/feed-store";
 import { prisma } from "@/lib/prisma";
 import { saveMessage } from "@/lib/save-message";
 import { slugify } from "@/lib/slugify";
+import { stockCreditColumns } from "@/lib/stock-credit";
 import { parseTagsField, syncArticleTags } from "@/lib/tags";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { publishArticleToVk, setVkTokenSource } from "@/lib/vk-publisher";
@@ -272,6 +273,14 @@ export async function createArticleAction(
     coverImage: optional(str(formData, "coverImage")),
     photoAuthor: optional(str(formData, "photoAuthor")),
     photoSource: optional(str(formData, "photoSource")),
+    // The four stock fields, taken together or not at all.
+    //
+    // They come out of the same `FormData` as everything else, so they are as editable
+    // as any other hidden field — which is why they are re-checked here rather than
+    // trusted. `stockCreditLinks` is the same function the public caption uses, so what is
+    // stored and what is rendered cannot come to disagree, and a hand-written value that
+    // is not an Unsplash https address is dropped rather than printed as a credit.
+    ...stockCreditColumns(formData),
     seoTitle: optional(str(formData, "seoTitle")),
     seoDescription: optional(str(formData, "seoDescription")),
     seoCanonicalUrl: optional(str(formData, "seoCanonicalUrl")),

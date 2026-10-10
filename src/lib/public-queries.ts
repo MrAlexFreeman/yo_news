@@ -222,6 +222,13 @@ export async function getPublishedArticleBySlug(slug: string) {
       coverImage: true,
       photoAuthor: true,
       photoSource: true,
+      // The Unsplash credit's two links, for the caption under the cover. Selected here
+      // and not in LIST_FIELDS above: a river card prints no linked credit, and four more
+      // columns on every card in every list is a real cost for a field nothing reads.
+      stockPhotoId: true,
+      stockAuthorName: true,
+      stockAuthorUrl: true,
+      stockPhotoUrl: true,
       seoTitle: true,
       seoDescription: true,
       seoCanonicalUrl: true,

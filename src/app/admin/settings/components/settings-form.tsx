@@ -20,7 +20,7 @@ const NO_BALANCES: Balances = {
 };
 
 /** Matches the server-side shape from src/lib/settings.ts. */
-type Provider = "deepseek" | "deepinfra" | "vk" | "fal" | "huggingface";
+type Provider = "deepseek" | "deepinfra" | "vk" | "fal" | "huggingface" | "unsplash";
 
 type Field = {
   provider: Provider;
@@ -114,6 +114,28 @@ const FIELDS: Field[] = [
       ],
       linkLabel: "Открыть токены Hugging Face",
       link: "https://huggingface.co/settings/tokens",
+    },
+  },
+  {
+    provider: "unsplash",
+    name: "unsplashAccessKey",
+    label: "Ключ Unsplash",
+    // The free plan's limit is stated here rather than discovered as a 403 halfway
+    // through choosing a photo: 50 API calls an hour, shared between searching and
+    // downloading, so "сколько раз можно искать" is a number the desk plans around.
+    hint: "Подбор фото на стоках для обложки. Бесплатно, но не более 50 запросов в час.",
+    service: "api.unsplash.com",
+    testLabel: "Тест подключения",
+    instructions: {
+      title: "Как получить ключ Unsplash?",
+      steps: [
+        "Зарегистрируйтесь на unsplash.com как разработчик (Developer).",
+        "Откройте раздел Your Apps и создайте приложение.",
+        "Скопируйте Access Key — это и есть ключ для поля слева.",
+        "У каждого выбранного фото Unsplash требует подпись: сайт проставит её автоматически.",
+      ],
+      linkLabel: "Открыть панель Unsplash",
+      link: "https://unsplash.com/developers/apps",
     },
   },
 ];

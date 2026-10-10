@@ -46,6 +46,7 @@ export const ALLOWED_KEYS = [
   "LIVE_STREAM_TITLE",
   "FAL_API_KEY",
   "HUGGINGFACE_API_KEY",
+  "UNSPLASH_ACCESS_KEY",
 ] as const;
 
 export type SettingKey = (typeof ALLOWED_KEYS)[number];
@@ -60,6 +61,7 @@ export const FIELD_BY_NAME: Record<string, SettingKey> = {
   vkAccessToken: "VK_ACCESS_TOKEN",
   falApiKey: "FAL_API_KEY",
   huggingfaceApiKey: "HUGGINGFACE_API_KEY",
+  unsplashAccessKey: "UNSPLASH_ACCESS_KEY",
 };
 
 /**
@@ -335,6 +337,11 @@ const API_KEY_PATTERN_BY_FIELD: Record<string, RegExp> = {
   // no underscore: the separator is the prefix's own, and a second one inside the body
   // would mean a pasted sentence rather than a token.
   huggingfaceApiKey: /^hf_[A-Za-z0-9]+$/,
+  // Unsplash access keys are 32 URL-safe characters, measured on a real one. Only the
+  // alphabet is asserted, never the length: the exact width is Unsplash's business and a
+  // pattern that pinned it would start refusing valid keys the day they changed it. The
+  // lower bound keeps a mistyped two-character fragment from being saved as a key.
+  unsplashAccessKey: /^[A-Za-z0-9_-]{16,}$/,
 };
 
 /**

@@ -264,6 +264,7 @@ const API_KEY_FIELDS = [
   "vkAccessToken",
   "falApiKey",
   "huggingfaceApiKey",
+  "unsplashAccessKey",
 ];
 
 /** Providers whose field carries a «Тест подключения» button. VK's says «Тест токена VK». */
@@ -272,6 +273,7 @@ const TESTED_PROVIDERS = [
   "deepinfraApiKey",
   "falApiKey",
   "huggingfaceApiKey",
+  "unsplashAccessKey",
 ];
 
 const settingsEmptyHtml = render(SettingsForm as never, { initial: settingsDefaults });

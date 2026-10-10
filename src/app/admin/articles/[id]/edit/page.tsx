@@ -68,6 +68,13 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         coverImage: true,
         photoAuthor: true,
         photoSource: true,
+        // The Unsplash credit. Selected without the other fields so that the query
+        // stays a plain `include` — Prisma has to fetch them either way, and naming them
+        // here is what keeps the form's prop list and the query from drifting apart.
+        stockPhotoId: true,
+        stockAuthorName: true,
+        stockAuthorUrl: true,
+        stockPhotoUrl: true,
         seoTitle: true,
         seoDescription: true,
         seoCanonicalUrl: true,
@@ -109,6 +116,10 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         coverImage: article.coverImage ?? "",
         photoAuthor: article.photoAuthor ?? "",
         photoSource: article.photoSource ?? "",
+        stockPhotoId: article.stockPhotoId ?? "",
+        stockAuthorName: article.stockAuthorName ?? "",
+        stockAuthorUrl: article.stockAuthorUrl ?? "",
+        stockPhotoUrl: article.stockPhotoUrl ?? "",
         seoTitle: article.seoTitle ?? "",
         seoDescription: article.seoDescription ?? "",
         seoCanonicalUrl: article.seoCanonicalUrl ?? "",

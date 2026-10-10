@@ -69,6 +69,17 @@ export type ArticleFormValues = {
   coverImage: string;
   photoAuthor: string;
   photoSource: string;
+  /**
+   * The Unsplash credit, kept apart from `photoSource`.
+   *
+   * `photoSource` is the plain text the datalist offers and the feed prints; these four
+   * carry the two links Unsplash's attribution rules require. Empty when the cover did not
+   * come from Unsplash, which is the normal case and not an error.
+   */
+  stockPhotoId: string;
+  stockAuthorName: string;
+  stockAuthorUrl: string;
+  stockPhotoUrl: string;
   categoryId: string;
   status: ArticleStatus;
   publishedAt: string;

@@ -8,6 +8,7 @@ import { ArticleSidebar } from "@/components/article-sidebar";
 import { ArticleVideo } from "@/components/article-video";
 import { ContinueReading } from "@/components/continue-reading";
 import { CoverImage } from "@/components/cover-image";
+import { PhotoCredit } from "@/components/photo-credit";
 import { ArticleBodyWithCards } from "@/components/entity-card";
 import { ReadAlsoBlock } from "@/components/read-also-block";
 import { SubscribeBlock } from "@/components/subscribe-block";
@@ -338,9 +339,16 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
               {article.photoAuthor || article.photoSource ? (
                 <span className="text-ink-soft/60">
                   {" · "}
-                  {article.photoAuthor ? <span>© {article.photoAuthor}</span> : null}
-                  {article.photoAuthor && article.photoSource ? " · " : null}
-                  {article.photoSource ? <span>{article.photoSource}</span> : null}
+                  <PhotoCredit
+                    author={article.photoAuthor}
+                    source={article.photoSource}
+                    stock={{
+                      stockPhotoId: article.stockPhotoId,
+                      stockAuthorName: article.stockAuthorName,
+                      stockAuthorUrl: article.stockAuthorUrl,
+                      stockPhotoUrl: article.stockPhotoUrl,
+                    }}
+                  />
                 </span>
               ) : null}
             </figcaption>

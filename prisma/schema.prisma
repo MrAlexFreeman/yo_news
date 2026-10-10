@@ -94,6 +94,20 @@ model Article {
   // Appended at the end for the same SQLite reason as `deletedAt` above.
   isTelegram   Boolean    @default(true)
   isMax        Boolean    @default(true)
+  // Where the cover came from Unsplash, kept as four fields rather than one credit
+  // string. Unsplash's attribution rules ask for the photographer's name to link to
+  // their profile and the word "Unsplash" to link to the photo's page — and `photoSource`
+  // is rendered as a text node on the public page and travels into the RSS feed as text,
+  // so a link cannot live there. The plain-text credit still goes in `photoSource` for
+  // the datalist and the feed; these carry what has to be clickable.
+  //
+  // All four are set together or not at all, and the public caption renders links only
+  // when `stockCreditLinks` accepts them — so a row left half-filled by an older deploy
+  // prints the plain credit rather than a link to nowhere.
+  stockPhotoId     String?
+  stockAuthorName  String?
+  stockAuthorUrl   String?
+  stockPhotoUrl    String?
   tags        ArticleTag[]
 
   @@index([status, publishedAt])
