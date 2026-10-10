@@ -9,6 +9,7 @@ import {
   parseVkUploadResult,
   publishArticleToVk,
   VK_LEAD_MAX,
+  VK_LINK_PHOTO_SIZING,
 } from "../src/lib/vk-publisher";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -268,6 +269,19 @@ async function main() {
     "wall.post: ссылка на example.com",
     Boolean(post?.params.message?.includes("https://example.com/news/text-post")),
     post?.params.message?.split("\n").slice(-1)[0] ?? "",
+  );
+
+  /*
+    Measured on production: VK answers a wall.post carrying a link attachment without this
+    with error 100, "Violated: link_photo_sizing_rule. No photo given". The message reads as
+    though a photo were required and satisfied, which is why it is worth asserting the
+    parameter rather than trusting the wording.
+  */
+  check(
+    "wall.post: задан link_photo_sizing_rule для карточки превью",
+    post?.params.link_photo_sizing_rule === VK_LINK_PHOTO_SIZING &&
+      /^\d+x\d+$/.test(post?.params.link_photo_sizing_rule ?? ""),
+    `link_photo_sizing_rule=${post?.params.link_photo_sizing_rule}`,
   );
   check(
     "Текст поста: ссылка помечена «Читать полностью»",

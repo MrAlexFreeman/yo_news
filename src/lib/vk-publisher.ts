@@ -243,6 +243,19 @@ export function buildAttachments(photoId: string | null, slug: string): string {
 }
 
 /**
+ * Size VK renders the link card at.
+ *
+ * Not optional, and not guessable: VK answers a `wall.post` carrying a link attachment
+ * without this with error 100, "Violated: link_photo_sizing_rule. No photo given" — measured
+ * on production. The message names a rule that looks satisfied, because a photo *was* given;
+ * what it means is that the rule for the link preview has not been set.
+ *
+ * 1080x720 rather than the largest option: the cover itself is 1080 wide, so a bigger
+ * preview would be upscaled by VK out of nothing.
+ */
+export const VK_LINK_PHOTO_SIZING = "1080x720";
+
+/**
  * What `upload_url` answers with.
  *
  * Note the absence of an envelope. This is not the API's `response` wrapper: the upload
@@ -399,7 +412,18 @@ export async function publishArticleToVk(
     }
   }
 
-  try {
+  /**
+ * Size VK renders the link card at.
+ *
+ * Not optional, and not guessable: VK answers a `wall.post` carrying a link attachment
+ * without this with error 100, "Violated: link_photo_sizing_rule. No photo given" — measured
+ * on production. The message names a rule that looks satisfied, because a photo *was* given;
+ * what it means is that the rule for the link preview has not been set.
+ *
+ * 1080x720 rather than the largest option: the cover itself is 1080 wide, so a bigger
+ * preview would be upscaled by VK from nothing.
+ */
+try {
     const posted = await callVk<{ post_id?: number | string }>("wall.post", {
       owner_id: communityId,
       from_group: 1,
@@ -407,6 +431,7 @@ export async function publishArticleToVk(
       // Always present, even without a photo: the link attachment is what renders the
       // preview card. Omitting it would leave a successful cover upload unused.
       attachments: buildAttachments(photoId, article.slug),
+      link_photo_sizing_rule: VK_LINK_PHOTO_SIZING,
     });
 
     return {
