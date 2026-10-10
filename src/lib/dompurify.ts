@@ -1,6 +1,7 @@
 import DOMPurify from "isomorphic-dompurify";
 
 import { ensureNoVkAutoplay } from "@/lib/video-embed";
+import { slugFromEntityHref } from "@/lib/entity-card";
 
 /**
  * The one DOMPurify instance this project uses, with a single attribute hook.
@@ -88,6 +89,20 @@ function absolutize(url: string, base: string): string {
 export const ARTICLE_LINK_CLASS = "text-amber-600 hover:text-amber-700 underline";
 
 /**
+ * The styling a link to an entity card carries, in a body.
+ *
+ * Forced here for the same reason `ARTICLE_LINK_CLASS` is, and by the same mechanism:
+ * this hook *replaces* the class on every anchor, so whatever distinguishes a card from a
+ * normal link has to come from this file. Deciding it in CSS instead would mean trusting a
+ * `class` that has already been overwritten.
+ *
+ * The dashed underline is the tell. A reader who has learned it in one story recognises a
+ * card in the next without being told again, and it survives print and high-contrast mode,
+ * where an accent colour alone does not.
+ */
+export const ENTITY_LINK_CLASS = "entity-link";
+
+/**
  * Article-page rules.
  *
  * No base URL is needed: the body is rendered relative to the page, so a
@@ -97,7 +112,25 @@ function applyArticlePolicy(node: unknown) {
   const element = node as Node;
 
   if (tagOf(node) === "a") {
-    element.setAttribute?.("class", ARTICLE_LINK_CLASS);
+    const href = element.getAttribute?.("href") ?? "";
+    // A card link keeps the ordinary link colour and adds the dashed underline, rather
+    // than becoming its own colour: the reader is still following a link, and the popover
+    // is an addition to it. A different hue would read as a different kind of destination
+    // — a category, say — which is not what it is.
+    const isEntity = slugFromEntityHref(href) !== null;
+
+    element.setAttribute?.("class", isEntity ? ENTITY_LINK_CLASS : ARTICLE_LINK_CLASS);
+
+    if (isEntity) {
+      /*
+        The popover opens on click and offers the page as a link, so the anchor must not
+        also navigate. Removing `href` would leave a card looking like a link to a
+        screen reader that cannot navigate it, and `tabindex="-1"` would hide it from the
+        keyboard — the opposite of what either is for. What is kept is the address, so the
+        link still works for a reader whose script has not run.
+      */
+      return;
+    }
 
     // The target is a default, not an override. The link dialog has an "open in a
     // new tab" checkbox and expresses "same tab" as target="_self" precisely so

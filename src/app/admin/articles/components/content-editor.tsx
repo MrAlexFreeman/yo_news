@@ -7,6 +7,7 @@ import {
   AlignLeft,
   AlignRight,
   Bold,
+  Building2,
   Code,
   Heading2,
   Heading3,
@@ -30,6 +31,7 @@ import {
 } from "@/app/admin/articles/components/insert-image-dialog";
 import { insertFigureAtCaret } from "@/app/admin/articles/components/article-figure-node";
 import { insertQuoteSourceAtCaret } from "@/app/admin/articles/components/article-quote";
+import { EntityCardPicker } from "@/app/admin/articles/components/entity-card-picker";
 import {
   LinkDialog,
   type LinkRequest,
@@ -53,7 +55,7 @@ type ToolbarAction = {
     isActive: (editor: Editor) => boolean;
     run: (editor: Editor) => void;
   };
-  opens?: "link" | "video" | "figure" | "quoteSource";
+  opens?: "link" | "video" | "figure" | "quoteSource" | "entityCard";
 };
 
 const ALIGNMENTS: { label: string; icon: typeof AlignLeft; value: string }[] = [
@@ -184,6 +186,7 @@ const GROUPS: ToolbarAction[][] = [
       opens: "link",
     },
     { label: "Видео", icon: Video, opens: "video" },
+    { label: "Карточка объекта", icon: Building2, opens: "entityCard" },
     { label: "Вставить фото в текст", icon: ImageIcon, opens: "figure" },
   ],
 ];
@@ -279,6 +282,7 @@ export function ContentEditor({
   const [toolbarError, setToolbarError] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
+  const [entityOpen, setEntityOpen] = useState(false);
 
   /**
    * Whether the writer has ever put the cursor in the text.
@@ -498,6 +502,9 @@ export function ContentEditor({
     } else if (action.opens === "figure") {
       setToolbarError(null);
       setImageOpen(true);
+    } else if (action.opens === "entityCard") {
+      setToolbarError(null);
+      setEntityOpen(true);
     } else if (action.opens === "quoteSource") {
       // The only toolbar action that can be unavailable. Said out loud rather than
       // shown disabled: a greyed-out button explains nothing, and the reason — the
@@ -610,6 +617,38 @@ export function ContentEditor({
           onInsert={({ src, alt, caption }) => {
             insertFigureAtCaret(editor, src, alt, caption);
             setImageOpen(false);
+            setToolbarError(null);
+          }}
+        />
+      ) : null}
+
+      {entityOpen && editor ? (
+        <EntityCardPicker
+          open={entityOpen}
+          onClose={() => setEntityOpen(false)}
+          onPick={(card) => {
+            /*
+              The selection is the point of the tool: the mark wraps the words the editor
+              had highlighted, so "Янга-Тау" stays "Янга-Тау" and gains a card. With an empty
+              selection `setMark` would mark nothing at all and the editor would see the
+              button do nothing — said out loud instead, because a silent no-op in a
+              toolbar reads as a broken editor rather than as a missing selection.
+            */
+            const { from, to } = editor.state.selection;
+            if (from === to) {
+              setToolbarError(
+                "Выделите в тексте название объекта — карточка привяжется к выделенным словам.",
+              );
+              setEntityOpen(false);
+              return;
+            }
+
+            editor
+              .chain()
+              .focus()
+              .toggleEntityCard({ slug: card.slug, title: card.title })
+              .run();
+            setEntityOpen(false);
             setToolbarError(null);
           }}
         />

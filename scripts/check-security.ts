@@ -113,6 +113,17 @@ import {
   normaliseQuery,
 } from "../src/lib/article-search";
 import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
+import {
+  ENTITY_MAX_IMAGES,
+  entityHref,
+  isEntityHref,
+  isValidEntitySlug,
+  normalizeWebsiteUrl,
+  parseEntityImages,
+  slugFromEntityHref,
+  slugify,
+  validateEntityCard,
+} from "../src/lib/entity-card";
 import { SITE_NAME, SITE_TAGLINE_LONG } from "../src/lib/site";
 import {
   DEFAULT_UPSCALE_OPTIONS,
@@ -3124,6 +3135,224 @@ async function main() {
 checkImageUpscale();
   await checkFalQueue();
   await checkHuggingFace();
+  checkEntityCards();
+
+/**
+ * The entity-card rules, and what the sanitiser does to a link to one.
+ *
+ * Both halves matter and they answer different questions. The pure module decides what a
+ * card address may look like and which of them are safe to render; the sanitiser decides
+ * what survives into a published body. A slug rule nobody tested would let an editor
+ * publish a link the popover then refuses to open, and a sanitiser rule nobody tested
+ * would let a hand-written body smuggle markup past it.
+ */
+function checkEntityCards() {
+  /* ---- the address ---- */
+  check(
+    "Карточки: slug строится транслитерацией, а не выбрасыванием букв",
+    // The hyphen inside the name is kept: «Янга-Тау» is two words joined by one, and
+    // collapsing it would make the address read as a single run. «Музей» gives `muzey`
+    // because у→u and й→y, not `muzei` — the map is a transliteration, not a guess at how
+    // an English speaker might spell it.
+    slugify("Янга-Тау") === "yanga-tau" &&
+      slugify("Янга Тау") === "yanga-tau" &&
+      slugify("Берёзовский") === "berezovskiy" &&
+      slugify("  Музей истории Екатеринбурга!  ") === "muzey-istorii-ekaterinburga" &&
+      // Two spellings of one name must not become two cards.
+      slugify("Ёлки") === slugify("Елки"),
+    "Янга-Тау → yanga-tau",
+  );
+
+  check(
+    "Карточки: slug не может вылезти за пределы своего формата",
+    isValidEntitySlug("yangantau") &&
+      isValidEntitySlug("ekaterinburg-1") &&
+      // The shapes an href injection needs: a scheme, a path, an encoded quote.
+      !isValidEntitySlug("../../admin") &&
+      !isValidEntitySlug("yangantau/../admin") &&
+      !isValidEntitySlug("Yangantau") &&
+      !isValidEntitySlug("yan-ga--tau") &&
+      !isValidEntitySlug("") &&
+      !isValidEntitySlug("a".repeat(200)),
+    "только латиница в нижнем регистре, цифры и одиночные дефисы",
+  );
+
+  /*
+    What the href parser returns, asserted directly rather than only through `isEntityHref`.
+
+    The two guards in `slugFromEntityHref` — "no second segment" and "is a valid slug" —
+    overlap, so a mutation that removes either one alone changes nothing and a test built
+    only on `isEntityHref` would read as "unbreakable". These assert the returned *value*,
+    which is what the popover builds its request path from: a bad slug here is not a wrong
+    style, it is `GET /api/entities/<whatever the page contained>`.
+  */
+  check(
+    "Карточки: разбор адреса возвращает именно slug, а не хвост строки",
+    slugFromEntityHref("/entities/yangantau") === "yangantau" &&
+      slugFromEntityHref("/entities/a/b") === null &&
+      slugFromEntityHref("/entities/../admin") === null &&
+      slugFromEntityHref("/entities/") === null &&
+      slugFromEntityHref("/entities") === null &&
+      slugFromEntityHref(null) === null &&
+      slugFromEntityHref("") === null &&
+      // A malformed escape sequence must not throw out of a render path.
+      slugFromEntityHref("/entities/%E0%A4%A") === null,
+    "только целый slug",
+  );
+
+  /*
+    The link that reaches the DOM. An entity link has to be recognisable by the client,
+    the sanitiser and the editor's parser from the href alone — there is no `data-entity`
+    attribute, because the article sanitiser runs with `ALLOW_DATA_ATTR: false` and would
+    strip it, leaving a card link indistinguishable from an ordinary one.
+  */
+  check(
+    "Карточки: ссылка на карточку опознаётся по адресу",
+    entityHref("yangantau") === "/entities/yangantau" &&
+      slugFromEntityHref("/entities/yangantau") === "yangantau" &&
+      isEntityHref("/entities/yangantau") &&
+      // And the near-misses are not cards: an ordinary article link, a path that merely
+      // starts the same, and one carrying a second segment.
+      !isEntityHref("/news/yangantau") &&
+      !isEntityHref("/entities") &&
+      !isEntityHref("/entities/a/b") &&
+      !isEntityHref("entity://yangantau"),
+    "/entities/<slug>",
+  );
+
+  check(
+    "Карточки: закодированная кавычка в адресе не проходит",
+    slugFromEntityHref("/entities/%22%20onmouseover") === null &&
+      slugFromEntityHref("/entities/yan%2Fgatau") === null,
+    "только настоящий slug",
+  );
+
+  /* ---- the pictures ---- */
+  check(
+    "Карточки: в галерею попадают только файлы из папки загрузок",
+    // A remote URL is an editor pointing the card at somebody else's server, which would
+    // leak every reader of that card to it; a data: URI is a way past any next blocklist.
+    parseEntityImages(["https://tracker.example/pixel.gif"]).length === 0 &&
+      parseEntityImages(["data:image/png;base64,AAAA"]).length === 0 &&
+      parseEntityImages(["/uploads/a.webp", "/uploads/../.env"]).length === 1,
+    "только /uploads/…",
+  );
+  check(
+    "Карточки: повторы и мусор в колонке не попадают в галерею",
+    parseEntityImages(["/uploads/a.webp", "/uploads/a.webp"]).length === 1 &&
+      parseEntityImages(["не строка", 42, null, "/uploads/b.jpg"]).length === 1 &&
+      parseEntityImages("не json").length === 0 &&
+      parseEntityImages(null).length === 0 &&
+      parseEntityImages({}).length === 0,
+    "чистка и дедупликация",
+  );
+  check(
+    "Карточки: количество фотографий ограничено",
+    parseEntityImages(
+      Array.from({ length: 40 }, (_, i) => `/uploads/photo-${i}.webp`),
+    ).length === ENTITY_MAX_IMAGES,
+    `не больше ${ENTITY_MAX_IMAGES}`,
+  );
+
+  /* ---- the outbound link ---- */
+  check(
+    "Карточки: адрес сайта принимается только с https и без логина",
+    normalizeWebsiteUrl("https://example.ru/path") === "https://example.ru/path" &&
+      normalizeWebsiteUrl("http://example.ru") === null &&
+      // The shape an editor cannot read as a link but a reader would be steered into.
+      normalizeWebsiteUrl("javascript:alert(1)") === null &&
+      normalizeWebsiteUrl("https://user:pass@example.ru") === null &&
+      // A bare domain is refused rather than guessed at: a wrong guess is a broken link.
+      normalizeWebsiteUrl("example.ru") === null &&
+      normalizeWebsiteUrl("") === null,
+    "https без userinfo",
+  );
+
+  /* ---- the form ---- */
+  const good = validateEntityCard({
+    slug: "yangantau",
+    title: "Янга-Тау",
+    summary: "Экологический парк.",
+  });
+  check(
+    "Карточки: заполненная форма принимается",
+    good.errors && Object.keys(good.errors).length === 0 && good.value?.slug === "yangantau",
+    good.value ? "принято" : JSON.stringify(good.errors),
+  );
+  check(
+    "Карточки: пустые обязательные поля называются по-русски",
+    Object.keys(validateEntityCard({}).errors ?? {}).length >= 3,
+    JSON.stringify(validateEntityCard({}).errors),
+  );
+  check(
+    "Карточки: не-https ссылка отвергается с ошибкой поля",
+    (validateEntityCard({
+      slug: "x",
+      title: "X",
+      summary: "Y",
+      websiteUrl: "javascript:alert(1)",
+    }).errors ?? {}).websiteUrl !== undefined,
+    "ошибка на поле websiteUrl",
+  );
+  check(
+    "Карточки: значения нормализуются, а не только проверяются",
+    // The route saves `value`, so a field that failed a rule it passed in the check would
+    // be stored anyway. Trimming and the /uploads filter have to happen here.
+    validateEntityCard({
+      slug: "  yangantau  ",
+      title: "  Янга-Тау  ",
+      summary: "  Описание  ",
+      category: "   ",
+      images: ["/uploads/a.webp", "https://example.ru/x.png"],
+    }).value?.category === null &&
+      validateEntityCard({
+        slug: "x",
+        title: "X",
+        summary: "Y",
+      }).value?.slug === "x",
+    "trim и null вместо пустой строки",
+  );
+
+  /* ---- the sanitiser ---- */
+  const clean = sanitizeArticleHtml(
+    '<p>Парк <a href="/entities/yangantau">Янга-Тау</a> закрыт.</p>',
+  );
+  check(
+    "Карточки: ссылка на карточку переживает санитайзер и получает свой класс",
+    clean.includes('href="/entities/yangantau"') &&
+      clean.includes('class="entity-link"') &&
+      clean.includes("Янга-Тау"),
+    clean.slice(0, 120),
+  );
+  check(
+    "Карточки: обычная ссылка не получает класс карточки",
+    sanitizeArticleHtml('<p><a href="/news/tema">Тема</a></p>').includes(
+      ARTICLE_LINK_CLASS,
+    ) &&
+      !sanitizeArticleHtml('<p><a href="/news/tema">Тема</a></p>').includes("entity-link"),
+    "класс выбирается по адресу",
+  );
+  /*
+    A card link must not open a new tab: the popover opens instead, and a stray
+    `target="_blank"` would fight it. Forced through the same hook that sets the class.
+  */
+  check(
+    "Карточки: ссылка на карточку не открывается в новой вкладке",
+    !/<a[^>]*href="\/entities\/[^"]*"[^>]*target="_blank"/.test(clean) &&
+      !/<a[^>]*target="_blank"[^>]*href="\/entities\/[^"]*"/.test(clean),
+    "target не проставлен",
+  );
+  /*
+    The custom scheme the brief suggested would be stripped, which is why the address is a
+    path. Asserted so the reason is not forgotten: if the sanitiser is ever widened to
+    accept custom schemes, this fails and the decision has to be made again on purpose.
+  */
+  check(
+    "Карточки: своя схема entity:// не доходит до страницы",
+    !sanitizeArticleHtml('<a href="entity://yangantau">Янга-Тау</a>').includes("entity://"),
+    "вырезается санитайзером — поэтому адрес это путь",
+  );
+}
 checkSettingsPrimitives();
   checkBalances();
   checkPhotoSources();

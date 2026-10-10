@@ -8,6 +8,7 @@ import { ArticleSidebar } from "@/components/article-sidebar";
 import { ArticleVideo } from "@/components/article-video";
 import { ContinueReading } from "@/components/continue-reading";
 import { CoverImage } from "@/components/cover-image";
+import { ArticleBodyWithCards } from "@/components/entity-card";
 import { ReadAlsoBlock } from "@/components/read-also-block";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { ViewCounter } from "@/components/view-counter";
@@ -360,20 +361,20 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
       */}
       {bodySplit && plateStory ? (
         <>
-          <div
+          <ArticleBodyWithCards
+            html={bodySplit.before}
             className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
-            dangerouslySetInnerHTML={{ __html: bodySplit.before }}
           />
           <ReadAlsoBlock story={plateStory} />
-          <div
+          <ArticleBodyWithCards
+            html={bodySplit.after}
             className="article-body prose prose-slate mt-6 max-w-none lg:prose-lg"
-            dangerouslySetInnerHTML={{ __html: bodySplit.after }}
           />
         </>
       ) : (
-        <div
+        <ArticleBodyWithCards
+          html={body}
           className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
-          dangerouslySetInnerHTML={{ __html: body }}
         />
       )}
 

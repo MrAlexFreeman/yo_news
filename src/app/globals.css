@@ -363,6 +363,32 @@ body {
   border-radius: 2px;
 }
 
+/* A link to an entity card.
+   The dashed underline is the whole point: it is what lets a reader recognise a card in
+   the third story they read today without being told again, and unlike a colour it
+   survives greyscale printing and forced-colours mode. `text-decoration-skip-ink` keeps
+   the dashes from disappearing into the descenders of the linked word. */
+.article-body a.entity-link {
+  color: var(--color-accent, #b45309);
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: auto;
+  cursor: help;
+}
+
+.article-body a.entity-link:hover {
+  text-decoration-style: solid;
+}
+
+/* The card's own address on its own page: the eyebrow above the title. */
+.entity-card-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 /* Ticker strip in the header. */
 @keyframes ticker-scroll {
   from {

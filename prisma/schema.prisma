@@ -217,6 +217,43 @@ model ForumCategory {
   @@map("forum_categories")
 }
 
+/// An entity card — the reference desk's note on a thing a story is about.
+///
+/// A park, a museum, a person, a building. The editor writes one, then links it into the
+/// text of any number of articles; a reader meets a name in a sentence and can open the
+/// card without leaving the page.
+///
+/// `slug` is the join key. It appears in the stored article body as
+/// `/entities/<slug>`, so renaming a title must not rename the slug — otherwise every
+/// article that already linked the card would point at nothing. The card has its own page
+/// at that address for the same reason: a link in a published story has to survive the
+/// popover script not running.
+///
+/// `images` is a JSON array of uploaded `/uploads/...` strings rather than a join table,
+/// for the same reason `Article.media` is: a picture here has nothing worth querying on
+/// and is only ever read as an ordered list with the card.
+///
+/// `summary` and `category` are the two fields the card is useful *without* — a reader
+/// hovering gets them in the popover — so unlike the rest they are required, not
+/// optional.
+model EntityCard {
+  id       String @id @default(cuid())
+  slug     String @unique
+  title    String
+  category String?
+  summary  String
+  location String?
+  /// A year or a milestone ("1974", "основан в 2005-м"), free text because the two do not
+  /// have the same shape and an editor should not be forced to pick a fake precision.
+  foundedYear String?
+  websiteUrl  String?
+  images      String    @default("[]")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([title])
+}
+
 /// A thread. `viewsCount` is incremented by the public page, not by an endpoint,
 /// so it counts rendered reads rather than requests that were never followed.
 model ForumTopic {

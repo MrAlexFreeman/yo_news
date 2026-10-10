@@ -18,6 +18,7 @@ const NAV = [
   { href: "/admin/articles", label: "Материалы" },
   { href: "/admin/feed", label: "Предложка" },
   { href: "/admin/forum", label: "Форум" },
+  { href: "/admin/entities", label: "Карточки" },
   { href: "/admin/settings", label: "Настройки" },
 ] as const;
 

@@ -12,6 +12,7 @@ import {
   ArticleFigcaption,
 } from "@/app/admin/articles/components/article-figure-node";
 import { Cite } from "@/app/admin/articles/components/article-quote";
+import { EntityCardLink } from "@/app/admin/articles/components/entity-card-node";
 
 /**
  * How a link looks in the editor.
@@ -106,5 +107,12 @@ export function editorExtensions() {
     // while the schema is being built.
     TableKit.configure({ table: { resizable: false } }),
     VideoEmbed,
+    /*
+      The card reference, registered after Link so its mark wins where the two overlap —
+      an entity href is a site-relative path and Link's parser would otherwise claim every
+      card reference as a plain link, which is the version that renders as an ordinary
+      amber link with no dashed underline and no popover.
+    */
+    EntityCardLink,
   ];
 }
