@@ -21,6 +21,8 @@ export function EntityCardsScreen() {
   /** True once a fetch has come back, successfully or not. */
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Errors keyed by field, so the form can show each under its own input. */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const [editing, setEditing] = useState<EntityCardDraft | null>(null);
   /*
@@ -111,6 +113,13 @@ export function EntityCardsScreen() {
           error?: string;
           fieldErrors?: Record<string, string>;
         };
+        /*
+          Both, not one or the other. The panel above the form carries the first message as a
+          summary, and the same errors go down to the form so each lands under the field it is
+          about — an editor told «Не длиннее 3000 символов» with nothing saying which field is
+          being addressed has to guess.
+        */
+        setFieldErrors(payload.fieldErrors ?? {});
         throw new Error(
           payload.fieldErrors
             ? Object.values(payload.fieldErrors)[0]
@@ -118,6 +127,7 @@ export function EntityCardsScreen() {
         );
       }
 
+      setFieldErrors({});
       setEditing(null);
       await reload();
     } catch (cause) {
@@ -260,6 +270,7 @@ export function EntityCardsScreen() {
           key={formKey}
           draft={editing}
           busy={busy}
+          fieldErrors={fieldErrors}
           onCancel={() => setEditing(null)}
           onSave={save}
         />

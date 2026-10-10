@@ -3,7 +3,8 @@
 import { Loader2, Upload, X } from "lucide-react";
 import { useRef, useState } from "react";
 
-import { slugify } from "@/lib/entity-card";
+import { ENTITY_MAX_SUMMARY, cleanEntityWhitespace, slugify } from "@/lib/entity-card";
+import { cn } from "@/lib/utils";
 
 /**
  * The create/edit form for one card.
@@ -32,11 +33,14 @@ const MAX_IMAGES = 8;
 export function EntityCardEditor({
   draft,
   busy,
+  fieldErrors = {},
   onCancel,
   onSave,
 }: {
   draft: EntityCardDraft;
   busy: boolean;
+  /** Server-side rule failures, keyed by field, shown under the offending input. */
+  fieldErrors?: Record<string, string>;
   onCancel: () => void;
   onSave: (draft: EntityCardDraft) => void;
 }) {
@@ -57,6 +61,18 @@ export function EntityCardEditor({
 
   const set = <K extends keyof EntityCardDraft>(key: K, value: EntityCardDraft[K]) =>
     setValues((current) => ({ ...current, [key]: value }));
+
+  /*
+    Every keystroke goes through `cleanEntityWhitespace`, which only ever replaces an odd
+    space with an ordinary one — never collapses runs, so the second press of the space bar
+    still does something. A description pasted from Word arrives full of non-breaking spaces
+    that look identical and behave differently; catching them here means the counter below
+    the field is counting the text that will actually be stored, not the text as pasted.
+  */
+  const setText = (key: "title" | "summary" | "category" | "location") => (value: string) =>
+    set(key, cleanEntityWhitespace(value));
+
+  const summaryOver = values.summary.length > ENTITY_MAX_SUMMARY;
 
   // While the slug is untouched it follows the title. The comparison is against the
   // previous title, so a title edit that does not change the slug does not unstick it.
@@ -140,9 +156,17 @@ export function EntityCardEditor({
             <span className="text-xs font-medium text-neutral-600">Название</span>
             <input
               value={values.title}
-              onChange={(event) => set("title", event.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+              onChange={(event) => setText("title")(event.target.value)}
+              className={cn(
+                "mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none",
+                fieldErrors.title
+                  ? "border-red-400 focus:border-red-500"
+                  : "border-neutral-300 focus:border-neutral-500",
+              )}
             />
+            {fieldErrors.title ? (
+              <span className="mt-1 block text-xs text-red-600">{fieldErrors.title}</span>
+            ) : null}
           </label>
 
           <label className="block">
@@ -156,18 +180,27 @@ export function EntityCardEditor({
                 set("slug", event.target.value);
               }}
               placeholder={slugify(values.title) || "yangantau"}
-              className="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm outline-none focus:border-neutral-500"
+              className={cn(
+                "mt-1 w-full rounded-md border px-3 py-2 font-mono text-sm outline-none",
+                fieldErrors.slug
+                  ? "border-red-400 focus:border-red-500"
+                  : "border-neutral-300 focus:border-neutral-500",
+              )}
             />
-            <span className="mt-1 block text-xs text-neutral-400">
-              Латиница, цифры и дефисы. По нему на карточку ссылаются материалы.
-            </span>
+            {fieldErrors.slug ? (
+              <span className="mt-1 block text-xs text-red-600">{fieldErrors.slug}</span>
+            ) : (
+              <span className="mt-1 block text-xs text-neutral-400">
+                Латиница, цифры и дефисы. По нему на карточку ссылаются материалы.
+              </span>
+            )}
           </label>
 
           <label className="block">
             <span className="text-xs font-medium text-neutral-600">Категория</span>
             <input
               value={values.category}
-              onChange={(event) => set("category", event.target.value)}
+              onChange={(event) => setText("category")(event.target.value)}
               placeholder="Экопарк, Музей, Персона"
               className="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
             />
@@ -179,10 +212,42 @@ export function EntityCardEditor({
             </span>
             <textarea
               value={values.summary}
-              onChange={(event) => set("summary", event.target.value)}
-              rows={3}
-              className="mt-1 w-full resize-y rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+              onChange={(event) => setText("summary")(event.target.value)}
+              rows={6}
+              className={cn(
+                "mt-1 w-full resize-y rounded-md border px-3 py-2 text-sm outline-none",
+                summaryOver || fieldErrors.summary
+                  ? "border-red-400 focus:border-red-500"
+                  : "border-neutral-300 focus:border-neutral-500",
+              )}
             />
+
+            {/*
+              A counter rather than a hard `maxLength`. `maxLength` would silently stop
+              accepting characters at the limit, which reads as the keyboard having broken;
+              a number that turns red says what is wrong and leaves the decision with the
+              editor. The amber band from 90% is there so the limit is visible before it is
+              hit, which is the whole point of showing a count at all.
+            */}
+            <span
+              className={cn(
+                "mt-1 flex items-center justify-between text-xs",
+                summaryOver
+                  ? "text-red-600"
+                  : values.summary.length > ENTITY_MAX_SUMMARY * 0.9
+                    ? "text-amber-600"
+                    : "text-neutral-400",
+              )}
+            >
+              <span>
+                Символов: {values.summary.length} / {ENTITY_MAX_SUMMARY}
+              </span>
+              {summaryOver ? <span>Описание длиннее лимита.</span> : null}
+            </span>
+
+            {fieldErrors.summary && !summaryOver ? (
+              <span className="mt-1 block text-xs text-red-600">{fieldErrors.summary}</span>
+            ) : null}
           </label>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -190,7 +255,7 @@ export function EntityCardEditor({
               <span className="text-xs font-medium text-neutral-600">Локация</span>
               <input
                 value={values.location}
-                onChange={(event) => set("location", event.target.value)}
+                onChange={(event) => setText("location")(event.target.value)}
                 placeholder="г. Екатеринбург, ул. …"
                 className="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
               />

@@ -145,9 +145,12 @@ import {
 } from "../src/lib/unsplash";
 import {
   ENTITY_MAX_IMAGES,
+  ENTITY_MAX_SUMMARY,
+  cleanEntityWhitespace,
   entityHref,
   isEntityHref,
   isValidEntitySlug,
+  normalizeEntityText,
   normalizeWebsiteUrl,
   parseEntityImages,
   slugFromEntityHref,
@@ -4108,6 +4111,92 @@ function checkEntityCards() {
         summary: "Y",
       }).value?.slug === "x",
     "trim и null вместо пустой строки",
+  );
+
+  /*
+    The limit, and the reason it moved.
+
+    It was 600, which is shorter than a card worth writing — a park or a person needs a
+    paragraph or two — and an editor pasting a prepared description lost its tail. The
+    assertion is on the *behaviour* at the boundary in both directions, not on the number,
+    so raising it again does not require editing this: what must not regress is that 2000
+    characters save and that an over-long description is refused with a message naming the
+    limit rather than silently truncated.
+  */
+  const longSummary = "Слово ".repeat(400).trim();
+  check(
+    "Карточки: подробное описание в 2000+ символов сохраняется",
+    longSummary.length > 1500 &&
+      validateEntityCard({ slug: "p", title: "П", summary: longSummary }).value?.summary ===
+        longSummary,
+    `${longSummary.length} символов, лимит ${ENTITY_MAX_SUMMARY}`,
+  );
+  check(
+    "Карточки: описание сверх лимита отклоняется с указанием лимита",
+    // Not truncated silently: a card whose text was quietly shortened looks correct and
+    // is missing the end of what the editor wrote.
+    validateEntityCard({ slug: "p", title: "П", summary: "Я".repeat(ENTITY_MAX_SUMMARY + 1) })
+      .value === null &&
+      validateEntityCard({ slug: "p", title: "П", summary: "Я".repeat(ENTITY_MAX_SUMMARY) })
+        .value !== null,
+    `граница ${ENTITY_MAX_SUMMARY}`,
+  );
+
+  /* ---- the whitespace an editor pastes in ---- */
+  const nbsp = "\u00A0";
+  const narrow = "\u202F";
+  const thin = "\u2009";
+  const zeroWidth = "\u200B";
+
+  check(
+    "Карточки: неразрывный пробел становится обычным",
+    // The defect this prevents is invisible: the card looks right in the form and behaves
+    // wrongly on the page, where a non-breaking space refuses the line break the layout
+    // needs.
+    cleanEntityWhitespace(`Парк${nbsp}Ёльцин`) === "Парк Ёльцин" &&
+      cleanEntityWhitespace(`ул.${narrow}Ленина`) === "ул. Ленина" &&
+      cleanEntityWhitespace(`А${thin}Б`) === "А Б",
+    "все три вида пробелов",
+  );
+  check(
+    "Карточки: невидимые символы удаляются",
+    cleanEntityWhitespace(`А${zeroWidth}Б`) === "АБ" &&
+      cleanEntityWhitespace("А\uFEFFБ") === "АБ",
+    "zero-width и BOM",
+  );
+  check(
+    "Карточки: очистка безопасна при наборе — двойной пробел не съедается",
+    // `cleanEntityWhitespace` runs on every keystroke in the form. Collapsing runs there
+    // would make the second press of the space bar appear to do nothing, so collapsing
+    // lives in `normalizeEntityText`, which runs on the server only.
+    cleanEntityWhitespace("А  Б") === "А  Б" && normalizeEntityText("А  Б") === "А Б",
+    `clean=${JSON.stringify(cleanEntityWhitespace("А  Б"))} stored=${JSON.stringify(normalizeEntityText("А  Б"))}`,
+  );
+  check(
+    "Карточки: сохранённое описание нормализуется целиком",
+    validateEntityCard({
+      slug: "p",
+      title: "П",
+      summary: `  Парк${nbsp}${nbsp}Ёльцин\n\n\n\nВторой абзац.  `,
+    }).value?.summary === "Парк Ёльцин\n\nВторой абзац.",
+    JSON.stringify(
+      validateEntityCard({
+        slug: "p",
+        title: "П",
+        summary: `  Парк${nbsp}${nbsp}Ёльцин\n\n\n\nВторой абзац.  `,
+      }).value?.summary,
+    ),
+  );
+  check(
+    "Карточки: лимит считается по нормализованному тексту",
+    // Otherwise a description padded with odd spaces would be refused for a length it does
+    // not have once stored — and the counter in the form would disagree with the rule.
+    validateEntityCard({
+      slug: "p",
+      title: "П",
+      summary: "Я".repeat(ENTITY_MAX_SUMMARY - 100) + nbsp.repeat(500),
+    }).value !== null,
+    "нормализация до проверки длины",
   );
 
   /* ---- the sanitiser ---- */

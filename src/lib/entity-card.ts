@@ -9,13 +9,68 @@
 /** Where an entity card lives, and therefore where a link to one must point. */
 export const ENTITY_URL_PREFIX = "/entities/";
 
-/** The editor's picker searches by this. */
+/**
+ * The editor's picker searches by this.
+ *
+ * `ENTITY_MAX_SUMMARY` was 600, which turned out to be shorter than a card worth writing:
+ * a park, a museum or a person needs a paragraph or two of context, and an editor pasting
+ * a prepared description hit the ceiling and lost the tail of it. 3000 is a deliberate
+ * ceiling rather than no ceiling — the column has no length limit of its own (SQLite
+ * `TEXT`), but a card is read in a popover beside an article and one that fills the screen
+ * is not a card. The limit is high enough to be a guard against a pasted document and
+ * never a constraint on writing.
+ */
 export const ENTITY_MAX_TITLE = 120;
-export const ENTITY_MAX_SUMMARY = 600;
+export const ENTITY_MAX_SUMMARY = 3000;
 export const ENTITY_MAX_CATEGORY = 60;
 export const ENTITY_MAX_LOCATION = 160;
 export const ENTITY_MAX_FOUNDED = 80;
 export const ENTITY_MAX_URL = 300;
+
+/**
+ * Characters that look like a space but are not one.
+ *
+ * Pasting from Word, Google Docs or a newsroom CMS brings these along, and they are the
+ * reason a card can look right in the form and wrong on the page: a non-breaking space
+ * prevents a line break where the layout needs one, and a zero-width space is invisible
+ * while still counting towards the length and breaking a search for the words around it.
+ *
+ * Written as escapes rather than as literal characters, because a literal here would be
+ * indistinguishable from the defect it exists to remove — the same trap the encoding check
+ * documents about itself.
+ */
+const ODD_SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
+const ZERO_WIDTH = /[\u200B-\u200D\uFEFF]/g;
+
+/**
+ * Removes the characters a paste drags in, without touching the editor's own typing.
+ *
+ * Safe to run on every keystroke — it only ever replaces an odd space with an ordinary one,
+ * so an editor typing real spaces sees exactly what they typed. That is what makes it
+ * usable in the form as well as on the server, and it is why collapsing runs of spaces is
+ * *not* part of it: doing that while someone types makes the second press of the space bar
+ * appear to do nothing.
+ */
+export function cleanEntityWhitespace(value: string): string {
+  return value.replace(ZERO_WIDTH, "").replace(ODD_SPACES, " ").replace(/\r\n?/g, "\n");
+}
+
+/**
+ * What actually gets stored.
+ *
+ * `cleanEntityWhitespace` plus the tidying that would be annoying during typing: runs of
+ * spaces collapsed, blank-line runs reduced to one, both ends trimmed. Applied on the
+ * server only, so the length an editor sees in the counter and the length the rule is
+ * checked against can differ by a space or two — never by enough to matter, and never in
+ * the direction of a card that passes the form and is rejected on save.
+ */
+export function normalizeEntityText(value: string): string {
+  return cleanEntityWhitespace(value)
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 /**
  * How many pictures one card may carry.
@@ -228,7 +283,15 @@ export function validateEntityCard(input: {
 }): { errors: EntityFieldErrors; value: EntityCardInput | null } {
   const errors: EntityFieldErrors = {};
 
-  const text = (raw: unknown): string => (typeof raw === "string" ? raw.trim() : "");
+  /*
+    Every field goes through the same normalisation, not only the long one.
+    A non-breaking space in a category or a location is the same defect as one in the
+    summary — it looks correct and behaves wrongly — and the slug computation reads the
+    title, so normalising there keeps a pasted title from producing a slug with a stray
+    separator in it.
+  */
+  const text = (raw: unknown): string =>
+    typeof raw === "string" ? normalizeEntityText(raw) : "";
 
   const title = text(input.title);
   if (!title) {
