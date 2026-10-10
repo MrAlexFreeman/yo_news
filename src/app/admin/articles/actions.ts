@@ -29,6 +29,8 @@ import { stockCreditColumns } from "@/lib/stock-credit";
 import { parseTagsField, syncArticleTags } from "@/lib/tags";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { publishArticleToVk, setVkTokenSource } from "@/lib/vk-publisher";
+import { decideVkRepost } from "@/lib/vk-dedupe";
+import { claimVkPost, finishVkPost, releaseVkPost } from "@/lib/vk-claim";
 import { renameVkVideoForArticle } from "@/lib/vk-video";
 import {
   publishArticleToTelegram,
@@ -229,6 +231,7 @@ export async function createArticleAction(
           publishedAt: true,
           status: true,
           dzenExperiment: true,
+          vkPostId: true,
           tags: { select: { tag: { select: { slug: true } } } },
         },
       })
@@ -379,33 +382,79 @@ export async function createArticleAction(
   // but this is the guarantee, and the checkboxes are only the courtesy.
   const enteringPublished = article.status === "published" && previousStatus !== "published";
 
-  // Repost to VK when the article goes live with the flag on. Wrapped so a
-  // missing token or a VK outage never rolls back the database write.
-  let vkPostId: string | null = null;
-  // Carried back to the form so a failed repost is visible to the editor instead of
-  // only reaching the server console. The console line is kept: an operator reading
-  // pm2 wants the same detail, and the editor wants the short sentence.
-  let vkError: string | null = null;
-  if (article.status === "published" && article.isVk) {
-    try {
-      const vk = await publishArticleToVk({
-        title: article.title,
-        lead: article.lead,
-        slug: article.slug,
-        coverImage: article.coverImage,
-      });
+  /*
+    Repost to the VK community wall, guarded twice.
 
-      if (vk.ok) {
-        vkPostId = vk.postId ?? null;
-        if (vk.warning) console.warn(`[vk] ${vk.warning}`);
-      } else {
-        vkError = vk.error ?? "ВК не принял публикацию.";
-        console.warn(`[vk] репост не выполнен: ${vkError}`);
+    The first guard is `decideVkRepost`, and it is the fix for the duplicates. This branch
+    used to ask only `article.status === "published" && article.isVk` where Telegram and MAX
+    ask whether the story is *entering* published — so a story stayed eligible on every
+    later save and each one put the headline on the wall again.
+
+    The second guard is the row. Two saves at once — a double-clicked button, a retry after
+    a timeout, two tabs on one story — both read the row before either writes, and both
+    decide they are first. So the check and the claim are the same statement: an UPDATE
+    that only matches while `vkPostId` is still null, of which exactly one can succeed.
+
+    Wrapped so nothing VK does can roll back the database write.
+  */
+  const vkDecision = decideVkRepost({
+    previousStatus,
+    status,
+    isVk: article.isVk,
+    storedPostId: existing?.vkPostId ?? null,
+  });
+
+  let vkPostId: string | null = null;
+  /** True only when this request actually put something on the wall. */
+  let vkPosted = false;
+  /** Reported back so a failed repost is visible to the editor instead of only to the console. */
+  let vkError: string | null = null;
+  /** Shown when the story was already on the wall and this save deliberately skipped it. */
+  let vkSkipNote: string | null = null;
+
+  if (vkDecision === "already-posted") {
+    vkPostId = existing?.vkPostId ?? null;
+    vkSkipNote = vkPostId
+      ? "Уже было в ВК — повторно не публикуем."
+      : "Материал уже опубликован; репост в ВК делается только при первой публикации.";
+  } else if (vkDecision === "publish") {
+    const outcome = await claimVkPost(prisma, article.id);
+
+    if (!outcome.claimed) {
+      // Somebody else won the race. Their post may already be recorded, in which case this
+      // story did go out and the editor should not be told anything failed.
+      vkPostId = outcome.alreadyPosted ? (existing?.vkPostId ?? null) : null;
+      vkSkipNote = outcome.alreadyPosted
+        ? "Уже было в ВК — повторно не публикуем."
+        : "Публикация в ВК уже выполняется другим запросом — повторно не публикуем.";
+    } else {
+      try {
+        const vk = await publishArticleToVk({
+          title: article.title,
+          lead: article.lead,
+          slug: article.slug,
+          coverImage: article.coverImage,
+        });
+
+        if (vk.ok) {
+          vkPosted = true;
+          vkPostId = vk.postId ?? null;
+          // Recorded before anything else: this id is the only thing that stops the next
+          // save from posting again, so it is written the moment VK confirms.
+          await finishVkPost(prisma, article.id, vkPostId);
+          if (vk.warning) console.warn(`[vk] ${vk.warning}`);
+        } else {
+          vkError = vk.error ?? "ВК не принял публикацию.";
+          // The claim goes back so the next save can try again. A story that failed because
+          // VK was down should not be permanently barred from the wall by its own outage.
+          await releaseVkPost(prisma, article.id);
+          console.warn(`[vk] репост не выполнен: ${vkError}`);
+        }
+      } catch (error) {
+        vkError = error instanceof Error ? error.message : "непредвиденная ошибка репоста";
+        await releaseVkPost(prisma, article.id).catch(() => {});
+        console.error("[vk] необработанная ошибка репоста:", error);
       }
-    } catch (error) {
-      vkError =
-        error instanceof Error ? error.message : "непредвиденная ошибка репоста";
-      console.error("[vk] необработанная ошибка репоста:", error);
     }
   }
 
@@ -542,9 +591,16 @@ export async function createArticleAction(
     dzenQueued: article.status === "published" && article.isDzen,
     dzenExperiment: article.dzenExperiment,
     dzenExperimentLocked,
-    vkQueued: article.status === "published" && article.isVk,
+    /*
+      True only if this save put the story on the wall.
+      Was `article.status === "published" && article.isVk`, which reported "queued" for a
+      post that had been skipped as a duplicate, had failed, or had never been attempted —
+      an editor reading it had no way to tell any of those apart.
+    */
+    vkQueued: vkPosted,
     vkPostId,
     vkError,
+    vkSkipNote,
     messengerNotes,
   };
 }

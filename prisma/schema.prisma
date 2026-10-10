@@ -108,6 +108,20 @@ model Article {
   stockAuthorName  String?
   stockAuthorUrl   String?
   stockPhotoUrl    String?
+  /// The id of the wall post this story produced on the VK community, if any.
+  ///
+  /// Present for one reason: to make a second post impossible. The repost used to happen on
+  /// every save of an already-published story — the VK branch tested `status === "published"`
+  /// where Telegram and MAX tested the transition into published — so the same headline landed
+  /// on the wall once per edit. Storing what VK returned turns "has this gone out already?"
+  /// from a guess about editor behaviour into a fact read off the row.
+  ///
+  /// Also holds the in-flight claim described in src/lib/vk-dedupe.ts while a post is being
+  /// made, so a double submit loses the race in the database rather than in one Node process.
+  ///
+  /// Appended at the end for the same SQLite reason as `stockPhotoUrl` above: a column
+  /// inserted among the others makes Prisma rebuild the whole Article table.
+  vkPostId      String?
   tags        ArticleTag[]
 
   @@index([status, publishedAt])

@@ -810,8 +810,17 @@ export function ArticleForm({
           fail while the save itself succeeded — the article is in the database and
           on the site either way. Before this existed `vkQueued` only restated the
           checkbox, so a repost that VK refused looked exactly like one that worked.
+
+          Four states now, where there were two: posted, posted without an id, failed,
+          and deliberately skipped. The skipped one is the commonest by far now that a
+          re-save is refused rather than reposted, and saying so is the only way an
+          editor can tell "we did not post it twice on purpose" from "nothing happened".
         */}
-        {state.ok && state.vkQueued ? (
+        {state.ok && state.vkSkipNote ? (
+          <p role="status" className="text-sm text-neutral-500">
+            {state.vkSkipNote}
+          </p>
+        ) : state.ok && state.vkQueued ? (
           state.vkError ? (
             <p
               role="alert"

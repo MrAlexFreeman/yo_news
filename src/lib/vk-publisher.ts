@@ -4,6 +4,9 @@
  * Flow when a cover image is attached:
  *   photos.getWallUploadServer → POST the bytes to VK → photos.saveWallPhoto → wall.post
  *
+ * Whether this is allowed to run at all is a separate question, answered by
+ * `lib/vk-dedupe.ts`; this module is only what happens once that is settled.
+ *
  * Every step degrades gracefully: if the tokens are missing (local dev) or any
  * call fails, the post still goes out as text with a link.
  */
@@ -32,6 +35,8 @@ export type VkPublishResult = {
   ok: boolean;
   /** Present when VK returned a post id. */
   postId?: string | null;
+  /** The wall photo attached to the post, when the cover went up. */
+  photoId?: string | null;
   /** Set when the post went out without the cover image. */
   warning?: string;
   error?: string;
@@ -175,73 +180,184 @@ async function callVk<T>(
 }
 
 /**
- * Title, blank line, lead, then the article link. VK truncates posts with an
- * ellipsis when the link is buried, so it goes last.
+ * Title, blank line, the first sentences of the lead, then the link.
+ *
+ * The lead is cut to two sentences rather than pasted whole. A wall post is a teaser: the
+ * lead is written for the site, where the reader has the rest of the story one click away,
+ * and a five-sentence lead on a wall pushes the link below the fold of a phone screen —
+ * where VK truncates the post with an ellipsis and the reader never sees the URL at all.
  */
 export function buildPostText(article: VkArticle): string {
   const link = `${siteUrl()}/news/${article.slug}`;
-  const lead = article.lead?.trim();
+  const lead = leadSummary(article.lead);
 
-  return lead ? `${article.title}\n\n${lead}\n\n${link}` : `${article.title}\n\n${link}`;
+  return lead
+    ? `${article.title}\n\n${lead}\n\n👉 Читать полностью: ${link}`
+    : `${article.title}\n\n👉 Читать полностью: ${link}`;
+}
+
+/** How much of the lead a wall post carries. */
+export const VK_LEAD_SENTENCES = 2;
+
+/** Ceiling on the lead in characters, so a single very long sentence cannot take over. */
+export const VK_LEAD_MAX = 320;
+
+/**
+ * The first sentences of the lead.
+ *
+ * Cuts on sentence-ending punctuation, and stops mid-word if the ceiling lands inside one
+ * — an ellipsis is honest about that, where a hard slice would end on a truncated stem that
+ * reads as a typo.
+ *
+ * Returns "" rather than a fragment when there is nothing usable, so `buildPostText` can
+ * leave the paragraph out instead of posting an empty gap.
+ */
+export function leadSummary(lead: string | null | undefined): string {
+  const trimmed = (lead ?? "").trim().replace(/\s+/g, " ");
+  if (!trimmed) return "";
+
+  const sentences = trimmed.split(/(?<=[.!?…])\s+/u).filter(Boolean);
+  let summary = sentences.slice(0, VK_LEAD_SENTENCES).join(" ").trim();
+
+  if (summary.length > VK_LEAD_MAX) {
+    const cut = summary.slice(0, VK_LEAD_MAX);
+    const lastSpace = cut.lastIndexOf(" ");
+    summary = `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+  }
+
+  return summary;
 }
 
 /**
- * Uploads the cover image and returns the `photo` attachment id.
+ * The `attachments` value: the wall photo, then the article.
  *
- * The two-step dance is required: VK hands out a one-off upload server, we
- * POST the raw bytes as multipart, then we trade the resulting `server`
- * response for a permanent photo id.
+ * The link is an attachment as well as being the last line of the message. That is what
+ * turns a bare URL into VK's link card — the image and the headline-and-description preview
+ * under it. A URL written into `message` alone renders as blue text on some clients and as
+ * nothing at all on others, so depending on the message to produce the snippet is leaving
+ * the layout to chance.
  */
+export function buildAttachments(photoId: string | null, slug: string): string {
+  const link = `${siteUrl()}/news/${slug}`;
+  return photoId ? `${photoId},${link}` : link;
+}
+
+/**
+ * What `upload_url` answers with.
+ *
+ * Note the absence of an envelope. This is not the API's `response` wrapper: the upload
+ * endpoint is a plain form handler and returns the three values directly. The old code read
+ * `uploaded.response` and threw "cover upload returned no response payload" on a perfectly
+ * good answer — which is why every wall post went out as bare text with a link. The unit
+ * tests passed throughout because the stub returned the enveloped shape; it encoded the bug
+ * instead of the behaviour.
+ */
+type VkUploadResult = { server: number; photo: string; hash: string };
+
+/**
+ * Reads the upload answer, accepting the bare form VK actually sends.
+ *
+ * The enveloped form is still accepted because VK has changed this before and a future
+ * server that wraps it should degrade into working rather than into a missing cover.
+ */
+export function parseVkUploadResult(payload: unknown): VkUploadResult | null {
+  const candidate =
+    payload && typeof payload === "object" && "response" in payload
+      ? (payload as { response: unknown }).response
+      : payload;
+
+  if (!candidate || typeof candidate !== "object") return null;
+
+  const { server, photo, hash } = candidate as Record<string, unknown>;
+  if (typeof server !== "number" || !Number.isFinite(server)) return null;
+  if (typeof hash !== "string" || hash.length === 0) return null;
+
+  // `photo` comes back as an empty string on the wall upload — the identifier is minted at
+  // saveWallPhoto from the server and hash. It is required to be present, so that a
+  // truncated or error body cannot pass as a success.
+  return { server, photo: typeof photo === "string" ? photo : "", hash };
+}
+
+/** Uploads the cover to VK's one-off server and returns the saved wall photo id. */
 async function uploadCoverImage(
   communityId: string,
   imageUrl: string,
 ): Promise<string | null> {
   const uploadServer = await callVk<{
     upload_url: string;
-    photo: string;
+    album_id: number;
   }>("photos.getWallUploadServer", { group_id: communityId });
 
   const { bytes, contentType } = await readCoverImage(imageUrl);
+  const extension = extensionFor(contentType) ?? ".jpg";
 
-  const form = new FormData();
-  // The filename keeps the real extension and the blob carries the real type. Both
-  // were hardcoded to "cover.jpg" before, which meant a WebP cover was uploaded
-  // claiming to be a JPEG — VK accepts it, and then serves a file whose bytes
-  // disagree with its extension.
-  form.append(
-    "photo",
-    new Blob([bytes], { type: contentType }),
-    `cover${extensionFor(contentType) ?? ".jpg"}`,
-  );
-  form.append("server", uploadServer.upload_url);
-  form.append("photo", uploadServer.photo);
-  form.append("hash", uploadServer.photo);
+  const uploaded = await postToVkUploadServer(uploadServer.upload_url, bytes, extension, contentType);
 
-  const uploadResponse = await fetch(uploadServer.upload_url, {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(30_000),
+  const saved = await callVk<{ photo?: string }>("photos.saveWallPhoto", {
+    group_id: communityId,
+    server: uploaded.server,
+    photo: uploaded.photo,
+    hash: uploaded.hash,
   });
-  if (!uploadResponse.ok) {
-    throw new Error(`cover upload failed with HTTP ${uploadResponse.status}`);
-  }
-
-  const uploaded = (await uploadResponse.json()) as { response?: { server: number; photo: string; hash: string } };
-  if (!uploaded.response) {
-    throw new Error("cover upload returned no response payload");
-  }
-
-  const saved = await callVk<{ server: number; photo: string; hash: string }>(
-    "photos.saveWallPhoto",
-    {
-      group_id: communityId,
-      server: uploaded.response.server,
-      photo: uploaded.response.photo,
-      hash: uploaded.response.hash,
-    },
-  );
 
   return saved.photo ?? null;
+}
+
+/**
+ * How many times a failing upload is retried.
+ *
+ * Measured, not assumed: while diagnosing this on production, `pu.vk.com` answered a first
+ * attempt with an HTTP 504 "page is temporarily unavailable" and the next one with a
+ * perfectly good payload. One request without a retry meant one wall post without a cover
+ * for a reason that had nothing to do with the cover — and the cover is the whole reason
+ * the pipeline exists.
+ */
+const UPLOAD_ATTEMPTS = 3;
+
+/** Pause between upload attempts. Short: the reader is waiting on the editor's save. */
+const UPLOAD_BACKOFF_MS = 1_500;
+
+async function postToVkUploadServer(
+  uploadUrl: string,
+  bytes: ArrayBuffer,
+  extension: string,
+  contentType: string,
+): Promise<VkUploadResult> {
+  let lastProblem = "";
+
+  for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt += 1) {
+    // Built inside the loop because a Blob cannot be appended twice to the same body, and
+    // a new FormData per attempt is cheaper than reasoning about a consumed stream.
+    const form = new FormData();
+    form.append("photo", new Blob([bytes], { type: contentType }), `cover${extension}`);
+
+    try {
+      const response = await fetch(uploadUrl, {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!response.ok) {
+        // VK serves an HTML error page for these, so the status is the only usable signal.
+        lastProblem = `cover upload failed with HTTP ${response.status}`;
+        if (response.status < 500) throw new Error(lastProblem);
+        await new Promise((resolve) => setTimeout(resolve, UPLOAD_BACKOFF_MS));
+        continue;
+      }
+
+      const result = parseVkUploadResult(await response.json().catch(() => null));
+      if (!result) throw new Error("cover upload returned no usable payload");
+      return result;
+    } catch (error) {
+      // A 4xx or an unreadable body is not going to improve on a second try.
+      if (error instanceof Error && error.message === lastProblem) throw error;
+      lastProblem = error instanceof Error ? error.message : "unknown upload error";
+      await new Promise((resolve) => setTimeout(resolve, UPLOAD_BACKOFF_MS));
+    }
+  }
+
+  throw new Error(lastProblem || "cover upload failed");
 }
 
 /**
@@ -265,15 +381,14 @@ export async function publishArticleToVk(
 
   const communityId = vkOwnerId();
   const message = buildPostText(article);
-  const attachmentIds: string[] = [];
+  /** The wall photo, or null when there was no cover or the upload failed. */
+  let photoId: string | null = null;
   let warning: string | undefined;
 
   if (article.coverImage) {
     try {
-      const photoId = await uploadCoverImage(communityId, article.coverImage);
-      if (photoId) {
-        attachmentIds.push(photoId);
-      } else {
+      photoId = await uploadCoverImage(communityId, article.coverImage);
+      if (!photoId) {
         warning = "ВК не вернул id загруженного фото — пост отправлен без обложки";
       }
     } catch (error) {
@@ -289,12 +404,15 @@ export async function publishArticleToVk(
       owner_id: communityId,
       from_group: 1,
       message,
-      ...(attachmentIds.length > 0 ? { attachments: attachmentIds.join(",") } : {}),
+      // Always present, even without a photo: the link attachment is what renders the
+      // preview card. Omitting it would leave a successful cover upload unused.
+      attachments: buildAttachments(photoId, article.slug),
     });
 
     return {
       ok: true,
       postId: posted?.post_id != null ? String(posted.post_id) : null,
+      photoId: photoId ?? null,
       ...(warning ? { warning } : {}),
     };
   } catch (error) {

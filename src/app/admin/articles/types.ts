@@ -37,6 +37,7 @@ export type SaveArticleResult = {
   dzenExperiment?: boolean;
   /** True when the publication moment is past, so the flag can no longer change. */
   dzenExperimentLocked?: boolean;
+  /** True only when this save actually put the story on the wall. */
   vkQueued?: boolean;
   /** VK post id when the repost succeeded; null when it was skipped or failed. */
   vkPostId?: string | null;
@@ -49,6 +50,15 @@ export type SaveArticleResult = {
    * in the server console, which is why a repost that never worked went unnoticed.
    */
   vkError?: string | null;
+  /**
+   * Why the VK repost was deliberately skipped, as opposed to having failed.
+   *
+   * The third state, and the one an editor hits most: a story that is already on the wall.
+   * It is not an error and it is not a success — nothing went wrong and nothing went out —
+   * and reporting it as either makes the duplicate-protection look like a failure or makes
+   * a re-save look like it posted again.
+   */
+  vkSkipNote?: string | null;
   /**
    * One line per messenger about what actually happened on publication.
    *
