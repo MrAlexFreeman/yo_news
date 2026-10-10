@@ -13,6 +13,7 @@ import {
 } from "@/app/admin/articles/components/article-figure-node";
 import { Cite } from "@/app/admin/articles/components/article-quote";
 import { EntityCardLink } from "@/app/admin/articles/components/entity-card-node";
+import { ReadAlsoBlockNode } from "@/app/admin/articles/components/read-also-node";
 
 /**
  * How a link looks in the editor.
@@ -114,5 +115,11 @@ export function editorExtensions() {
       amber link with no dashed underline and no popover.
     */
     EntityCardLink,
+    /*
+      The "read also" plate. Registered last so its `figure.read-also` parser is asked
+      before anything else claims the figure — `ArticleFigure` matches any `figure`, and
+      without this ordering a plate opened as an empty figure with the anchor lost.
+    */
+    ReadAlsoBlockNode,
   ];
 }

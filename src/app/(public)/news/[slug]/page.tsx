@@ -16,6 +16,7 @@ import { ViewCounter } from "@/components/view-counter";
 import { parseMedia } from "@/lib/article-media";
 import { plainTextPreview } from "@/lib/article-html";
 import { composeLoopRows, pickStable, splitForLoop } from "@/lib/content-loop";
+import { automaticPlateAllowed, splitAroundReadAlso } from "@/lib/read-also";
 import { readingMinutes } from "@/lib/reading-time";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
@@ -25,6 +26,7 @@ import {
   getLoopHighlights,
   getLoopReadAlso,
   getLoopRubricPopular,
+  getLoopStoriesBySlugs,
   getPublishedArticleBySlug,
   getPublishedArticles,
 } from "@/lib/public-queries";
@@ -163,9 +165,44 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     getLoopHighlights([article.id], LOOP_CANDIDATES),
   ]);
 
-  // One story, chosen by a hash of this article's id: varied between stories, identical
-  // for this one on every render, so the cached HTML and the next regeneration agree.
-  const plateStory = pickStable(readAlsoCandidates, `${article.id}:plate`);
+  const body = sanitizeArticleHtml(article.contentHtml);
+
+  /*
+    The body, taken apart at whatever plates it carries — read once, from the sanitised
+    body rather than the stored one, so there is a single answer to "does this article
+    have a hand-placed plate" instead of two that could disagree if sanitising ever
+    changes.
+  */
+  const bodyParts = splitAroundReadAlso(body);
+  const manualMarkers = bodyParts.filter(
+    (part): part is Extract<typeof part, { kind: "readAlso" }> => part.kind === "readAlso",
+  );
+
+  /*
+    One story, chosen by a hash of this article's id: varied between stories, identical
+    for this one on every render, so the cached HTML and the next regeneration agree.
+
+    The rule itself is in `lib/read-also.ts`; what matters here is that a hand-placed plate
+    always wins over an automatic one, whatever the flag says.
+  */
+  const plateStory = automaticPlateAllowed(article.autoRelatedArticle, manualMarkers.length)
+    ? pickStable(readAlsoCandidates, `${article.id}:plate`)
+    : null;
+
+  /*
+    The stories a hand-placed plate points at, so those plates render from live rows —
+    with the cover the story has now, not the one it had when the editor placed it — and
+    therefore through the same component as the automatic one.
+
+    Plain code rather than a memo: this is a server component, it runs once per render,
+    and a hook cannot await. An empty list answers without querying, so every article
+    without a hand-placed plate pays nothing for this.
+  */
+  const manualStories = new Map(
+    (
+      await getLoopStoriesBySlugs(manualMarkers.map((marker) => marker.slug))
+    ).map((story) => [story.slug, story]),
+  );
 
   // Whatever is already on the page is off limits to the grid: the story being read, and
   // the story the plate just offered.
@@ -176,8 +213,89 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     LOOP_ROW_SIZE,
   );
 
-  const body = sanitizeArticleHtml(article.contentHtml);
-  const bodySplit = plateStory ? splitForLoop(body, article.id) : null;
+  /*
+    The body, in pieces, with the plates already decided.
+
+    Three shapes, and the third is why this is not just the old two-way split:
+
+      no plate            → one `ArticleBodyWithCards`, exactly as before
+      automatic plate     → before / plate / after, cut after the second or third paragraph
+      hand-placed plates  → a run of body parts interleaved with plates at the editor's
+                            own positions
+
+    `bodyParts` already holds the hand-placed case, so the render below picks whichever of
+    the three applies rather than splitting again.
+  */
+  const bodySplit =
+    manualMarkers.length > 0 || !plateStory ? null : splitForLoop(body, article.id);
+
+  /**
+   * A body part, with the drop cap on the first.
+   *
+   * The cap is a style on `.article-body` and only means anything on the first paragraph
+   * of the article, so it goes on the first part and nowhere else. Tracked in a counter
+   * rather than an index because the plate between two parts must not consume one.
+   */
+  let bodyPartIndex = 0;
+  const renderBodyPart = (html: string, key: string) => {
+    const isFirst = bodyPartIndex === 0;
+    bodyPartIndex += 1;
+    return (
+      <ArticleBodyWithCards
+        key={key}
+        html={html}
+        className={
+          isFirst
+            ? "article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
+            : "article-body prose prose-slate mt-6 max-w-none lg:prose-lg"
+        }
+      />
+    );
+  };
+
+  /**
+   * A hand-placed plate, rendered from the live row where one still exists.
+   *
+   * The stored title wins over the row's: it is what the editor wrote beside the block,
+   * and a plate announcing something the headline has since been edited to would look
+   * like a stale page rather than like a plate. The cover, the reading time and the rubric
+   * can only come from the row — which is the reason the block stores just a slug.
+   */
+  const renderManualPlate = (slug: string, storedTitle: string, key: string) => {
+    const row = manualStories.get(slug);
+    return (
+      <ReadAlsoBlock
+        key={key}
+        story={{
+          slug,
+          title: storedTitle || row?.title || slug,
+          contentHtml: row?.contentHtml ?? "",
+          coverImage: row?.coverImage ?? null,
+          category: row?.category ?? null,
+        }}
+      />
+    );
+  };
+
+  const bodySplitNode = (() => {
+    if (manualMarkers.length > 0) {
+      return bodyParts.map((part, index) =>
+        part.kind === "body"
+          ? renderBodyPart(part.html, `manual-body-${index}`)
+          : renderManualPlate(part.slug, part.title, `manual-plate-${index}`),
+      );
+    }
+
+    if (bodySplit && plateStory) {
+      return [
+        renderBodyPart(bodySplit.before, "auto-body-before"),
+        <ReadAlsoBlock key="auto-plate" story={plateStory} />,
+        renderBodyPart(bodySplit.after, "auto-body-after"),
+      ];
+    }
+
+    return renderBodyPart(body, "body");
+  })();
 
   const forumSection = forumSectionForArticle({
     rubricSlug,
@@ -367,24 +485,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         half. A short article gets the single container it always had: see
         `splitForLoop`, which returns null rather than a cut it cannot place.
       */}
-      {bodySplit && plateStory ? (
-        <>
-          <ArticleBodyWithCards
-            html={bodySplit.before}
-            className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
-          />
-          <ReadAlsoBlock story={plateStory} />
-          <ArticleBodyWithCards
-            html={bodySplit.after}
-            className="article-body prose prose-slate mt-6 max-w-none lg:prose-lg"
-          />
-        </>
-      ) : (
-        <ArticleBodyWithCards
-          html={body}
-          className="article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
-        />
-      )}
+      {bodySplitNode}
 
       {videoUrl ? <ArticleVideo url={videoUrl} /> : null}
 

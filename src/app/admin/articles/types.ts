@@ -95,6 +95,14 @@ export type ArticleFormValues = {
   publishedAt: string;
   isDzen: boolean;
   isVk: boolean;
+  /**
+   * Whether the page places a "read also" plate by itself.
+   *
+   * True by default, matching the column: the flag is about taking the decision away from
+   * the site, and a story that says nothing about it should keep the behaviour it has
+   * always had.
+   */
+  autoRelatedArticle: boolean;
   /** Repost into Telegram on first publication. */
   isTelegram: boolean;
   /** Repost into MAX on first publication. */

@@ -103,6 +103,48 @@ export async function getPublishedArticles(
  * page, so the cost is bounded — unlike the listing queries, which is why `LIST_FIELDS`
  * stays without it.
  */
+/**
+ * The stories a hand-placed "read also" plate points at.
+ *
+ * A plate an editor put in the body stores nothing but a slug, so the page has to ask for
+ * the rest — the cover especially, which is the whole point of the block now showing a
+ * photograph. An empty list answers without touching the database, because an article
+ * with no manual plate must not pay for this query at all.
+ *
+ * `publishedAt: null` is returned for a slug that no longer resolves, which is how a
+ * plate whose story was deleted still renders — as the title the editor gave it, rather
+ * than as a gap in the middle of a paragraph.
+ */
+export async function getLoopStoriesBySlugs(
+  slugs: readonly string[],
+): Promise<(LoopArticle | { slug: string; title: string; contentHtml: ""; coverImage: null; category: null })[]> {
+  const wanted = [...new Set(slugs.filter((slug) => slug.length > 0))];
+  if (wanted.length === 0) return [];
+
+  const rows = await prisma.article.findMany({
+    where: { slug: { in: wanted }, status: "published", deletedAt: null },
+    select: LOOP_FIELDS,
+  });
+
+  const found = new Map(rows.map((row) => [row.slug, row as LoopArticle]));
+
+  // One placeholder per missing slug, so the caller can map a marker to something either
+  // way and never has to ask whether the story was found.
+  return wanted.map(
+    (slug) =>
+      found.get(slug) ??
+      ({
+        slug,
+        // No title to fall back on: the page uses the title stored in the marker, which is
+        // the editor's own wording and the only one that still exists.
+        title: slug,
+        contentHtml: "",
+        coverImage: null,
+        category: null,
+      } as const),
+  );
+}
+
 export async function getHeroArticle(): Promise<LoopArticle | null> {
   const exclusive = await prisma.article.findFirst({
     where: { status: "published", deletedAt: null, isExclusive: true },
@@ -240,6 +282,10 @@ export async function getPublishedArticleBySlug(slug: string) {
       is18plus: true,
       views: true,
       publishedAt: true,
+      // Whether the page places a "read also" plate by itself. Read here because the
+      // decision is the page's, and a flag the sidebar only knows about cannot be acted
+      // on where the layout is actually built.
+      autoRelatedArticle: true,
       updatedAt: true,
       createdAt: true,
       category: { select: { name: true, slug: true } },

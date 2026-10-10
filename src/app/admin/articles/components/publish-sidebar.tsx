@@ -17,6 +17,9 @@ type PublishSidebarProps = {
   onIsDzenChange: (value: boolean) => void;
   isVk: boolean;
   onIsVkChange: (value: boolean) => void;
+  /** Whether the page will place a "read also" plate by itself. */
+  autoRelatedArticle: boolean;
+  onAutoRelatedArticleChange: (value: boolean) => void;
   isTelegram: boolean;
   onIsTelegramChange: (value: boolean) => void;
   isMax: boolean;
@@ -92,6 +95,8 @@ export function PublishSidebar({
   onIsDzenChange,
   isVk,
   onIsVkChange,
+  autoRelatedArticle,
+  onAutoRelatedArticleChange,
   isTelegram,
   onIsTelegramChange,
   isMax,
@@ -155,6 +160,30 @@ export function PublishSidebar({
                 {messengerHint}
               </p>
             ) : null}
+          </div>
+
+          <div className="space-y-1">
+            <span className="text-xs font-medium tracking-wide text-neutral-500 uppercase">
+              Врезка «Читайте также»
+            </span>
+            <Checkbox
+              id="autoRelatedArticle"
+              label="Автоматически вставлять «Читайте также»"
+              checked={autoRelatedArticle}
+              onChange={onAutoRelatedArticleChange}
+            />
+            {/*
+              Says what the checkbox does, because the consequence is invisible until
+              afterwards: with it on, the site places the plate by itself and the toolbar
+              has no button for it; with it off, the plate is written by hand and the
+              button appears. An editor who only sees the box has no way to tell which
+              state they are in from the box alone.
+            */}
+            <p className="pl-6 pt-1 text-[11px] leading-snug text-neutral-400">
+              {autoRelatedArticle
+                ? "Сайт сам поставит врезку после второго или третьего абзаца."
+                : "Сайт не будет вставлять врезку. Кнопка «Вставить “Читайте также”» появится в панели редактора."}
+            </p>
           </div>
 
           <div className="space-y-1">

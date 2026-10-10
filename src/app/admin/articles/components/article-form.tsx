@@ -266,6 +266,12 @@ export function ArticleForm({
   const [publishedAt, setPublishedAt] = useState(defaultPublishedAt);
   const [isDzen, setIsDzen] = useState(initial?.isDzen ?? true);
   const [isVk, setIsVk] = useState(initial?.isVk ?? true);
+  // Defaults to true in the form as well as in the schema: a story that has never been
+  // saved should get the plate automatically, and a checkbox that starts empty would make
+  // "publish a draft" mean something different from "publish it after an edit".
+  const [autoRelatedArticle, setAutoRelatedArticle] = useState(
+    initial?.autoRelatedArticle ?? true,
+  );
   /*
     The two messenger boxes default to whatever the settings say is active, not to
     `true`: a channel that has not been set up yet should not present a checked box
@@ -408,6 +414,7 @@ export function ArticleForm({
           publishedAt: initial.publishedAt || defaultPublishedAt,
           isDzen: initial.isDzen,
           isVk: initial.isVk,
+  autoRelatedArticle: initial.autoRelatedArticle,
           isTelegram: initial.isTelegram,
           isMax: initial.isMax,
           isExclusive: initial.isExclusive,
@@ -452,6 +459,7 @@ export function ArticleForm({
     publishedAt,
     isDzen,
     isVk,
+    autoRelatedArticle,
     isTelegram,
     isMax,
     isExclusive,
@@ -537,6 +545,7 @@ export function ArticleForm({
     setPublishedAt(snapshot.publishedAt);
     setIsDzen(snapshot.isDzen);
     setIsVk(snapshot.isVk);
+  setAutoRelatedArticle(snapshot.autoRelatedArticle);
     setIsTelegram(snapshot.isTelegram);
     setIsMax(snapshot.isMax);
     setIsExclusive(snapshot.isExclusive);
@@ -1008,6 +1017,7 @@ export function ArticleForm({
                   error={errors.contentHtml}
                   media={media}
                   coverImage={coverImage}
+                  autoRelatedArticle={autoRelatedArticle}
                   ref={editorRef}
                   onCaretChange={setCaretPlaced}
                 />
@@ -1417,6 +1427,10 @@ export function ArticleForm({
             isVk={isVk}
             onIsVkChange={(value) => {
               setIsVk(value);
+            }}
+            autoRelatedArticle={autoRelatedArticle}
+            onAutoRelatedArticleChange={(value) => {
+              setAutoRelatedArticle(value);
             }}
             isTelegram={isTelegram}
             onIsTelegramChange={(value) => {

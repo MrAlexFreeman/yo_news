@@ -88,6 +88,7 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         publishedAt: true,
         isDzen: true,
         isVk: true,
+        autoRelatedArticle: true,
         isTelegram: true,
         isMax: true,
         isExclusive: true,
@@ -140,6 +141,7 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         publishedAt: toMoscowInputValue(article.publishedAt),
         isDzen: article.isDzen,
         isVk: article.isVk,
+        autoRelatedArticle: article.autoRelatedArticle,
         /*
           Both messenger boxes start empty for a story that is already live.
 

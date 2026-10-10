@@ -122,6 +122,23 @@ model Article {
   /// Appended at the end for the same SQLite reason as `stockPhotoUrl` above: a column
   /// inserted among the others makes Prisma rebuild the whole Article table.
   vkPostId      String?
+  /// Whether the "read also" plate is chosen by the site or by the editor.
+  ///
+  /// True — the default, and the old behaviour — the plate is picked from the rubric by a
+  /// hash of this article's id and dropped between the second and third paragraph, so it is
+  /// there without the desk doing anything.
+  ///
+  /// False — no automatic plate at all, and the toolbar grows a «Вставить "Читайте также"»
+  /// button that puts one exactly where the editor put it. For a piece whose second and
+  /// third paragraphs are both a quote and a correction, the automatic position is wrong
+  /// every time and the only fix available was to switch it off and have no block at all.
+  ///
+  /// Defaulting to true matches every other distribution flag: a story that reaches the
+  /// database without an explicit decision should get the treatment, and turning it off is
+  /// the deliberate act.
+  ///
+  /// Appended at the end for the same SQLite reason as `vkPostId` above.
+  autoRelatedArticle Boolean   @default(true)
   tags        ArticleTag[]
 
   @@index([status, publishedAt])

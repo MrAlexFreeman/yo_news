@@ -291,6 +291,12 @@ export async function createArticleAction(
     categoryId,
     isDzen: checkbox(formData, "isDzen"),
     isVk: checkbox(formData, "isVk"),
+    // Read like every other flag in this form: a checked box sends the field, an
+    // unchecked one sends nothing. So an absent key means "off", which is also what a
+    // POST from a tab holding the previous build would mean — the one cost of this
+    // convention, shared by all the flags around it and not worth a second mechanism for
+    // a field that is only read by the page renderer.
+    autoRelatedArticle: checkbox(formData, "autoRelatedArticle"),
     isTelegram: checkbox(formData, "isTelegram"),
     isMax: checkbox(formData, "isMax"),
     isExclusive: checkbox(formData, "isExclusive"),

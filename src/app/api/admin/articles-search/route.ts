@@ -33,7 +33,17 @@ export async function GET(request: Request) {
     where: buildSearchWhere(query),
     orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
     take: SEARCH_TAKE,
-    select: { id: true, title: true, slug: true, publishedAt: true },
+    // `coverImage` and `category` are there for the "read also" picker, which shows the
+    // same plate the reader will get and therefore cannot offer a story whose cover it
+    // cannot show. Both were omitted before that dialog existed.
+    select: {
+      id: true,
+      title: true,
+      slug: true,
+      publishedAt: true,
+      coverImage: true,
+      category: { select: { name: true, slug: true } },
+    },
   });
 
   // publishedAt goes out as an ISO string rather than a Date: JSON.stringify
@@ -44,6 +54,8 @@ export async function GET(request: Request) {
     title: article.title,
     slug: article.slug,
     publishedAt: article.publishedAt?.toISOString() ?? null,
+    coverImage: article.coverImage ?? null,
+    category: article.category,
   }));
 
   return NextResponse.json(

@@ -115,6 +115,13 @@ import {
 import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
 import { stockCreditColumns } from "../src/lib/stock-credit";
 import {
+  automaticPlateAllowed,
+  buildReadAlsoHtml,
+  hasManualReadAlso,
+  slugFromNewsHref,
+  splitAroundReadAlso,
+} from "../src/lib/read-also";
+import {
   buildStockQueryUserMessage,
   containsCyrillic,
   fallbackStockQuery,
@@ -3160,8 +3167,153 @@ checkImageUpscale();
   await checkEntityCards();
   await checkUnsplash();
   await checkStockQuery();
+  await checkReadAlso();
 
 /**
+ * The "read also" plate: what an editor inserts, and how a body comes apart around it.
+ *
+ * The rules here are not stylistic. Each one exists because the alternative produces a
+ * page that looks broken — a plate that vanishes mid-paragraph, two plates in one article,
+ * or an empty figure where a photograph should be.
+ */
+async function checkReadAlso() {
+  const plate = (slug: string, title: string) => buildReadAlsoHtml({ slug, title });
+
+  /* ---- the block an editor inserts ---- */
+  check(
+    "Врезка: хранит только ссылку, без копии обложки",
+    // The whole point of the design: the page looks the story up and renders the same
+    // component the automatic plate uses. A stored copy would be a second renderer of one
+    // visual thing, and would freeze the cover at the moment it was inserted.
+    plate("medved-na-mashinu", "Медведь") ===
+      '<figure class="read-also"><a href="/news/medved-na-mashinu">Медведь</a></figure>',
+    plate("medved-na-mashinu", "Медведь"),
+  );
+  check(
+    "Врезка: заголовок экранируется",
+    plate("a-b", 'Слух &amp; <пожар>').includes("Слух &amp;amp; &lt;пожар&gt;"),
+    plate("a-b", 'Слух &amp; <пожар>'),
+  );
+  check(
+    "Врезка: без slug не получается блок вовсе",
+    buildReadAlsoHtml({ slug: "   ", title: "Что-то" }) === "",
+    "пустая строка",
+  );
+
+  /* ---- the marker survives sanitising ---- */
+  /*
+    Measured, not assumed: `ALLOW_DATA_ATTR` is off on this site, so a `data-slug` would be
+    stripped and the page would have nothing left to find the block by. A class and an
+    ordinary href are what there is.
+  */
+  const sanitised = sanitizeArticleHtml(`<p>Раз</p>${plate("medved", "Медведь")}<p>Два</p>`);
+  check(
+    "Врезка: переживает очистку HTML — тег, класс и адрес",
+    sanitised.includes('<figure class="read-also">') &&
+      sanitised.includes('href="/news/medved"'),
+    sanitised,
+  );
+
+  /* ---- splitting ---- */
+  const one = splitAroundReadAlso(sanitised);
+  check(
+    "Врезка: тело делится на текст, врезку и текст",
+    one.length === 3 &&
+      one[0].kind === "body" &&
+      one[1].kind === "readAlso" &&
+      one[2].kind === "body",
+    one.map((part) => part.kind).join(" → "),
+  );
+  check(
+    "Врезка: из среза достаются slug и заголовок",
+    one[1].kind === "readAlso" &&
+      one[1].slug === "medved" &&
+      one[1].title === "Медведь",
+    JSON.stringify(one[1]),
+  );
+
+  const two = splitAroundReadAlso(
+    `<p>Раз</p>${plate("a", "A")}<p>Два</p>${plate("b", "B")}<p>Три</p>`,
+  );
+  check(
+    "Врезка: несколько врезок дают части по порядку",
+    two.length === 5 &&
+      two[1].kind === "readAlso" &&
+      two[3].kind === "readAlso" &&
+      (two[1] as { slug: string }).slug === "a" &&
+      (two[3] as { slug: string }).slug === "b",
+    two.map((part) => (part.kind === "readAlso" ? part.slug : "текст")).join(" → "),
+  );
+
+  const edge = splitAroundReadAlso(`${plate("a", "A")}<p>Раз</p>`);
+  check(
+    "Врезка: в начале тела не оставляет пустой кусок",
+    edge.length === 2 && edge[0].kind === "readAlso" && edge[1].kind === "body",
+    edge.map((part) => part.kind).join(" → "),
+  );
+
+  /* ---- what must NOT be read as a plate ---- */
+  check(
+    "Врезка: обычная фотография не принимается за врезку",
+    !hasManualReadAlso(
+      '<p>Раз</p><figure class="article-figure"><img src="/uploads/x.jpg"></figure>',
+    ),
+    "article-figure — не врезка",
+  );
+  /*
+    A plate nested inside a photograph's figure would be pulled out and leave the outer
+    figure empty, which is worse on the page than either block alone. The rule is one
+    `<figure>` wrapping one `<a>` and nothing else.
+  */
+  check(
+    "Врезка: вложенная в figure врезка не вытаскивается наружу",
+    !hasManualReadAlso(`<figure class="article-figure">${plate("a", "A")}</figure>`),
+    "вложенная — не маркер",
+  );
+  check(
+    "Врезка: figure с подписью не принимается за врезку",
+    !hasManualReadAlso(
+      '<figure class="read-also"><a href="/news/a">A</a><figcaption>подпись</figcaption></figure>',
+    ),
+    "не только ссылка",
+  );
+
+  /* ---- the slug in the address ---- */
+  check(
+    "Врезка: адрес разбирается строго",
+    slugFromNewsHref("/news/medved") === "medved" &&
+      slugFromNewsHref("/news/medved?a=1#b") === "medved" &&
+      // `/newsletter/advert` starts with "/news" but is not a story.
+      slugFromNewsHref("/newsletter/advert") === null &&
+      slugFromNewsHref("/entities/park") === null &&
+      slugFromNewsHref("https://eartnews.ru/news/x") === null,
+    "только /news/<slug>",
+  );
+
+  /* ---- the flag decides who places the plate ---- */
+  check(
+    "Врезка: по умолчанию сайт ставит её сам",
+    automaticPlateAllowed(true, 0) === true,
+    "флаг вкл. и ручных нет",
+  );
+  check(
+    "Врезка: снятый флаг отключает автоматическую",
+    automaticPlateAllowed(false, 0) === false,
+    "флаг выкл.",
+  );
+  /*
+    The condition that is easy to miss. An article whose editor already placed a plate must
+    not get a second one from the site, whatever the flag says: the reader would meet two
+    in one piece, one of them at a sentence nobody chose.
+  */
+  check(
+    "Врезка: своя врезка всегда побеждает автоматическую",
+    automaticPlateAllowed(true, 1) === false &&
+      automaticPlateAllowed(true, 3) === false,
+    "ручная врезка отменяет автоматическую",
+  );
+}
+ /**
  * Turning a Russian headline into keywords Unsplash can match.
  *
  * The parser matters more than it looks: Unsplash answers a query it cannot match with an
