@@ -23,6 +23,9 @@ import { SubscribeBlock } from "../src/components/subscribe-block";
 import { ArticleVideo } from "../src/components/article-video";
 import {
   insertFigureAtCaret,
+  figureContent,
+  stockAlt,
+  stockCaptionNodes,
 } from "../src/app/admin/articles/components/article-figure-node";
 import {
   insertQuoteSourceAtCaret,
@@ -1678,6 +1681,69 @@ function checkArticleMedia() {
     figureHtml('/uploads/a"onerror="alert(1).webp', "").slice(0, 140),
   );
 
+  // --- the stock credit, which is the one caption carrying links -------------
+
+  /*
+    Every other insertion path passes plain text as the caption. The stock picker's does
+    not, because Unsplash's terms ask for the photographer's profile and the photo's page
+    to be reachable rather than merely named — and a `figcaption` is inline content, which
+    is what lets the credit travel with the picture instead of needing columns of its own
+    the way the cover's does.
+
+    Asserted through the sanitiser because that is where a link inside a caption could be
+    lost: the public page runs every body through it, and a credit that survives the editor
+    and dies here would ship as a name with no destination.
+  */
+  const stockNodes = stockCaptionNodes({
+    authorName: "Иван Петров",
+    authorUrl: "https://unsplash.com/@ivan",
+    photoUrl: "https://unsplash.com/photos/abc123",
+  });
+  const stockHtml =
+    `<figure class="${FIGURE_CLASS}"><img src="/uploads/stock.webp" alt="Парк">` +
+    `<figcaption class="${FIGURE_CAPTION_CLASS}">Фото: ` +
+    `<a target="_blank" rel="noopener noreferrer" href="https://unsplash.com/@ivan">Иван Петров</a> / ` +
+    `<a target="_blank" rel="noopener noreferrer" href="https://unsplash.com/photos/abc123">Unsplash</a>` +
+    `</figcaption></figure>`;
+  const cleanedStock = sanitizeArticleHtml(stockHtml);
+
+  check(
+    "Кредит со стока: обе ссылки переживают санитайзер внутри подписи",
+    cleanedStock.includes('href="https://unsplash.com/@ivan"') &&
+      cleanedStock.includes('href="https://unsplash.com/photos/abc123"') &&
+      cleanedStock.includes(`class="${FIGURE_CAPTION_CLASS}"`) &&
+      cleanedStock.includes('src="/uploads/stock.webp"'),
+    cleanedStock.slice(0, 200),
+  );
+  check(
+    "Кредит со стока: подпись остаётся предложением, а не набором ссылок",
+    // The words around the anchors are what make it a credit. Losing them would leave two
+    // bare links under a photograph.
+    /Фото:\s*<a[^>]*>Иван Петров<\/a>\s*\/\s*<a[^>]*>Unsplash<\/a>/.test(cleanedStock),
+    cleanedStock.slice(0, 200),
+  );
+  check(
+    "Кредит со стока: ссылки собираются только на домен Unsplash",
+    stockNodes !== null &&
+      stockNodes.length === 4 &&
+      stockCaptionNodes({
+        authorName: "Иван",
+        authorUrl: "https://evil.example/@ivan",
+        photoUrl: "https://unsplash.com/photos/abc123",
+      }) === null,
+    "чужой хост отвергается, а не печатается как имя без адреса",
+  );
+
+  // A figure whose caption is an array rather than a string has to produce the same
+  // structure as one whose caption is plain text, or every consumer downstream would need
+  // to know which path built it.
+  check(
+    "Кредит со стока: figureContent принимает и строку, и узлы",
+    JSON.stringify(figureContent("/uploads/a.webp", "A", "Подпись")) ===
+      JSON.stringify(figureContent("/uploads/a.webp", "A", [{ type: "text", text: "Подпись" }])),
+    "строка и узлы дают одну структуру подписи",
+  );
+
   // The bridge that matters: what the sidebar appends has to survive the same
   // sanitiser the public page runs, with its classes intact.
   const sanitizedBuilt = sanitizeArticleHtml(built);
@@ -1949,6 +2015,75 @@ function checkFigureInsertion(make: (content: string) => TipTapEditor) {
     quoted,
   );
   insideQuote.destroy();
+
+  /*
+    The stock credit, which is the one insertion path whose caption is not a sentence.
+
+    Unsplash's terms ask for the photographer's profile and the photo's page to be
+    reachable, so the caption carries two anchors where every other call site passes plain
+    text. What is checked here is the part that only a real schema can answer: whether the
+    link marks survive serialisation inside a `figcaption`, and whether the credit still
+    reads as a sentence when they do.
+  */
+  const stock = make("<p>Текст.</p>");
+  stock.commands.setTextSelection(6);
+  const credit = stockCaptionNodes({
+    authorName: "Иван Петров",
+    authorUrl: "https://unsplash.com/@ivan",
+    photoUrl: "https://unsplash.com/photos/abc123",
+  });
+  check(
+    "Вставка со стока: кредит со ссылками собирается",
+    // Four nodes: «Фото: », the author link, « / », the Unsplash link.
+    Array.isArray(credit) && credit.length === 4,
+    JSON.stringify(credit),
+  );
+
+  insertFigureAtCaret(stock, "/uploads/stock.webp", "Осенний парк", credit ?? "");
+  const withCredit = editorBodyHtml(stock);
+
+  check(
+    "Вставка со стока: ссылки на автора и на снимок доживают до HTML",
+    /<figcaption[^>]*>[\s\S]*<a[^>]*href="https:\/\/unsplash\.com\/@ivan"[^>]*>Иван Петров<\/a>/.test(withCredit) &&
+      /<a[^>]*href="https:\/\/unsplash\.com\/photos\/abc123"[^>]*>Unsplash<\/a>/.test(withCredit),
+    withCredit,
+  );
+  check(
+    "Вставка со стока: подпись читается как предложение",
+    /Фото:\s*<a[^>]*>Иван Петров<\/a>\s*\/\s*<a[^>]*>Unsplash<\/a>/.test(withCredit),
+    withCredit,
+  );
+  check(
+    "Вставка со стока: фотограф со страницы и его снимок отдают картинку",
+    /<img[^>]*src="\/uploads\/stock\.webp"[^>]*alt="Осенний парк"/.test(withCredit),
+    withCredit,
+  );
+
+  check(
+    "Вставка со стока: пустой alt не уходит — подставляется кредит",
+    // `alt=""` tells a screen reader the picture is decorative, which would quietly remove
+    // it from the article for anyone who cannot see it. The photographer's sentence is
+    // preferred; the credit is the honest fallback.
+    stockAlt("Осенний парк в тумане", "Фото: Иван / Unsplash") === "Осенний парк в тумане" &&
+      stockAlt("", "Фото: Иван / Unsplash") === "Фото: Иван / Unsplash" &&
+      stockAlt("   ", "Фото: Иван / Unsplash") === "Фото: Иван / Unsplash" &&
+      stockAlt("", "") === "",
+    `пустой alt -> ${JSON.stringify(stockAlt("", "Фото: Иван / Unsplash"))}`,
+  );
+
+  // A credit whose links do not resolve is not a credit: the caller falls back to plain
+  // text rather than printing a name that leads nowhere.
+  check(
+    "Вставка со стока: негодный кредит не превращается в половину подписи",
+    stockCaptionNodes({
+      authorName: "Иван",
+      authorUrl: "https://evil.example/@ivan",
+      photoUrl: "https://unsplash.com/photos/abc123",
+    }) === null,
+    "чужой хост отвергнут",
+  );
+
+  stock.destroy();
 }
 
 /**

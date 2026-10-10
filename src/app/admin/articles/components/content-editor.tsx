@@ -8,6 +8,7 @@ import {
   AlignRight,
   Bold,
   Building2,
+  Camera,
   Code,
   Heading2,
   Heading3,
@@ -30,10 +31,15 @@ import { editorBodyHtml } from "@/app/admin/articles/components/editor-output";
 import {
   InsertImageDialog,
 } from "@/app/admin/articles/components/insert-image-dialog";
-import { insertFigureAtCaret } from "@/app/admin/articles/components/article-figure-node";
+import {
+  insertFigureAtCaret,
+  stockAlt,
+  stockCaptionNodes,
+} from "@/app/admin/articles/components/article-figure-node";
 import { insertQuoteSourceAtCaret } from "@/app/admin/articles/components/article-quote";
 import { EntityCardPicker } from "@/app/admin/articles/components/entity-card-picker";
 import { ReadAlsoPicker } from "@/app/admin/articles/components/read-also-picker";
+import { StockPhotoPicker } from "@/app/admin/articles/components/stock-photo-picker";
 import {
   LinkDialog,
   type LinkRequest,
@@ -57,7 +63,7 @@ type ToolbarAction = {
     isActive: (editor: Editor) => boolean;
     run: (editor: Editor) => void;
   };
-  opens?: "link" | "video" | "figure" | "quoteSource" | "entityCard" | "readAlso";
+  opens?: "link" | "video" | "figure" | "quoteSource" | "entityCard" | "readAlso" | "stockPhoto";
   /**
    * Only shown when this returns true.
    *
@@ -207,6 +213,16 @@ const toolbarGroups = (autoRelated: boolean): ToolbarAction[][] => [
     { label: "Вставить фото в текст", icon: ImageIcon, opens: "figure" },
     {
       /*
+        Beside «Вставить фото в текст» rather than in another group: both put a picture
+        into the body at the caret and differ only in where the picture comes from, so
+        they belong to one decision an editor is making.
+      */
+      label: "🖼️ Фото со стока",
+      icon: Camera,
+      opens: "stockPhoto",
+    },
+    {
+      /*
         Gated, and the gate is the reason this is not simply another button. With the
         article's automatic flag on, the page places a plate between the second and third
         paragraph by itself; offering a second way to place one would let an editor end up
@@ -250,6 +266,13 @@ type ContentEditorProps = {
   media?: MediaItem[];
   /** Cover of the article being edited, offered in the same list. */
   coverImage?: string;
+  /**
+   * The article's headline, used to seed a search that has nothing else to go on.
+   *
+   * The stock picker takes the editor's selected text if there is any; with a bare caret
+   * the headline is the only description of the subject anyone has written down yet.
+   */
+  articleTitle?: string;
   /**
    * Whether the page will place a "read also" plate by itself.
    *
@@ -312,6 +335,7 @@ export function ContentEditor({
   error,
   media = [],
   coverImage = "",
+  articleTitle = "",
   // True by default, matching the column: the button is hidden unless the editor has
   // actually turned the automatic plate off.
   autoRelatedArticle = true,
@@ -324,6 +348,15 @@ export function ContentEditor({
   const [imageOpen, setImageOpen] = useState(false);
   const [entityOpen, setEntityOpen] = useState(false);
   const [readAlsoOpen, setReadAlsoOpen] = useState(false);
+  /**
+   * The text the stock picker opens with.
+   *
+   * Held separately from the dialog's own state because it is captured at the moment the
+   * button is pressed: the selection is gone by the time the editor types in the search
+   * field, and re-reading it then would seed the field with the dialog's own text.
+   */
+  const [stockSeed, setStockSeed] = useState("");
+  const [stockOpen, setStockOpen] = useState(false);
 
   /**
    * Whether the writer has ever put the cursor in the text.
@@ -561,6 +594,22 @@ export function ContentEditor({
     } else if (action.opens === "readAlso") {
       setToolbarError(null);
       setReadAlsoOpen(true);
+    } else if (action.opens === "stockPhoto") {
+      /*
+        The selection is the query.
+
+        An editor who has just written «осенний парк в тумане» and wants a photograph of it
+        should not have to type it again, and the highlighted words are the best hint anyone
+        has about what the picture should be. Captured here rather than read inside the
+        dialog, because pressing the button moves focus and `selection` will have changed by
+        the time the dialog mounts.
+
+        With nothing selected it falls back to the article's headline, and with no headline
+        either the field opens empty — which is the honest state for a new story.
+      */
+      setToolbarError(null);
+      setStockSeed(selectedText(editor) || articleTitle);
+      setStockOpen(true);
     } else if (action.opens === "quoteSource") {
       // The only toolbar action that can be unavailable. Said out loud rather than
       // shown disabled: a greyed-out button explains nothing, and the reason — the
@@ -664,8 +713,46 @@ export function ContentEditor({
       <p className="text-xs text-neutral-400">
         Форматирование видно сразу, как на сайте. «Ссылка» (или Ctrl+K) открывает
         окно с поиском по опубликованным новостям, «Видео» спросит адрес ролика,
-        «Вставить фото в текст» поставит картинку в то место, где стоит курсор.
+        «Вставить фото в текст» поставит картинку в то место, где стоит курсор,
+        а «Фото со стока» подберёт снимок на Unsplash — искать можно по-русски,
+        запрос переведётся сам.
       </p>
+
+      {stockOpen && editor ? (
+        <StockPhotoPicker
+          open={stockOpen}
+          title={stockSeed}
+          onClose={() => setStockOpen(false)}
+          onPicked={(chosen) => {
+            /*
+              The same insertion the gallery uses, so a stock photograph and one from the
+              article's own gallery arrive in the body identically and behave the same in
+              every reader-facing path afterwards.
+
+              The caption carries links, not just the photographer's name: Unsplash's terms
+              ask for the profile and the photo page to be reachable, and a `figcaption` is
+              inline content, so the credit needs no columns of its own the way the cover's
+              does. Where the links cannot be built the credit falls back to plain text —
+              `stockCaptionNodes` returns null rather than a half-credit with a name and no
+              destination.
+
+              `alt` is the photographer's own sentence where they wrote one, and the credit
+              otherwise: an empty `alt` hides the picture from a screen reader entirely,
+              and the credit is at least true.
+            */
+            const caption =
+              stockCaptionNodes({
+                authorName: chosen.stock.authorName,
+                authorUrl: chosen.stock.authorUrl,
+                photoUrl: chosen.stock.photoUrl,
+              }) ?? chosen.credit;
+
+            insertFigureAtCaret(editor, chosen.url, stockAlt(chosen.alt, chosen.credit), caption);
+            setStockOpen(false);
+            setToolbarError(null);
+          }}
+        />
+      ) : null}
 
       {linkOpen ? (
         <LinkDialog
@@ -757,14 +844,26 @@ export function ContentEditor({
 }
 
 /**
- * The text the link dialog should offer to put inside a new link: the current
- * selection, or empty when the caret is just sitting somewhere.
+ * The words the editor has highlighted, or an empty string at a bare caret.
+ *
+ * Shared by the link dialog and the stock picker, which want the same thing for different
+ * reasons: the link dialog offers the selection as the link's label, and the picker offers
+ * it as the search query. One implementation, so the two cannot come to disagree about
+ * what "the selected text" means.
  */
-function linkLabel(editor: Editor | null): string {
+function selectedText(editor: Editor | null): string {
   if (!editor) return "";
   const { from, to, empty } = editor.state.selection;
   if (empty) return "";
   return editor.state.doc.textBetween(from, to, " ");
+}
+
+/**
+ * The text the link dialog should offer to put inside a new link: the current
+ * selection, or empty when the caret is just sitting somewhere.
+ */
+function linkLabel(editor: Editor | null): string {
+  return selectedText(editor);
 }
 
 /** Editor type alias, kept local so the toolbar signature reads cleanly. */

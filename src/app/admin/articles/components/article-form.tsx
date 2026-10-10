@@ -1017,6 +1017,7 @@ export function ArticleForm({
                   error={errors.contentHtml}
                   media={media}
                   coverImage={coverImage}
+                  articleTitle={title}
                   autoRelatedArticle={autoRelatedArticle}
                   ref={editorRef}
                   onCaretChange={setCaretPlaced}

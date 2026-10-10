@@ -1,6 +1,7 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 
 import { FIGURE_CAPTION_CLASS, FIGURE_CLASS } from "@/lib/article-figure";
+import { stockCreditLinks } from "@/lib/unsplash";
 
 /**
  * A photo inside the article body, with an optional caption.
@@ -97,18 +98,90 @@ export const ArticleFigure = Node.create({
  * expect. It also keeps the editor and the database showing the same thing, which is
  * the property this editor spends most of its comments protecting.
  */
-export function figureContent(src: string, alt: string, caption: string) {
-  const trimmedCaption = caption.trim();
+export function figureContent(
+  src: string,
+  alt: string,
+  caption: string | FigureCaptionNode[],
+) {
+  /*
+    A string is the common case and stays the common case: the caption typed under a
+    photograph the editor uploaded is plain text.
+
+    An array is for a credit that has to carry links. Unsplash's terms ask for the
+    photographer and the photo to be reachable, not merely named, and a `figcaption` is
+    inline content — so the same slot holds either a sentence or a sentence with anchors in
+    it, rather than the credit needing a column of its own the way the cover's does.
+  */
+  const nodes: FigureCaptionNode[] =
+    typeof caption === "string"
+      ? caption.trim()
+        ? [{ type: "text", text: caption.trim() }]
+        : []
+      : caption;
+
   return {
     type: "articleFigure",
     content: [
       { type: "image", attrs: { src, alt } },
-      {
-        type: "articleFigcaption",
-        content: trimmedCaption ? [{ type: "text", text: trimmedCaption }] : [],
-      },
+      { type: "articleFigcaption", content: nodes },
     ],
   };
+}
+
+/**
+ * What a stock photograph's `alt` should be.
+ *
+ * The photographer's own description when they wrote one, and the credit otherwise. The
+ * fallback is not decoration: `alt=""` is how a page tells a screen reader that an image is
+ * decorative, so shipping an empty one silently removes the picture from the article for
+ * anyone who cannot see it — and the credit at least says what the picture is and who made
+ * it. Expressed here rather than inline in the picker so the rule can be asserted; `||` on
+ * two fields in a JSX handler is not something a test can reach.
+ */
+export function stockAlt(alt: string, credit: string): string {
+  return alt.trim() || credit.trim();
+}
+
+/** One node inside a `figcaption`: text, or a link wrapping text. */
+export type FigureCaptionNode =
+  | { type: "text"; text: string }
+  | { type: "text"; text: string; marks: { type: "link"; attrs: { href: string; target: string; rel: string } }[] };
+
+/**
+ * A stock credit as caption nodes: the photographer's name and the word «Unsplash»,
+ * each linking where the licence requires.
+ *
+ * Built here rather than in the picker because this is the module that knows the caption's
+ * shape, and the shape is what makes the links possible at all — a `figcaption` holds
+ * inline content, so the credit travels with the picture instead of needing four columns
+ * of its own the way the cover's does.
+ *
+ * `stockCreditLinks` decides what counts as a valid credit, and it is the same function the
+ * public cover caption uses. One rule for both places: a name with no reachable profile is
+ * not an attribution, and printing one would look complete while breaking the terms it
+ * exists to satisfy. When it refuses, this returns null and the caller falls back to plain
+ * text rather than emitting a half-credit.
+ */
+export function stockCaptionNodes(input: {
+  authorName: string;
+  authorUrl: string;
+  photoUrl: string;
+}): FigureCaptionNode[] | null {
+  const links = stockCreditLinks(input);
+  if (!links) return null;
+
+  const anchor = (text: string, href: string): FigureCaptionNode => ({
+    type: "text",
+    text,
+    marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }],
+  });
+
+  return [
+    { type: "text", text: "Фото: " },
+    anchor(links.authorName, links.authorUrl),
+    { type: "text", text: " / " },
+    anchor("Unsplash", links.photoUrl),
+  ];
 }
 
 /**
@@ -132,7 +205,7 @@ export function insertFigureAtCaret(
   editor: FigureEditor,
   src: string,
   alt: string,
-  caption: string,
+  caption: string | FigureCaptionNode[],
 ): void {
   const { from, to } = editor.state.selection;
 

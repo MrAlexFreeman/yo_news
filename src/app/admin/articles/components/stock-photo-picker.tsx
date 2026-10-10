@@ -22,6 +22,13 @@ import { cn } from "@/lib/utils";
 export type StockPhotoChosen = {
   url: string;
   credit: string;
+  /**
+   * The photographer's own description of the picture, for `alt`.
+   *
+   * Empty when they wrote none; the caller falls back to the credit, because an empty
+   * `alt` hides the image from a screen reader instead of merely labelling it badly.
+   */
+  alt: string;
   stock: {
     photoId: string;
     authorName: string;

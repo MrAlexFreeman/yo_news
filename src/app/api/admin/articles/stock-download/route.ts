@@ -162,6 +162,16 @@ export async function POST(request: Request) {
     url: `${UPLOAD_URL_PREFIX}${filename}`,
     // The credit as text, for `photoSource`.
     credit: formatStockCredit(photo),
+    /*
+      What the photographer wrote about the picture, for `alt`.
+
+      Not the same thing as the credit and not a substitute for it: the credit says who
+      took it, the description says what is on it. The reader who cannot see the image is
+      owes the second. Empty when the photographer wrote nothing, and the caller falls back
+      to the credit rather than shipping an empty `alt`, which hides the picture from a
+      screen reader entirely.
+    */
+    alt: photo.description ?? "",
     // And as its two links, for the columns that carry the licence's requirements.
     stock: {
       photoId: photo.id,
