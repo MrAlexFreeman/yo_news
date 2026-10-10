@@ -1125,6 +1125,93 @@ function checkDeepInfraEnvelope() {
  * before the first paint and without ever running this code — so the failure mode is an
  * Android build that installs with a blank icon, and nothing in the browser to notice it. That
  * is why these are asserted against what the server actually returns rather than against the
+/**
+ * Runs of light pixels along one row of a downscaled icon.
+ *
+ * The unit both icon-shape checks are built from: the dots are two runs, the stem is one
+ * whose length is the stroke weight. Reading rendered pixels rather than the numbers in the
+ * generator is the point — a letter can be specified as bold and still arrive thin after the
+ * rasteriser has averaged sixteen pixels into one.
+ */
+async function lightRuns(
+  png: Uint8Array,
+  size: number,
+  rowFraction: number,
+): Promise<number[]> {
+  const sharp = (await import("sharp")).default;
+  const { data, info } = await sharp(Buffer.from(png))
+    .resize(size, size, { kernel: "lanczos3" })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const y = Math.min(size - 1, Math.max(0, Math.round(size * rowFraction)));
+  const light: boolean[] = [];
+  for (let x = 0; x < size; x += 1) {
+    const index = (y * size + x) * info.channels;
+    const luminance =
+      0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2];
+    light.push(luminance > 150);
+  }
+
+  const runs: number[] = [];
+  let run = 0;
+  for (const on of [...light, false]) {
+    if (on) run += 1;
+    else if (run > 0) {
+      runs.push(run);
+      run = 0;
+    }
+  }
+
+  return runs;
+}
+
+/** The most common colour in a PNG, or null if it cannot be read. */
+async function dominantColour(
+  png: Uint8Array,
+): Promise<{ r: number; g: number; b: number } | null> {
+  const sharp = (await import("sharp")).default;
+  try {
+    const { dominant } = await sharp(Buffer.from(png)).stats();
+    return { r: dominant.r, g: dominant.g, b: dominant.b };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The share of a PNG's pixels that read as light.
+ *
+ * The letter, in one number. An icon whose mark is a thin light line on a large dark field
+ * scores close to zero here even though the file plainly contains both colours — which is
+ * how the previous favicon looked correct in the editor and arrived as a black square on a
+ * tab. Measured at 32px rather than at the file's own 192, because 32 is closer to the size
+ * a browser actually draws.
+ */
+async function lightPixelShare(png: Uint8Array): Promise<number> {
+  const sharp = (await import("sharp")).default;
+  try {
+    const { data, info } = await sharp(Buffer.from(png))
+      .resize(32, 32, { kernel: "lanczos3" })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    let light = 0;
+    for (let index = 0; index < data.length; index += info.channels) {
+      const luminance =
+        0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2];
+      if (luminance > 150) light += 1;
+    }
+
+    return light / (data.length / info.channels);
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * source: a manifest naming an icon file that does not exist looks perfectly correct in review
  * and only breaks on a device.
  */
@@ -1183,7 +1270,8 @@ async function checkPwaAssets(base: string) {
   const declared = new Set(icons.map((icon) => `${icon.src}|${icon.sizes}`));
   check(
     "Манифест: заявлены обе обязательные иконки",
-    declared.has("/icon-192.png|192x192") && declared.has("/icon-512.png|512x512"),
+    declared.has("/icons/icon-192.png|192x192") &&
+      declared.has("/icons/icon-512.png|512x512"),
     [...declared].join(", "),
   );
 
@@ -1261,12 +1349,94 @@ async function checkPwaAssets(base: string) {
       html.includes('<meta name="apple-mobile-web-app-title" content="Ё-Новости"/>'),
     "три тега apple-web-app",
   );
+  /*
+    What the tab and the home screen actually get.
+
+    Four formats rather than a list of paths, because each covers something the others do
+    not: the ICO is what a browser asks for by default and what a bookmark bar uses, the SVG
+    is the one modern browsers prefer and the only vector, the PNG is the floor for anything
+    that will not take SVG, and the apple icon is what iOS puts on the home screen — iOS
+    ignores both the manifest and SVG, so without it a bookmark gets a screenshot.
+
+    The ICO's URL carries a content hash, which is why the assertion is a prefix rather than
+    an equality: the hash changes whenever the icon does, and that is the point of it.
+  */
   check(
-    "Иконки подключены в head, включая apple-touch-icon",
-    html.includes('rel="icon" href="/icon-192.png"') &&
-      html.includes('rel="icon" href="/icon-512.png"') &&
-      html.includes('rel="apple-touch-icon" href="/apple-touch-icon.png"'),
-    "icon 192, icon 512, apple-touch-icon",
+    "Иконки подключены в head: ico, svg, png и apple",
+    /rel="icon" href="\/favicon\.ico\?favicon\.[^"]+\.ico"/.test(html) &&
+      html.includes('<link rel="icon" href="/icon.svg" type="image/svg+xml"/>') &&
+      html.includes('<link rel="icon" href="/icon.png" sizes="32x32" type="image/png"/>') &&
+      html.includes('<link rel="apple-touch-icon" href="/apple-icon.png" sizes="180x180"'),
+    "ico + svg + png + apple",
+  );
+  /*
+    The icon is the colour, not the letter.
+
+    This is the assertion that would have caught the black square: the previous mark was a
+    thin orange «Е» on near-black, and measured at 192px its dominant colour was `#080818`.
+    Reduced to the 16 pixels a tab has, that is a black rectangle — the letter carries too
+    little ink to survive the averaging. Asserting the *dominant* colour, rather than that
+    the file merely contains orange somewhere, is what makes the check meaningful: the old
+    file would have passed a `includes(oранжевый)` test.
+  */
+  const iconPng = new Uint8Array(
+    await (await fetch(`${base}/icons/icon-192.png`)).arrayBuffer(),
+  );
+  const dominant = await dominantColour(iconPng);
+  check(
+    "Иконка: доминирует яркий оранжевый, а не тёмный фон",
+    // Warm and saturated, rather than a specific hex: the check exists to catch a return to
+    // a dark field, not to freeze the shade. `#080818` — the colour the old icon measured —
+    // fails every one of these by a wide margin.
+    dominant !== null &&
+      dominant.r > 170 &&
+      dominant.g > 50 &&
+      dominant.g < 150 &&
+      dominant.b < 90,
+    `доминирующий ${dominant ? `rgb(${dominant.r}, ${dominant.g}, ${dominant.b})` : "не прочитан"}`,
+  );
+  check(
+    "Иконка: белая буква занимает заметную долю площади",
+    // A letter that survives being averaged down to 16px has to be a real share of the
+    // canvas. Measured on the file as generated: about a quarter.
+    (await lightPixelShare(iconPng)) > 0.12,
+    `светлых пикселей ${((await lightPixelShare(iconPng)) * 100).toFixed(0)}%`,
+  );
+  /*
+    Asked of the 16px render, not the 192px file.
+
+    At 192 the dots are 60 pixels across and unmistakable; the question a favicon has to
+    answer is what happens when a browser has sixteen. `r = 8` in the generator still draws
+    two dots at full size and produces none here — measured, and the reason this check
+    exists.
+  */
+  const dotRuns = (await lightRuns(iconPng, 16, 0.234)).filter((run) => run >= 1);
+  check(
+    "Иконка: обе точки над «Ё» различимы уже на 16x16",
+    dotRuns.length === 2,
+    `пятен в строке точек: ${dotRuns.length} (${dotRuns.join("+") || "нет"})`,
+  );
+  /*
+    The stroke weight, read off the render.
+
+    Sampled at 62% of the height, which is the gap between the middle bar and the bottom
+    one — measured, not assumed: at that row the row contains exactly one run, the stem, so
+    its length *is* the stroke. The other gaps are the same 16 units and land on a pixel
+    boundary at small sizes, where anti-aliasing merges them with a bar.
+
+    Measured at 192 rather than at 32, because at 32 the gap itself is under a pixel. The
+    figure is a share of the canvas rather than a pixel count, so it means the same thing at
+    any size and does not need re-tuning if the icon is ever rendered larger.
+
+    The previous icon drew 40 units of 512 — 7.8%, which is 1.3 pixels at 16 — and the
+    threshold sits between that and the current 14%.
+  */
+  const stemRuns = await lightRuns(iconPng, 192, 0.62);
+  const strokeShare = Math.max(0, ...stemRuns) / 192;
+  check(
+    "Иконка: штрих буквы жирный, а не волосок",
+    strokeShare >= 0.1,
+    `ширина стойки ${(strokeShare * 100).toFixed(1)}% ширины иконки`,
   );
 
   /*

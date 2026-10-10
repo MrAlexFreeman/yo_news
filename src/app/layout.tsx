@@ -62,11 +62,24 @@ export const metadata: Metadata = {
     title: "Ё-Новости",
   },
   icons: {
+    /*
+      Three formats, deliberately, and the order is the preference order a browser reads.
+
+      `favicon.ico` is not listed here because it does not need to be: it lives at
+      `src/app/favicon.ico`, and Next emits its own link for it with a content hash — so a
+      changed icon reaches a reader who already has the old one cached, which a plain
+      `/favicon.ico` cannot promise. Adding it here as well would print the same icon twice.
+
+      The SVG is what modern browsers use: one vector file that is crisp at every size and
+      costs 528 bytes. The PNG is the floor for anything that does not take SVG, and the
+      apple icon is what iOS puts on the home screen — iOS ignores SVG and ignores the
+      manifest, so without it a bookmark gets a screenshot of the page.
+    */
     icon: [
-      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon.png", sizes: "32x32", type: "image/png" },
     ],
-    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+    apple: [{ url: "/apple-icon.png", sizes: "180x180", type: "image/png" }],
   },
   alternates: {
     canonical: "/",
