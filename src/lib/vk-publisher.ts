@@ -377,16 +377,38 @@ async function uploadCoverImage(imageUrl: string): Promise<string | null> {
 /**
  * How many times a failing upload is retried.
  *
- * Measured, not assumed: while diagnosing this on production, `pu.vk.com` answered a first
- * attempt with an HTTP 504 "page is temporarily unavailable" and the next one with a
- * perfectly good payload. One request without a retry meant one wall post without a cover
- * for a reason that had nothing to do with the cover — and the cover is the whole reason
- * the pipeline exists.
+ * Measured rather than guessed: uploading five different covers three times each on
+ * production gave 200, 200, 504 / 200, 504, 504 / 200, 200, 504 / 504, 504, 200 / 200, 200,
+ * 200 — roughly a quarter of all attempts answered with an HTTP 504 "page is temporarily
+ * unavailable", independent of file size (172 KB files failed as readily as 830 KB ones).
+ * VK's upload server is simply unreliable, and one attempt turned that into one wall post
+ * without a cover for a reason that had nothing to do with the cover.
+ *
+ * Five, not three: the failures cluster, which is what a server under load looks like, so
+ * the odds do not improve the way independent failures would. In the session where this was
+ * measured, three consecutive attempts on one cover all came back 504.
  */
-const UPLOAD_ATTEMPTS = 3;
+const UPLOAD_ATTEMPTS = 5;
 
-/** Pause between upload attempts. Short: the reader is waiting on the editor's save. */
-const UPLOAD_BACKOFF_MS = 1_500;
+/**
+ * Exported for the check suite.
+ *
+ * The number is a policy, not an implementation detail: it is the difference between a
+ * post with a cover and a post without one, and it was set from a measurement rather than
+ * a guess. Asserting on it keeps a later "let's tidy this up" from quietly dropping it.
+ */
+export { UPLOAD_ATTEMPTS };
+
+/**
+ * Pause before the next attempt, growing with the attempt number.
+ *
+ * Growing rather than fixed for the same reason the attempts are not fixed: if the server is
+ * busy, the right thing to do is wait longer, not to knock sooner. The total added to the
+ * worst case is a little over ten seconds on a publish an editor is waiting on.
+ */
+function uploadBackoff(attempt: number): number {
+  return 1_500 * attempt;
+}
 
 async function postToVkUploadServer(
   uploadUrl: string,
@@ -412,8 +434,10 @@ async function postToVkUploadServer(
       if (!response.ok) {
         // VK serves an HTML error page for these, so the status is the only usable signal.
         lastProblem = `cover upload failed with HTTP ${response.status}`;
+        // Only a server-side status is worth repeating; a 4xx means the request itself is
+        // wrong and a second identical request will be wrong in exactly the same way.
         if (response.status < 500) throw new Error(lastProblem);
-        await new Promise((resolve) => setTimeout(resolve, UPLOAD_BACKOFF_MS));
+        await sleepBeforeRetry(attempt);
         continue;
       }
 
@@ -424,11 +448,41 @@ async function postToVkUploadServer(
       // A 4xx or an unreadable body is not going to improve on a second try.
       if (error instanceof Error && error.message === lastProblem) throw error;
       lastProblem = error instanceof Error ? error.message : "unknown upload error";
-      await new Promise((resolve) => setTimeout(resolve, UPLOAD_BACKOFF_MS));
+      await sleepBeforeRetry(attempt);
     }
   }
 
   throw new Error(lastProblem || "cover upload failed");
+}
+
+/**
+ * Waits before another attempt — but not after the last one.
+ *
+ * Sleeping then falling out of the loop would add up to seven seconds to an upload that has
+ * already been given up on, on a publish the editor is waiting for.
+ */
+async function backoffBeforeRetry(attempt: number): Promise<void> {
+  if (attempt >= UPLOAD_ATTEMPTS) return;
+  await new Promise((resolve) => setTimeout(resolve, uploadBackoff(attempt)));
+}
+
+/*
+  Replaceable for the same reason `resolveToken` is: the wait is a policy, not a behaviour,
+  and the check suite would otherwise spend fifteen seconds asleep proving that five 500s
+  happen in a row.
+*/
+let sleepBeforeRetry: (attempt: number) => Promise<void> = backoffBeforeRetry;
+
+/** Test-only: replaces the pause between upload attempts. */
+export function setVkRetrySleep(
+  sleep: (attempt: number) => Promise<void> = backoffBeforeRetry,
+): void {
+  sleepBeforeRetry = sleep;
+}
+
+/** Test-only: restores the real backoff. */
+export function resetVkRetrySleep(): void {
+  sleepBeforeRetry = backoffBeforeRetry;
 }
 
 /**

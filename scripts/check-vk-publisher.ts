@@ -8,7 +8,10 @@ import {
   leadSummary,
   parseVkUploadResult,
   publishArticleToVk,
+  resetVkRetrySleep,
+  setVkRetrySleep,
   VK_LEAD_MAX,
+  UPLOAD_ATTEMPTS,
   vkPhotoAttachmentId,
 } from "../src/lib/vk-publisher";
 
@@ -128,6 +131,13 @@ function stubVk(options: {
 }
 
 async function main() {
+  /*
+    The real backoff between upload attempts is a fifteen-second sleep in the worst case,
+    and the suite deliberately provokes that case. Replaced rather than shortened so the
+    number under test stays the one production uses.
+  */
+  setVkRetrySleep(async () => {});
+
   // --- post text ---------------------------------------------------------
   const withLead = buildPostText({
     title: "Заголовок",
@@ -503,6 +513,17 @@ async function main() {
     `${calls.at(-1)?.params.attachments} / ${uploadFailed.warning ?? "нет warning"}`,
   );
 
+  /*
+    Roughly a quarter of all attempts on production answer 504, and they cluster, so the
+    attempt count has to be well above the naive one. Giving up early is a coverless post.
+  */
+  check(
+    "Обложка: попыток больше трёх — 504 у ВК идёт примерно в четверти случаев",
+    // 3 attempts survived one case of three consecutive 504s and lost the cover.
+    UPLOAD_ATTEMPTS >= 5,
+    `UPLOAD_ATTEMPTS=${UPLOAD_ATTEMPTS}`,
+  );
+
   // --- wall.post itself fails -------------------------------------------
   ({ calls } = stubVk({}));
   const realCall = globalThis.fetch;
@@ -526,6 +547,7 @@ async function main() {
   );
 
   globalThis.fetch = realFetch;
+  resetVkRetrySleep();
   if (savedId === undefined) delete process.env.VK_COMMUNITY_ID;
   else process.env.VK_COMMUNITY_ID = savedId;
   if (savedToken === undefined) delete process.env.VK_ACCESS_TOKEN;
