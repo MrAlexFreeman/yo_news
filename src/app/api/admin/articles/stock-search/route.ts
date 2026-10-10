@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { getSetting } from "@/lib/settings";
+import { prepareStockQuery } from "@/lib/stock-query";
+import { translateToStockQuery } from "@/lib/stock-query-translator";
 import {
   searchUnsplash,
   UNSPLASH_HOURLY_LIMIT,
@@ -28,6 +30,20 @@ export const dynamic = "force-dynamic";
  */
 
 type CacheEntry = { at: number; body: unknown; remaining: number | null };
+
+/**
+ * A question to answer without asking Unsplash anything.
+ *
+ * The dialog asks for this when it opens, to fill the search box with English before the
+ * editor has typed anything. Split from the search itself because the two cost different
+ * things: this spends a DeepSeek call, which is cheap and plentiful, where a search spends
+ * one of fifty Unsplash calls an hour — and an editor who then rewrites the query must not
+ * have paid an Unsplash call for the rewrite.
+ */
+type QueryRequest = {
+  /** The Russian title, or whatever the editor has in the field. */
+  text: string;
+};
 
 /**
  * How long an answer is reused.
@@ -84,24 +100,76 @@ function failure(kind: string) {
   return { status: 502, error: "Unsplash недоступен. Попробуйте позже." };
 }
 
+/**
+ * `POST` — turn a Russian phrase into English keywords, without searching.
+ *
+ * Separate from the search on purpose, and the reason is the hourly budget: opening the
+ * dialog must not spend an Unsplash call, because the editor very often retypes the query
+ * afterwards and that first answer would be thrown away. DeepSeek has no such ceiling here,
+ * so the translation is free to spend.
+ */
+export async function POST(request: Request) {
+  if (request.headers.get("content-type")?.split(";")[0].trim() !== "application/json") {
+    return NextResponse.json(
+      { error: "Ожидается POST с Content-Type: application/json." },
+      { status: 415 },
+    );
+  }
+
+  let body: QueryRequest;
+  try {
+    body = (await request.json()) as QueryRequest;
+  } catch {
+    return NextResponse.json({ error: "Тело запроса не является JSON." }, { status: 400 });
+  }
+
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!text) {
+    return NextResponse.json(
+      { error: "Переводить нечего: пришлите заголовок или свой запрос." },
+      { status: 400 },
+    );
+  }
+
+  const prepared = await prepareStockQuery(text, translateToStockQuery);
+
+  return NextResponse.json(prepared, { headers: { "Cache-Control": "no-store" } });
+}
+
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
-  const query = (params.get("q") ?? "").trim();
+  const typed = (params.get("q") ?? "").trim();
   const page = Math.max(1, Math.min(Number(params.get("page")) || 1, 10));
 
-  if (!query) {
+  if (!typed) {
     return NextResponse.json(
       { error: "Введите запрос: пустой поиск вернул бы пять тысяч случайных снимков." },
       { status: 400 },
     );
   }
 
+  /*
+    Translated here as well as in the dialog, because this route is the one thing every
+    caller goes through — an editor who types Russian and presses «Найти» reaches it, and so
+    does anything else that calls the API directly.
+
+    The rule is idempotent by construction: `prepareStockQuery` only translates text that
+    contains Cyrillic, so a query the dialog already translated passes through untouched and
+    is not translated twice.
+  */
+  const prepared = await prepareStockQuery(typed, translateToStockQuery);
+  const query = prepared.query;
+
+  // The cache is keyed by what Unsplash is actually asked for, not by what the editor
+  // typed: "осень" and "autumn" reach the same search, and a second Russian phrasing of it
+  // should be answered from the first one's call rather than spending another.
   const cacheKey = `${query.toLowerCase()}|${page}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
-    return NextResponse.json(cached.body, {
-      headers: { "Cache-Control": "no-store" },
-    });
+    return NextResponse.json(
+      { ...(cached.body as object), translated: prepared.translated },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   const accessKey = (await getSetting("UNSPLASH_ACCESS_KEY")).trim();
@@ -136,6 +204,12 @@ export async function GET(request: Request) {
     // making the editor remember the number.
     limit: UNSPLASH_HOURLY_LIMIT,
     perPage: UNSPLASH_PER_PAGE,
+    // What Unsplash was actually asked for, and whether the editor's words were translated
+    // to get there. Without this a Russian query silently returning English results looks
+    // like the wrong search rather than like a working one.
+    query,
+    translated: prepared.translated,
+    translatedBy: prepared.source,
   };
 
   cachePut(cacheKey, { at: Date.now(), body, remaining: result.remaining });

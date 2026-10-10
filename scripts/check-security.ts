@@ -115,6 +115,14 @@ import {
 import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
 import { stockCreditColumns } from "../src/lib/stock-credit";
 import {
+  buildStockQueryUserMessage,
+  containsCyrillic,
+  fallbackStockQuery,
+  parseStockQueryAnswer,
+  prepareStockQuery,
+  STOCK_QUERY_SYSTEM_PROMPT,
+} from "../src/lib/stock-query";
+import {
   buildSearchUrl,
   formatStockCredit,
   isFetchableUnsplashImage,
@@ -3149,8 +3157,170 @@ async function main() {
 checkImageUpscale();
   await checkFalQueue();
   await checkHuggingFace();
-  checkEntityCards();
-  checkUnsplash();
+  await checkEntityCards();
+  await checkUnsplash();
+  await checkStockQuery();
+
+/**
+ * Turning a Russian headline into keywords Unsplash can match.
+ *
+ * The parser matters more than it looks: Unsplash answers a query it cannot match with an
+ * empty list rather than an error, so a stray `"` or a `Keywords:` prefix in the model's
+ * answer turns into "no photographs of this" — a failure that looks like the picker being
+ * broken and is not.
+ */
+async function checkStockQuery() {
+  /* ---- what triggers a translation at all ---- */
+  check(
+    "Перевод запроса: кириллица определяется верно",
+    containsCyrillic("экологический парк") &&
+      containsCyrillic("Yandex поиск") &&
+      !containsCyrillic("autumn forest") &&
+      !containsCyrillic(""),
+    "только с кириллицей",
+  );
+
+  /*
+    Latin must pass through untouched. An editor who typed `autumn forest` should not have a
+    model rewrite it — that would spend a call and could make it worse.
+
+    Awaited rather than floated: `prepareStockQuery` returns a promise, and a `.then` left
+    un-awaited would register its check after the suite had already printed its summary —
+    a passing line that appears in no report and fails no run.
+  */
+  let translated = 0;
+  const neverCalled = () => {
+    translated += 1;
+    return Promise.resolve("SHOULD NOT HAPPEN");
+  };
+
+  const passthrough = await prepareStockQuery("autumn forest", neverCalled);
+  check(
+    "Перевод запроса: латинский уходит в Unsplash как есть",
+    passthrough.query === "autumn forest" &&
+      passthrough.source === "as-entered" &&
+      passthrough.translated === false &&
+      translated === 0,
+    `${passthrough.query} (${passthrough.source})`,
+  );
+
+  /* ---- and a Russian one really does reach the model ---- */
+  let asked = "";
+  const russian = await prepareStockQuery("экологический парк", (value) => {
+    asked = value;
+    return Promise.resolve("Ecological Park");
+  });
+  check(
+    "Перевод запроса: русский уходит в модель и возвращает английский",
+    asked === "экологический парк" &&
+      russian.query === "Ecological Park" &&
+      russian.source === "deepseek" &&
+      russian.translated === true,
+    `${russian.query} (${russian.source})`,
+  );
+
+  /* ---- and a model that fails does not take the search down with it ---- */
+  const degraded = await prepareStockQuery("экологический парк", () =>
+    Promise.resolve(null),
+  );
+  check(
+    "Перевод запроса: без ответа модели поиск всё равно идёт",
+    degraded.source === "fallback" &&
+      degraded.translated === true &&
+      degraded.query.length > 0,
+    `${degraded.query} (${degraded.source})`,
+  );
+
+  /* ---- the model's answer, cleaned ---- */
+  check(
+    "Перевод запроса: ответ чистится от кавычек и подписи",
+    parseStockQueryAnswer('"autumn forest, lake"') === "Autumn Forest, Lake" &&
+      parseStockQueryAnswer("```\nautumn forest\n```") === "Autumn Forest" &&
+      parseStockQueryAnswer("Keywords: autumn forest") === "Autumn Forest" &&
+      parseStockQueryAnswer("Ключевые слова: autumn forest") === "Autumn Forest",
+    "чисто",
+  );
+  /*
+    A fenced block with a language tag, which is a separate rule from quote-stripping and
+    the only input that catches its absence.
+
+    The plain ``` ``` ``` case passes either way: backticks are in the quote class, so
+    quote-stripping alone already produces the right answer. With a tag, quote-stripping
+    leaves the tag welded to the first word — "```text" → "Text" — and the query silently
+    becomes `Text, Autumn Forest`. Removing the fence rule while keeping the plain-fence
+    assertion green is exactly the mutation this case was added to catch.
+  */
+  check(
+    "Перевод запроса: огороженный блок с языковым тегом не тащит тег в запрос",
+    parseStockQueryAnswer("```text\nautumn forest\n```") === "Autumn Forest" &&
+      parseStockQueryAnswer("```json\nautumn, forest\n```") === "Autumn, Forest",
+    "тег отброшен",
+  );
+  check(
+    "Перевод запроса: кириллица в ответе не считается ключевым словом",
+    // The model sometimes leaves one word untranslated; that word matches nothing and
+    // would otherwise be sent as though it did.
+    parseStockQueryAnswer("autumn forest, ёлки") === "Autumn Forest",
+    "только латиница",
+  );
+  check(
+    "Перевод запроса: не более четырёх слов и без повторов",
+    parseStockQueryAnswer("one, two, three, four, five") === "One, Two, Three, Four" &&
+      parseStockQueryAnswer("forest, forest, lake") === "Forest, Lake",
+    "потолок и дедупликация",
+  );
+  check(
+    "Перевод запроса: пустой или мусорный ответ отвергается",
+    parseStockQueryAnswer("") === null &&
+      parseStockQueryAnswer(null) === null &&
+      parseStockQueryAnswer(42) === null &&
+      parseStockQueryAnswer("«ёлки»") === null,
+    "null → fallback",
+  );
+
+  /* ---- the prompt itself ---- */
+  check(
+    "Перевод запроса: промпт просит только английские ключевые слова",
+    // Asserted as prohibitions being *present*, not absent: the prompt says "no markdown",
+    // so an earlier version of this assertion (`!includes("markdown")`) contradicted the
+    // very sentence it was meant to protect.
+    STOCK_QUERY_SYSTEM_PROMPT.includes("English") &&
+      STOCK_QUERY_SYSTEM_PROMPT.includes("ONLY") &&
+      STOCK_QUERY_SYSTEM_PROMPT.includes("no markdown") &&
+      STOCK_QUERY_SYSTEM_PROMPT.includes("no quotes"),
+    "формат задан",
+  );
+  check(
+    "Перевод запроса: текст заголовка обрезается перед отправкой",
+    buildStockQueryUserMessage("x".repeat(1000)).length < 700,
+    "не уходит целый материал",
+  );
+
+  /* ---- the fallback when DeepSeek is not there ---- */
+  check(
+    "Перевод запроса: без модели латиница и кириллица сохраняются вместе",
+    // Both halves of one headline. The Latin-only reading that came first dropped
+    // «Сбербанк» the moment «Yandex» was found — and a proper noun is the one word here a
+    // photographer may genuinely have shot.
+    fallbackStockQuery("Открыли Yandex и Сбербанк") === "yandex, sberbank",
+    fallbackStockQuery("Открыли Yandex и Сбербанк") ?? "",
+  );
+  check(
+    "Перевод запроса: без латиницы остаётся транслитерация",
+    // Honest about its limits: this matches almost nothing on Unsplash, which is precisely
+    // why it is a fallback and not the main path.
+    fallbackStockQuery("экологический парк") === "ekologicheskiy, park",
+    fallbackStockQuery("экологический парк") ?? "",
+  );
+  check(
+    "Перевод запроса: из одних цифр и мусора запрос не собрать",
+    // "2024, 2025" is not a visual query, and offering it would look like the search had
+    // simply found nothing — which is what it would have done.
+    fallbackStockQuery("2024 2025") === null &&
+      fallbackStockQuery("Итоги 2024 года") === "itogi, goda",
+    "только цифры → null",
+  );
+}
 
 /**
  * The Unsplash picker: what may be fetched, what a credit may say, and what the hourly
@@ -3380,28 +3550,40 @@ async function checkUnsplash() {
   );
 
   /* ---- the query the editor starts from ---- */
+  /*
+    A Cyrillic query must still reach Unsplash rather than being filtered out.
+
+    Reachable and not hypothetical: `prepareStockQuery` returns the raw Russian when nothing
+    can be built from it — «Мы» is two letters and a stop word, so the transliteration has
+    nothing to offer — and a query silently emptied here would search for "" instead of
+    for a phrase that may well match.
+  */
+  check(
+    "Unsplash: кириллица, которую не удалось перевести, всё равно уходит в поиск",
+    buildSearchUrl("мы сегодня") === "https://api.unsplash.com/search/photos?query=%D0%BC%D1%8B+%D1%81%D0%B5%D0%B3%D0%BE%D0%B4%D0%BD%D1%8F&per_page=12&orientation=landscape",
+    buildSearchUrl("мы сегодня"),
+  );
+
   check(
     "Unsplash: ключевые слова берутся из заголовка без стоп-слов",
-    // Five words at most, and only the grammar stop-words go: «новый» is kept because it
-    // is a word a photographer would search for, unlike «в» or «по».
+    // The verb goes too: «открыли» is not something a photographer shot, and the
+    // transliteration fallback in lib/stock-query.ts now reads this same list — the field
+    // and the search must not disagree about which words describe a picture.
     keywordsFromTitle("В Екатеринбурге открыли новый экологический парк") ===
-      "екатеринбурге открыли новый экологический парк" &&
-      // The five-word cap bites before the stop words run out: «и ещё один» is past it,
-      // not filtered by it, and the assertion would be checking the wrong rule.
+      "екатеринбурге новый экологический парк" &&
+      // «новый» stays: a newsroom is looking for the new park.
       keywordsFromTitle("В Екатеринбурге открыли новый экологический парк и ещё один") ===
-      "екатеринбурге открыли новый экологический парк" &&
-      // Here they do bite — «в» and «вновь» aside, «в» is gone and «центре» is not.
-      keywordsFromTitle("В центре Екатеринбурга вновь открылся парк") ===
-      "центре екатеринбурга вновь открылся парк" &&
+      "екатеринбурге новый экологический парк ещё" &&
       keywordsFromTitle("") === "",
-    "стоп-слова убраны, первые пять слов",
+    "глаголы и служебные убраны, первые пять слов",
   );
 
   /* ---- the request the route builds ---- */
   const firstPage = buildSearchUrl("park", 1);
   check(
-    "Unsplash: запрос содержит три горизонтальных снимка и не повторяет первую страницу",
-    firstPage.includes("per_page=3") &&
+    "Unsplash: запрос отдаёт двенадцать горизонтальных снимков и не повторяет первую страницу",
+    firstPage.includes(`per_page=${UNSPLASH_PER_PAGE}`) &&
+      UNSPLASH_PER_PAGE === 12 &&
       firstPage.includes("orientation=landscape") &&
       firstPage.includes("query=park") &&
       // `&page=`, not `page=` — which `per_page=3` contains, and which made this

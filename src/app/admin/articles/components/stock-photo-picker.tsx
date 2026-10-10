@@ -35,7 +35,16 @@ type SearchResponse = {
   total?: number;
   remaining?: number | null;
   limit?: number;
+  query?: string;
+  translated?: boolean;
+  translatedBy?: string;
   error?: string;
+};
+
+type PreparedQuery = {
+  query: string;
+  source: "deepseek" | "fallback" | "as-entered";
+  translated: boolean;
 };
 
 export function StockPhotoPicker({
@@ -51,12 +60,12 @@ export function StockPhotoPicker({
   onPicked: (chosen: StockPhotoChosen) => void;
 }) {
   /*
-    No effect resetting the fields when the dialog opens.
+    The field starts as the title's own keywords, in Russian.
 
-    This component returns `null` while closed, so it already unmounts between uses and
-    mounts fresh with its initial state — a `useEffect` doing `setQuery(...)` here would be
-    correcting state that is already correct, after a render that showed the old query.
-    Seeding through `useState`'s lazy initialiser is the same thing without the frame.
+    Not translated here: this component returns `null` while closed, so it mounts fresh, and
+    the translation is a network call that must not be part of painting a dialog. The field
+    shows Russian for the moment it takes to answer, and is then replaced with the English
+    the editor actually wants to search.
   */
   const [query, setQuery] = useState(() => keywordsFromTitle(title));
   const [photos, setPhotos] = useState<StockPhoto[]>([]);
@@ -65,10 +74,64 @@ export function StockPhotoPicker({
   const [remaining, setRemaining] = useState<number | null>(null);
   const [limit, setLimit] = useState(50);
   const [loading, setLoading] = useState(false);
+  /*
+    True from the first render, not set inside the effect.
+
+    This component returns `null` while closed, so it mounts fresh each time it opens and
+    the translation always starts — making `true` the honest initial state rather than
+    something the effect has to reach for. It is also the same thing the lint rule is about:
+    a synchronous setState in an effect body is correcting state that is already right, one
+    render after the dialog is already on screen.
+  */
+  const [translating, setTranslating] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  /*
+    The translation, asked for on open.
+
+    Spent before any search rather than inside it, and that is the point: the editor almost
+    always edits the suggested query, and every second Unsplash call spent on a query that
+    is about to be retyped is one of fifty that was never going to be looked at. DeepSeek has
+    no such ceiling here, so the translation goes first and the search happens when the
+    editor asks for it.
+  */
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+
+    fetch("/api/admin/articles/stock-search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: title }),
+    })
+      .then((response) => response.json())
+      .then((prepared: PreparedQuery) => {
+        if (cancelled || !prepared?.query) return;
+        setQuery(prepared.query);
+        // Said out loud when the translation fell back: the editor is about to search a
+        // transliteration, which usually returns little, and that is worth knowing before
+        // they conclude the picker is broken.
+        setNote(
+          prepared.source === "fallback"
+            ? "DeepSeek недоступен — в поле транслитерация. Лучше вписать слова по-английски."
+            : null,
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setNote("Не удалось перевести запрос — поиск пойдёт как есть.");
+      })
+      .finally(() => {
+        if (!cancelled) setTranslating(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, title]);
 
   /*
     Results accumulate across pages: "показать ещё" appends rather than replaces, so the
@@ -78,6 +141,7 @@ export function StockPhotoPicker({
   const runSearch = useCallback(async (term: string, nextPage: number, append: boolean) => {
     setLoading(true);
     setError(null);
+    setNote(null);
 
     try {
       const response = await fetch(
@@ -98,6 +162,11 @@ export function StockPhotoPicker({
       if (typeof payload.limit === "number") setLimit(payload.limit);
       setPage(nextPage);
       setSearched(true);
+
+      // The field adopts what Unsplash was actually asked for, so a search typed in
+      // Russian leaves the editor looking at the English that produced these results
+      // rather than wondering why Russian words found English photographs.
+      if (payload.translated && payload.query) setQuery(payload.query);
     } catch {
       setError("Не удалось обратиться к Unsplash.");
     } finally {
@@ -179,7 +248,7 @@ export function StockPhotoPicker({
           <button
             type="button"
             onClick={() => void runSearch(query, 1, false)}
-            disabled={loading || !query.trim() || exhausted}
+            disabled={loading || translating || !query.trim() || exhausted}
             className="flex items-center gap-1.5 rounded bg-neutral-800 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-700 disabled:opacity-50"
           >
             {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
@@ -187,12 +256,28 @@ export function StockPhotoPicker({
           </button>
         </div>
 
-        <div className="px-3 py-2 text-[11px] text-neutral-400">
-          {exhausted
-            ? "Часовой лимит Unsplash исчерпан — поиск вернётся через час."
-            : remaining !== null
-              ? `Осталось запросов в этом часу: ${remaining} из ${limit}. Поиск — по кнопке, не по каждой букве.`
-              : `Бесплатный план Unsplash: ${limit} запросов в час. Поиск — по кнопке.`}
+        <div className="space-y-1 px-3 py-2 text-[11px] text-neutral-400">
+          <p>
+            {exhausted
+              ? "Часовой лимит Unsplash исчерпан — поиск вернётся через час."
+              : remaining !== null
+                ? `Осталось запросов в этом часу: ${remaining} из ${limit}. Поиск — по кнопке, не по каждой букве.`
+                : `Бесплатный план Unsplash: ${limit} запросов в час. Поиск — по кнопке.`}
+          </p>
+
+          {/*
+            Both states are worth a line rather than a spinner that vanishes: the editor is
+            waiting to type, and a field that quietly changes from Russian to English while
+            they read it reads as the form misbehaving.
+          */}
+          {translating ? (
+            <p className="flex items-center gap-1 text-neutral-500">
+              <Loader2 className="size-3 animate-spin" aria-hidden />
+              Переводим запрос на английский — Unsplash ищет по-английски.
+            </p>
+          ) : note ? (
+            <p className="text-amber-700">{note}</p>
+          ) : null}
         </div>
 
         {error ? (
@@ -209,7 +294,7 @@ export function StockPhotoPicker({
                 : "Введите запрос и нажмите «Найти». Ключевые слова подставлены из заголовка."}
             </p>
           ) : (
-            <ul className="grid gap-3 sm:grid-cols-3">
+            <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {photos.map((photo) => (
                 <li key={photo.id}>
                   <button
@@ -264,7 +349,7 @@ export function StockPhotoPicker({
                 onClick={() => void runSearch(query, page + 1, true)}
                 className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs text-neutral-700 transition-colors hover:bg-neutral-50"
               >
-                Показать ещё
+                {loading ? "Загружаем…" : `Показать ещё (страница ${page + 1})`}
               </button>
             ) : exhausted ? (
               <p className="text-[11px] text-amber-700">

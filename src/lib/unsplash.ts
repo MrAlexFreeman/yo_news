@@ -22,8 +22,15 @@ export const UNSPLASH_PHOTO_URL = "https://api.unsplash.com/photos";
 /** Where the bytes actually live. The only host an image may be fetched from. */
 export const UNSPLASH_IMAGE_HOSTS = ["images.unsplash.com"] as const;
 
-/** Results per page. Three, as asked — and it is also what the grid shows at once. */
-export const UNSPLASH_PER_PAGE = 3;
+/**
+ * Results per page. Twelve, and the grid shows all twelve at once.
+ *
+ * Changed from three when the picker grew a grid: three cards and a "show more" button cost
+ * a click per three photographs, and each page is one of fifty hourly calls. Twelve fills
+ * a three-column grid in four rows and covers most of what an editor wants from one word
+ * before they start clicking through.
+ */
+export const UNSPLASH_PER_PAGE = 12;
 
 /** How many pages the editor may page through in one sitting. */
 export const UNSPLASH_MAX_PAGES = 10;
@@ -56,11 +63,13 @@ export const UNSPLASH_QUERY_LIMIT = 120;
 /**
  * The search URL for one page.
  *
- * `orientation=landscape` and a fixed `per_page`. Both come from the brief, and the
- * orientation is also the only reason the results are worth showing: a portrait photo on a
- * 16:9 cover is cropped by the layout rather than chosen by the editor.
+ * `orientation=landscape` and a fixed `per_page`. The orientation is also the only reason
+ * the results are worth showing: a portrait photo on a 16:9 cover is cropped by the layout
+ * rather than chosen by the editor.
  */
 export function buildSearchUrl(query: string, page = 1): string {
+  // Page 1 is left off: Unsplash treats `page=1` as identical and there is no reason to
+  // put a redundant parameter in a URL the route caches by.
   const term = query.trim().slice(0, UNSPLASH_QUERY_LIMIT);
 
   const url = new URL(UNSPLASH_SEARCH_URL);
@@ -80,6 +89,25 @@ export function photoUrl(id: string): string {
 }
 
 /**
+ * Russian words that carry no visual meaning.
+ *
+ * Exported because `lib/stock-query.ts` needs the same list for its transliteration
+ * fallback, and the two must agree: one seeds the search box and the other decides what to
+ * send when the model is unavailable. Different lists would show the editor one set of words
+ * in the field and search another — which is the kind of thing nobody notices until a
+ * translated title finds nothing and nobody can say why.
+ *
+ * Deliberately short and grammatical. «новый» and «год» are not here: a newsroom asks for
+ * the new park, and the year may be the only specific thing in the headline.
+ */
+export const TITLE_STOP_WORDS = new Set([
+  "в", "на", "по", "и", "не", "что", "с", "к", "из", "у", "о", "об", "для", "а", "но",
+  "как", "мы", "вы", "они", "он", "она", "это", "его", "её", "их", "их",
+  "открыл", "открыли", "стал", "стала", "стали", "начал", "начали", "сообщил",
+  "сообщили", "рассказал", "рассказали", "заявил", "заявили", "стало", "стали",
+]);
+
+/**
  * The keyword an editor would have typed, taken from an article's own title.
  *
  * Cut to a few words on purpose: Unsplash matches on the whole query string, and a title
@@ -87,11 +115,6 @@ export function photoUrl(id: string): string {
  * where «экологический парк екатеринбург» returns photographs. Stop words go first, and
  * the rest are capped — the editor can retype whatever they meant.
  */
-const TITLE_STOP_WORDS = new Set([
-  "в", "на", "по", "и", "не", "что", "с", "к", "из", "у", "о", "об", "для", "а", "но",
-  "как", "мы", "вы", "они", "он", "она", "это", "его", "её", "их", "их",
-]);
-
 export function keywordsFromTitle(title: string): string {
   const words = title
     .toLowerCase()
