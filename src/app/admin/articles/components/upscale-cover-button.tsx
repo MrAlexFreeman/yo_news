@@ -25,6 +25,8 @@ type UpscaleResult = {
   height: number;
   scale: number;
   face: boolean;
+  provider?: string;
+  providerLabel?: string;
 };
 
 type UpscaleCoverButtonProps = {
@@ -94,6 +96,7 @@ export function UpscaleCoverButton({
         height: payload.height,
         scale: payload.scale,
         face: payload.face,
+        providerLabel: payload.providerLabel,
       });
     } catch (cause) {
       setError(
@@ -174,6 +177,12 @@ export function UpscaleCoverButton({
           {done.width > 0 && done.height > 0
             ? ` — ${done.width}×${done.height}, увеличение в ${done.scale} раза`
             : ""}
+          {/*
+            Which engine ran. There are now two providers, and an editor who set a second key
+            has no other way to learn whether it did anything — a site that silently ignores
+            a saved credential is indistinguishable from one that lost it.
+          */}
+          {done.providerLabel ? `, через ${done.providerLabel}` : ""}
           .
         </p>
       ) : null}

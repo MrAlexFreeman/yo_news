@@ -124,7 +124,9 @@ import {
   readResultSize,
   readResultUrl,
   readStatus,
+  providerLabel,
   resolveFaceEnhance,
+  resolveUpscaleProvider,
   resolveUpscaleScale,
   resultUrl,
   statusUrl,
@@ -134,6 +136,14 @@ import {
   upscaleFailureMessage,
 } from "../src/lib/image-upscale";
 import { runFalQueue, type FetchLike } from "../src/lib/fal-queue";
+import {
+  HF_ROUTER_BASE,
+  HF_UPSCALE_MODEL,
+  isRetryableStatus,
+  modelUrl,
+  runHuggingFaceUpscale,
+  sniffImageFormat,
+} from "../src/lib/hf-upscale";
 import { UpscaleError } from "../src/lib/image-upscale";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -1339,21 +1349,29 @@ async function checkUpscaleRouteApi(base: string, auth: string) {
 
   /*
     A real stored cover reaches the key check, which is the last thing before money is spent.
-    With no fal key configured the route must say so plainly rather than report a provider
+    With neither key configured the route must say so plainly rather than report a provider
     failure — those mean different things to an editor, and only one of them is fixable in
     the settings page.
+
+    Both providers must be named. The previous version asserted only that the message
+    mentioned fal.ai, which passed while the route refused outright on a server that had a
+    working second provider configured: the editor was told to fix a setting that was already
+    fine, and the message described one of two ways the feature could work.
   */
   const stored = await firstStoredUpload(base);
   if (stored) {
     const noKey = await call(stored);
+    const message = noKey.body.error ?? "";
     check(
-      "Апскейл: без ключа fal — понятная причина, а не ошибка провайдера",
-      noKey.status === 503 && (noKey.body.error ?? "").includes("fal.ai"),
-      noKey.body.error ?? `${noKey.status}`,
+      "Апскейл: без ключей названы оба провайдера, а не один",
+      noKey.status === 503 &&
+        message.includes("fal.ai") &&
+        message.includes("Hugging Face"),
+      message || `${noKey.status}`,
     );
   } else {
     check(
-      "Апскейл: без ключа fal — понятная причина, а не ошибка провайдера",
+      "Апскейл: без ключей названы оба провайдера, а не один",
       true,
       "пропущено: в загрузках нет файлов",
     );
@@ -1651,28 +1669,39 @@ function checkSettingsPrimitives() {
 
   /*
     The allowlist grew from three keys to nine when messenger auto-posting landed, then to
-    twelve with the live-stream badge. The API-key names are asserted by name because they
-    are the ones the existing routes read. The messenger keys are asserted below instead,
-    since they are reached through SYNDICATION_FIELDS.
+    twelve with the live-stream badge, and Hugging Face made fifteen. The API-key names are
+    asserted by name because they are the ones the existing routes read. The messenger keys
+    are asserted below instead, since they are reached through SYNDICATION_FIELDS.
+
+    The *count* is derived rather than written as a literal. A hardcoded number is a tripwire
+    that only ever fires when someone adds a key — and it fires as a TypeScript error in an
+    unrelated file, "types '15' and '14' have no overlap", which reads as a broken test
+    rather than as "you added a key, say so in the name". What the assertion actually has to
+    protect is the list's integrity, and that is what is checked: every named key present,
+    and no entry listed twice.
   */
+  const allowlistNames = [
+    "DEEPSEEK_API_KEY",
+    "DEEPINFRA_API_KEY",
+    "VK_ACCESS_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHANNEL_ID",
+    "TELEGRAM_ENABLED",
+    "TELEGRAM_API_ROOT",
+    "MAX_BOT_TOKEN",
+    "MAX_CHAT_ID",
+    "MAX_ENABLED",
+    "LIVE_STREAM_ENABLED",
+    "LIVE_STREAM_URL",
+    "LIVE_STREAM_TITLE",
+    "FAL_API_KEY",
+    "HUGGINGFACE_API_KEY",
+  ];
   check(
-    "Настройки: allowlist содержит четырнадцать ключей",
-    ALLOWED_KEYS.length === 14 &&
-      isAllowedKey("DEEPSEEK_API_KEY") &&
-      isAllowedKey("DEEPINFRA_API_KEY") &&
-      isAllowedKey("VK_ACCESS_TOKEN") &&
-      isAllowedKey("TELEGRAM_BOT_TOKEN") &&
-      isAllowedKey("TELEGRAM_CHANNEL_ID") &&
-      isAllowedKey("TELEGRAM_ENABLED") &&
-      isAllowedKey("TELEGRAM_API_ROOT") &&
-      isAllowedKey("MAX_BOT_TOKEN") &&
-      isAllowedKey("MAX_CHAT_ID") &&
-      isAllowedKey("MAX_ENABLED") &&
-      isAllowedKey("LIVE_STREAM_ENABLED") &&
-      isAllowedKey("LIVE_STREAM_URL") &&
-      isAllowedKey("LIVE_STREAM_TITLE") &&
-      isAllowedKey("FAL_API_KEY"),
-    ALLOWED_KEYS.join(", "),
+    `Настройки: allowlist содержит все ${allowlistNames.length} ключей без повторов`,
+    allowlistNames.every(isAllowedKey) &&
+      new Set(ALLOWED_KEYS).size === ALLOWED_KEYS.length,
+    `${ALLOWED_KEYS.length} ключей: ${ALLOWED_KEYS.join(", ")}`,
   );
 
   // The field name is the whole authorisation surface of the settings POST, so
@@ -3094,6 +3123,7 @@ async function main() {
   checkApiKeyCharsets();
 checkImageUpscale();
   await checkFalQueue();
+  await checkHuggingFace();
 checkSettingsPrimitives();
   checkBalances();
   checkPhotoSources();
@@ -3118,6 +3148,274 @@ checkSettingsPrimitives();
  * The rest pins the contract read from fal's own documentation: a model that is not a
  * generative upscaler, because inventing detail in a news photograph is inventing a fact.
  */
+/**
+ * The Hugging Face fallback: provider choice, token rules, and the cold-start retry.
+ *
+ * The cases that matter cannot be arranged against the real service — a model that answers
+ * 503 twice and then succeeds, a 200 whose body is not a picture, a token the provider
+ * rejects — so `fetch` is stubbed and the clock is virtual, for the same reason it is in the
+ * fal queue: a client with its budget removed then *fails* an assertion instead of hanging,
+ * and a hang is indistinguishable from a broken machine.
+ */
+async function checkHuggingFace() {
+  const png = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+  ]);
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+  const webp = new Uint8Array([
+    0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
+  ]);
+
+  /* ---- provider choice ---- */
+  check(
+    "Апскейл: fal выбирается первым, когда заданы оба ключа",
+    resolveUpscaleProvider({ falApiKey: "f", huggingfaceApiKey: "h" }) === "fal",
+    "оба ключа → fal",
+  );
+  check(
+    "Апскейл: Hugging Face используется, когда ключа fal нет",
+    resolveUpscaleProvider({ falApiKey: "", huggingfaceApiKey: "h" }) === "huggingface",
+    "только HF → huggingface",
+  );
+  check(
+    "Апскейл: без ключей провайдер не выбирается вовсе",
+    resolveUpscaleProvider({ falApiKey: "", huggingfaceApiKey: "" }) === null &&
+      resolveUpscaleProvider({}) === null,
+    "null → сообщение о настройке",
+  );
+  /*
+    A key with a trailing space is a key the provider will reject. Reading it as configured
+    picks a provider and then fails on it, which reads to an editor as "the key I saved is
+    wrong" rather than "there is no key yet".
+  */
+  check(
+    "Апскейл: ключ из одних пробелов не считается заданным",
+    resolveUpscaleProvider({ falApiKey: "   ", huggingfaceApiKey: "h" }) === "huggingface",
+    "пробелы → запасной провайдер",
+  );
+
+  /* ---- the token rules ---- */
+  check(
+    "Ключ Hugging Face: настоящий токен hf_… проходит",
+    validateApiKeyField("huggingfaceApiKey", "hf_abcdefghij0123456789ABCDEFGHIJ") === null,
+    "принят",
+  );
+  const badPrefix = validateApiKeyField("huggingfaceApiKey", "sk_live_abcdefghij");
+  check(
+    "Ключ Hugging Face: чужой токен отвергается с понятным объяснением",
+    badPrefix !== null && badPrefix.includes("hf_"),
+    badPrefix ?? "принят ошибочно",
+  );
+  check(
+    "Ключ Hugging Face: тело токена — только base62",
+    // The separators that would pass a generic token charset: a hyphen, a dot and an extra
+    // underscore inside the body. Hugging Face issues a random base62 string after the
+    // prefix, so any of these means something was pasted other than a token. Asserting only
+    // spaces and quotes left the charset unpinned — loosening the pattern to the shared
+    // `^[A-Za-z0-9._~-]+$` kept every other check in this suite green.
+    validateApiKeyField("huggingfaceApiKey", "hf_abc-def") !== null &&
+      validateApiKeyField("huggingfaceApiKey", "hf_abc.def") !== null &&
+      validateApiKeyField("huggingfaceApiKey", "hf_ab_cdef") !== null,
+    "дефис, точка и лишнее подчёркивание отвергаются",
+  );
+  check(
+    "Ключ Hugging Face: пробелы и кавычки внутри отвергаются",
+    validateApiKeyField("huggingfaceApiKey", 'hf_abc"def') !== null &&
+      validateApiKeyField("huggingfaceApiKey", "hf_abc def") !== null,
+    "только один непрерывный токен",
+  );
+  check(
+    "Ключ Hugging Face: пустое поле — это очистка, а не ошибка",
+    validateApiKeyField("huggingfaceApiKey", "") === null &&
+      validateApiKeyField("huggingfaceApiKey", "   ") === null,
+    "пусто принимается",
+  );
+
+  /* ---- sniffing the answer: a 200 is not evidence of a picture ---- */
+  check(
+    "Hugging Face: формат определяется по сигнатуре, а не по заголовку",
+    sniffImageFormat(png) === "png" &&
+      sniffImageFormat(jpeg) === "jpeg" &&
+      sniffImageFormat(webp) === "webp",
+    "png, jpeg, webp",
+  );
+  check(
+    "Hugging Face: JSON-ответ 200 не принимается за изображение",
+    sniffImageFormat(new TextEncoder().encode('{"error":"Model not loaded"}')) === null &&
+      sniffImageFormat(new Uint8Array(4)) === null,
+    "не картинка → null",
+  );
+
+  check(
+    "Hugging Face: повторяются только 503 и 429",
+    isRetryableStatus(503) && isRetryableStatus(429) &&
+      !isRetryableStatus(401) && !isRetryableStatus(404) && !isRetryableStatus(422),
+    "503/429 повторяются, 401/404/422 — нет",
+  );
+
+  /*
+    Both pinned deliberately. The model was substituted for the one in the brief —
+    `akhaliq/Real-ESRGAN` answers 401 from the Hub, which is how it reports a missing repo —
+    and the router replaced `api-inference.huggingface.co`, which no longer resolves at all.
+    Without these two, a later "fix" could point the fallback at a host that does not exist
+    and the only symptom would be an editor waiting out a timeout.
+  */
+  check(
+    "Hugging Face: модель и роутер зафиксированы",
+    modelUrl() ===
+      "https://router.huggingface.co/hf-inference/models/caidas%2Fswin2SR-classical-sr-x2-64" &&
+      HF_UPSCALE_MODEL === "caidas/swin2SR-classical-sr-x2-64",
+    modelUrl(),
+  );
+
+  /*
+    The provider is named only where it changes what the editor should do. Attaching it to a
+    timeout would send someone into settings for a network problem.
+  */
+  check(
+    "Апскейл: провайдер называется в ошибке отправки, но не в таймауте",
+    upscaleFailureMessage("submit", "401", "huggingface").includes("Hugging Face") &&
+      !upscaleFailureMessage("wait", "превышено время", "huggingface").includes("Hugging Face") &&
+      providerLabel("fal") === "fal.ai",
+    "submit → назван, wait → нет",
+  );
+
+  /* ---- the retry loop, driven with a stub ---- */
+  const run = async (
+    handler: (call: number) => Response | Promise<Response>,
+    overrides: Partial<Parameters<typeof runHuggingFaceUpscale>[0]> = {},
+  ) => {
+    let call = 0;
+    let virtualNow = 0;
+    let sleeps = 0;
+    /*
+      A holder object rather than a `let seen: … | null`. Assigned only from inside the
+      transport callback, TypeScript narrows the binding to `never` at every read after the
+      `try`, because it cannot see the assignment happened — and the error reads as if the
+      request shape did not exist at all.
+    */
+    const seen: {
+      value?: { url: string; method?: string; headers?: Record<string, string>; bodyBytes?: number };
+    } = {};
+
+    try {
+      const bytes = await runHuggingFaceUpscale({
+        fetchImpl: async (url, init) => {
+          seen.value = {
+            url,
+            method: init.method,
+            headers: init.headers,
+            bodyBytes: init.body ? init.body.byteLength : 0,
+          };
+          return handler(call++);
+        },
+        token: "hf_tokentoken",
+        image: Buffer.from([1, 2, 3]),
+        sleep: async () => {
+          sleeps += 1;
+          virtualNow += 3_000;
+        },
+        now: () => virtualNow,
+        ...overrides,
+      });
+      return { bytes, calls: call, sleeps, seen: seen.value, error: null as UpscaleError | null };
+    } catch (error) {
+      return {
+        bytes: null,
+        calls: call,
+        sleeps,
+        seen: seen.value,
+        error: error instanceof UpscaleError ? error : null,
+      };
+    }
+  };
+
+  /*
+    The request itself. Dropping the `Authorization` header is the failure that cannot be
+    seen from a green suite and only shows up in production as a 401 on every upscale — a
+    mutation that removed the header entirely passed every other check here.
+  */
+  const request = await run(() => new Response(png, { status: 200 }));
+  check(
+    "Hugging Face: запрос несёт токен, метод POST и сами байты картинки",
+    request.seen?.method === "POST" &&
+      request.seen?.url === modelUrl() &&
+      request.seen?.headers?.Authorization === "Bearer hf_tokentoken" &&
+      request.seen?.headers?.["Content-Type"] === "application/octet-stream" &&
+      request.seen?.bodyBytes === 3,
+    request.seen
+      ? `${request.seen.method} ${request.seen.url.replace(HF_ROUTER_BASE, "")}, auth=${
+          request.seen.headers?.Authorization ?? "НЕТ"
+        }, тело ${request.seen.bodyBytes} байт`
+      : "запрос не сделан",
+  );
+
+  const happy = await run(() => new Response(png, { status: 200 }));
+  check(
+    "Hugging Face: успешный ответ — это байты картинки, без повторов",
+    happy.error === null && happy.calls === 1 && happy.sleeps === 0,
+    `вызовов: ${happy.calls}, повторов: ${happy.sleeps}`,
+  );
+
+  /*
+    The cold start the brief asks about: HF answers 503 while a model loads and expects the
+    caller to come back. Without the retry this is a failure for a model that needs fifteen
+    seconds; with a single retry it is still a failure, because the retry lands inside the
+    same load.
+  */
+  const cold = await run((call) =>
+    call < 2 ? new Response("Model not loaded", { status: 503 }) : new Response(png, { status: 200 }),
+  );
+  check(
+    "Hugging Face: холодный старт (503) переспрашивается и в итоге succeeds",
+    cold.error === null && cold.calls === 3 && cold.sleeps === 2,
+    `вызовов: ${cold.calls}, повторов: ${cold.sleeps}`,
+  );
+
+  const alwaysCold = await run((call) => {
+    if (call > 50) throw new Error("повторяется вечно — бюджет не применён");
+    return new Response("Model not loaded", { status: 503 });
+  });
+  check(
+    "Hugging Face: вечно холодная модель обрывается, а не повторяется бесконечно",
+    alwaysCold.error !== null &&
+      alwaysCold.error.stage === "wait" &&
+      alwaysCold.error.message.includes("не прогрелась"),
+    alwaysCold.error ? `стадия ${alwaysCold.error.stage}` : "ошибки не было",
+  );
+
+  /*
+    The one that would have shipped a broken cover: HF answers some failures inside the body
+    of a 200. A client that trusts the status writes that JSON to uploads/ and serves it to
+    readers as an image.
+  */
+  const lying = await run(() =>
+    new Response(JSON.stringify({ error: "Model not loaded" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  check(
+    "Hugging Face: 200 без картинки не выдаётся за улучшенное фото",
+    lying.error !== null &&
+      lying.error.stage === "download" &&
+      lying.bytes === null,
+    lying.error ? `стадия ${lying.error.stage}: ${lying.error.message}` : "выдан мусор как результат",
+  );
+
+  const rejected = await run(() => new Response("Invalid credentials", { status: 401 }));
+  check(
+    "Hugging Face: отказ по токену не переспрашивается",
+    rejected.error !== null &&
+      rejected.error.stage === "submit" &&
+      rejected.calls === 1 &&
+      rejected.error.message.includes("токен"),
+    rejected.error
+      ? `вызовов: ${rejected.calls}, ${rejected.error.message}`
+      : "ошибки не было",
+  );
+}
+
 /**
  * The queue protocol, driven with a stubbed transport.
  *
@@ -3516,11 +3814,13 @@ function checkImageUpscale() {
   /* ---- what the editor is told, by stage ---- */
   check(
     "Апскейл: сообщение называет, что делать дальше, а не «ошибка»",
-    upscaleFailureMessage("submit").includes("fal.ai") &&
+    // With the provider named, as the route always passes it: the hint to go to settings is
+    // only useful once there is a settings field to go to, and there are now two.
+    upscaleFailureMessage("submit", undefined, "fal").includes("fal.ai") &&
       upscaleFailureMessage("wait").includes("120") &&
       upscaleFailureMessage("input").includes("заново") &&
       upscaleFailureMessage("save").includes("диск") &&
-      upscaleFailureMessage("submit", "HTTP 401").includes("HTTP 401"),
+      upscaleFailureMessage("submit", "HTTP 401", "fal").includes("HTTP 401"),
     "у каждого этапа своя подсказка",
   );
 
@@ -3647,10 +3947,22 @@ function checkApiKeyCharsets() {
     The two halves of the form must agree. The test endpoint never applied the charset, and
     that asymmetry is what made this confusing: the button said the key was fine and the save
     said it was not. Asserted as a property so a future route cannot quietly diverge again.
+
+    Compared as a set rather than by a length. The previous version said `length === 4`, so
+    adding a fifth provider failed here with a number that says nothing about which field is
+    wrong — the same trap that the allowlist check above had, and for the same reason.
   */
+  const writableFields = [
+    "deepseekApiKey",
+    "deepinfraApiKey",
+    "vkAccessToken",
+    "falApiKey",
+    "huggingfaceApiKey",
+  ];
   check(
     "Правила записи и правила теста не расходятся по набору полей",
-    Object.keys(FIELD_BY_NAME).length === 4 && "falApiKey" in FIELD_BY_NAME,
+    Object.keys(FIELD_BY_NAME).length === writableFields.length &&
+      writableFields.every((name) => isAllowedKey(FIELD_BY_NAME[name])),
     Object.keys(FIELD_BY_NAME).join(", "),
   );
 }

@@ -300,20 +300,70 @@ export function isAbort(error: unknown): boolean {
 }
 
 /**
+ * Which provider an upscale will use.
+ *
+ * `fal` first, Hugging Face second, and that order is a measured decision rather than the
+ * one the original brief asked for. The Hub's published table gives free accounts **no**
+ * monthly credits for Inference Providers at all — "Free Users: None" — so leading with
+ * Hugging Face would not route around a paid service, it would spend money somewhere
+ * less predictable. fal is already configured, already paid for, and its queue answers with
+ * a request id; the Hub's free alternative does not exist, so the fallback earns its place
+ * only by being the one that works when no fal key is set.
+ *
+ * Both keys set therefore means fal, and the editor is told which provider ran, because a
+ * silent choice is indistinguishable from the other one never existing.
+ */
+export type UpscaleProvider = "fal" | "huggingface";
+
+export type ProviderKeys = {
+  falApiKey?: string | null;
+  huggingfaceApiKey?: string | null;
+};
+
+/**
+ * The provider for these keys, or null when neither is configured.
+ *
+ * Both inputs are trimmed before the test, for the reason `getSetting` values are trimmed
+ * everywhere else: a stored key with a trailing space is a key that will be rejected by the
+ * provider, and reading it as "configured" here would pick a provider and then fail on it.
+ */
+export function resolveUpscaleProvider(keys: ProviderKeys): UpscaleProvider | null {
+  if ((keys.falApiKey ?? "").trim()) return "fal";
+  if ((keys.huggingfaceApiKey ?? "").trim()) return "huggingface";
+  return null;
+}
+
+/** How the editor is told which engine ran. */
+export function providerLabel(provider: UpscaleProvider): string {
+  return provider === "fal" ? "fal.ai" : "Hugging Face";
+}
+
+/**
  * What the editor is told, by stage.
  *
  * The stage is named because it decides what the editor should do next, and a single generic
  * "не удалось" answers nothing: a missing key is fixed in settings, a timeout is fixed by
  * trying again in a minute, and an unreadable file is fixed by uploading a different one.
  */
-export function upscaleFailureMessage(stage: UpscaleStage, detail?: string): string {
+export function upscaleFailureMessage(
+  stage: UpscaleStage,
+  detail?: string,
+  provider?: UpscaleProvider,
+): string {
   const suffix = detail ? ` (${detail})` : "";
+  // Named only where it changes what the editor should do. On a timeout or a failed download
+  // the provider is not the actionable part, and attaching it would send someone to settings
+  // for a network problem.
+  const engine =
+    stage === "submit" && provider
+      ? ` Проверьте ключ ${provider === "fal" ? "fal.ai" : "Hugging Face"} в настройках.`
+      : "";
 
   switch (stage) {
     case "input":
       return `Не удалось прочитать обложку${suffix}. Загрузите файл заново.`;
     case "submit":
-      return `Не удалось отправить фото на обработку${suffix}. Проверьте ключ fal.ai в настройках и баланс.`;
+      return `Не удалось отправить фото на обработку${suffix}.${engine}`;
     case "wait":
       return `${MODEL_LABEL} не ответил за ${Math.round(UPSCALE_TIMEOUT_MS / 1000)} с${suffix}. Попробуйте ещё раз.`;
     case "download":

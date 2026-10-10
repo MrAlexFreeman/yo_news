@@ -29,7 +29,7 @@ const TIMEOUT_MS = 15_000;
 const FAL_STATUS_PROBE =
   "https://queue.fal.run/fal-ai/esrgan/requests/00000000-0000-4000-8000-000000000000/status";
 
-type Provider = "deepseek" | "deepinfra" | "vk" | "fal";
+type Provider = "deepseek" | "deepinfra" | "vk" | "fal" | "huggingface";
 
 /**
  * Key → { setting, free validation endpoint }.
@@ -56,7 +56,8 @@ const ENDPOINTS: Record<
       | "DEEPSEEK_API_KEY"
       | "DEEPINFRA_API_KEY"
       | "VK_ACCESS_TOKEN"
-      | "FAL_API_KEY";
+      | "FAL_API_KEY"
+      | "HUGGINGFACE_API_KEY";
     url: (token: string) => string;
     /** Auth style: fal reads `Authorization: Key`, the others a bearer token. */
     scheme: "bearer" | "key";
@@ -84,6 +85,18 @@ const ENDPOINTS: Record<
     url: () => `${FAL_STATUS_PROBE}`,
     scheme: "key",
   },
+  huggingface: {
+    setting: "HUGGINGFACE_API_KEY",
+    /*
+      `whoami-v2` identifies the token holder and costs nothing.
+      Deliberately *not* the inference router: a model call there may spend credits, may
+      wait out a cold start, and may answer 503 for a model that is merely loading — three
+      ways for this button to report a red cross on a perfectly good key. Reading the token's
+      own identity is the same free check every other provider here gets.
+    */
+    url: () => "https://huggingface.co/api/whoami-v2",
+    scheme: "bearer",
+  },
 };
 
 const SUCCESS_MESSAGE: Record<Provider, string> = {
@@ -91,6 +104,7 @@ const SUCCESS_MESSAGE: Record<Provider, string> = {
   deepinfra: "Ключ принят, DeepInfra отвечает.",
   vk: "Токен принят, ВК отвечает.",
   fal: "Ключ принят, fal.ai отвечает.",
+  huggingface: "Токен принят, Hugging Face отвечает.",
 };
 
 function isJsonRequest(request: Request): boolean {
@@ -163,12 +177,13 @@ export async function POST(request: Request) {
     provider !== "deepseek" &&
     provider !== "deepinfra" &&
     provider !== "vk" &&
-    provider !== "fal"
+    provider !== "fal" &&
+    provider !== "huggingface"
   ) {
     return NextResponse.json(
       {
         error:
-          "Неизвестный провайдер: ожидается deepseek, deepinfra, vk или fal.",
+          "Неизвестный провайдер: ожидается deepseek, deepinfra, vk, fal или huggingface.",
       },
       { status: 400 },
     );

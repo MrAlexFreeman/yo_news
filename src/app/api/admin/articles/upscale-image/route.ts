@@ -6,18 +6,22 @@ import { NextResponse } from "next/server";
 
 import { contentTypeFor, resolveUploadPath, UPLOAD_DIR, UPLOAD_URL_PREFIX } from "@/lib/upload-dir";
 import { runFalQueue, type FetchLike } from "@/lib/fal-queue";
+import { runHuggingFaceUpscale, type FetchLike as HfFetchLike } from "@/lib/hf-upscale";
 import {
   buildUpscaleInput,
   DEFAULT_UPSCALE_OPTIONS,
+  providerLabel,
   readResultSize,
   readResultUrl,
   resolveFaceEnhance,
+  resolveUpscaleProvider,
   resolveUpscaleScale,
   transportReason,
   upscaleFailureMessage,
   UpscaleError,
   UPSCALE_MAX_INPUT_BYTES,
   UPSCALE_STEP_TIMEOUT_MS,
+  type UpscaleProvider,
   type UpscaleStage,
 } from "@/lib/image-upscale";
 import { getSetting } from "@/lib/settings";
@@ -53,9 +57,9 @@ type RequestBody = {
   face?: unknown;
 };
 
-function fail(stage: UpscaleStage, detail?: string) {
+function fail(stage: UpscaleStage, detail?: string, provider?: UpscaleProvider) {
   return NextResponse.json(
-    { error: upscaleFailureMessage(stage, detail) },
+    { error: upscaleFailureMessage(stage, detail, provider) },
     { status: stage === "input" ? 400 : 502 },
   );
 }
@@ -126,6 +130,19 @@ async function runUpscale(
   return { payload };
 }
 
+/**
+ * One provider's answer: the improved file, and the pixel size when the provider reported it.
+ *
+ * Both providers are reduced to this before anything is written, so the storage path, the
+ * re-encode and the response shape below are written once and cannot drift between them.
+ */
+type UpscaleOutcome = {
+  bytes: Buffer;
+  width: number;
+  height: number;
+  provider: UpscaleProvider;
+};
+
 export async function POST(request: Request) {
   if (request.headers.get("content-type")?.split(";")[0].trim() !== "application/json") {
     return NextResponse.json(
@@ -155,12 +172,23 @@ export async function POST(request: Request) {
     return fail("input", detail);
   }
 
-  const apiKey = (await getSetting("FAL_API_KEY")).trim();
-  if (!apiKey) {
+  /*
+    Read both keys before choosing. Asking only for fal and treating "no fal key" as "no
+    upscale available" is what put a «Не задан ключ fal.ai» in front of an editor on a server
+    that had a perfectly good second provider configured — the warning named one of two
+    ways the feature could work and so read as "upscaling is broken".
+  */
+  const [falKey, huggingFaceKey] = await Promise.all([
+    getSetting("FAL_API_KEY"),
+    getSetting("HUGGINGFACE_API_KEY"),
+  ]);
+  const provider = resolveUpscaleProvider({ falApiKey: falKey, huggingfaceApiKey: huggingFaceKey });
+
+  if (!provider) {
     return NextResponse.json(
       {
         error:
-          "Не задан ключ fal.ai — добавьте его в /admin/settings, чтобы улучшать фото.",
+          "Не задан ни один ключ улучшения фото. Добавьте ключ fal.ai или Hugging Face в /admin/settings.",
       },
       { status: 503 },
     );
@@ -174,55 +202,77 @@ export async function POST(request: Request) {
     face: resolveFaceEnhance(body.face),
   };
 
-  let payload: unknown;
+  let outcome: UpscaleOutcome;
+
   try {
-    const { toFalImageInput } = await import("@/lib/image-upscale");
-    const result = await runUpscale(
-      apiKey,
-      buildUpscaleInput(toFalImageInput(cover.bytes, cover.contentType), options),
-    );
-    payload = result.payload;
+    if (provider === "huggingface") {
+      const bytes = await runHuggingFaceUpscale({
+        fetchImpl: fetch as unknown as HfFetchLike,
+        token: huggingFaceKey.trim(),
+        image: cover.bytes,
+      });
+
+      // The Hub returns the picture in the response, so there is no second fetch and no
+      // expiring link to race. Dimensions come from the file itself for the same reason the
+      // body is sniffed: a 200 that is not an image must not become a stored cover.
+      const { default: sharp } = await import("sharp");
+      const meta = await sharp(bytes).metadata();
+
+      outcome = {
+        bytes,
+        width: meta.width ?? 0,
+        height: meta.height ?? 0,
+        provider,
+      };
+    } else {
+      const { toFalImageInput } = await import("@/lib/image-upscale");
+      const result = await runUpscale(
+        falKey.trim(),
+        buildUpscaleInput(toFalImageInput(cover.bytes, cover.contentType), options),
+      );
+      const payload = result.payload;
+
+      const downloadUrl = readResultUrl(payload);
+      if (!downloadUrl) {
+        return fail("download", "в ответе нет ссылки на изображение", provider);
+      }
+
+      // fal's media links expire, so downloading immediately is not optional.
+      const response = await fetch(downloadUrl, {
+        signal: AbortSignal.timeout(UPSCALE_STEP_TIMEOUT_MS),
+      });
+
+      if (!response.ok) {
+        return fail("download", `HTTP ${response.status}`, provider);
+      }
+
+      const bytes = Buffer.from(await response.arrayBuffer());
+
+      if (bytes.length === 0) {
+        return fail("download", "провайдер вернул пустой файл", provider);
+      }
+      if (bytes.length > UPSCALE_MAX_INPUT_BYTES) {
+        return fail("download", "файл больше 8 МБ", provider);
+      }
+
+      outcome = {
+        bytes,
+        width: readResultSize(payload)?.width ?? 0,
+        height: readResultSize(payload)?.height ?? 0,
+        provider,
+      };
+    }
   } catch (error) {
-    if (error instanceof UpscaleError) return fail(error.stage, error.message);
-    return fail("wait", transportReason(error));
+    if (error instanceof UpscaleError) return fail(error.stage, error.message, provider);
+    return fail("wait", transportReason(error), provider);
   }
 
-  const downloadUrl = readResultUrl(payload);
-  if (!downloadUrl) {
-    return fail("download", "в ответе нет ссылки на изображение");
-  }
-
-  // 4. Fetch the improved file and keep it. fal's media links expire, so this is not optional.
-  let improved: Buffer;
-  try {
-    const response = await fetch(downloadUrl, {
-      signal: AbortSignal.timeout(UPSCALE_STEP_TIMEOUT_MS),
-    });
-
-    if (!response.ok) {
-      return fail("download", `HTTP ${response.status}`);
-    }
-
-    const bytes = Buffer.from(await response.arrayBuffer());
-
-    if (bytes.length === 0) {
-      return fail("download", "провайдер вернул пустой файл");
-    }
-    if (bytes.length > UPSCALE_MAX_INPUT_BYTES) {
-      return fail("download", "файл больше 8 МБ");
-    }
-
-    improved = bytes;
-  } catch (error) {
-    return fail("download", transportReason(error));
-  }
-
-  // 5. Store as WebP, like every other generated cover.
+  // Store as WebP, like every other generated cover.
   try {
     const { default: sharp } = await import("sharp");
     const filename = `upscaled-${randomUUID()}.webp`;
 
-    const webp = await sharp(improved)
+    const webp = await sharp(outcome.bytes)
       .rotate()
       .webp({ quality: 88 })
       .toBuffer();
@@ -233,12 +283,16 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       url: `${UPLOAD_URL_PREFIX}${filename}`,
-      width: readResultSize(payload)?.width ?? 0,
-      height: readResultSize(payload)?.height ?? 0,
+      width: outcome.width,
+      height: outcome.height,
       scale: options.scale,
       face: options.face,
+      // So the editor is told which engine ran: both produce a working upscale, and without
+      // this a provider that never fired is indistinguishable from one that did.
+      provider: outcome.provider,
+      providerLabel: providerLabel(outcome.provider),
     });
   } catch (error) {
-    return fail("save", transportReason(error));
+    return fail("save", transportReason(error), provider);
   }
 }

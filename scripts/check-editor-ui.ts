@@ -258,10 +258,21 @@ const settingsDefaults = {
  * assertions further down used to say "3", and adding a fourth provider broke all of them at
  * once without any of them explaining why. Listing the ids fails with a name instead.
  */
-const API_KEY_FIELDS = ["deepseekApiKey", "deepinfraApiKey", "vkAccessToken", "falApiKey"];
+const API_KEY_FIELDS = [
+  "deepseekApiKey",
+  "deepinfraApiKey",
+  "vkAccessToken",
+  "falApiKey",
+  "huggingfaceApiKey",
+];
 
 /** Providers whose field carries a «Тест подключения» button. VK's says «Тест токена VK». */
-const TESTED_PROVIDERS = ["deepseekApiKey", "deepinfraApiKey", "falApiKey"];
+const TESTED_PROVIDERS = [
+  "deepseekApiKey",
+  "deepinfraApiKey",
+  "falApiKey",
+  "huggingfaceApiKey",
+];
 
 const settingsEmptyHtml = render(SettingsForm as never, { initial: settingsDefaults });
 const settingsFilledHtml = render(SettingsForm as never, {

@@ -20,7 +20,7 @@ const NO_BALANCES: Balances = {
 };
 
 /** Matches the server-side shape from src/lib/settings.ts. */
-type Provider = "deepseek" | "deepinfra" | "vk" | "fal";
+type Provider = "deepseek" | "deepinfra" | "vk" | "fal" | "huggingface";
 
 type Field = {
   provider: Provider;
@@ -78,7 +78,7 @@ const FIELDS: Field[] = [
     provider: "fal",
     name: "falApiKey",
     label: "Ключ fal.ai",
-    hint: "Улучшение обложек: повышает резкость и убирает артефакты сжатия.",
+    hint: "Улучшение обложек: повышает резкость и убирает артефакты сжатия. Используется первым.",
     service: "fal.ai",
     testLabel: "Тест подключения",
     instructions: {
@@ -90,6 +90,30 @@ const FIELDS: Field[] = [
       ],
       linkLabel: "Открыть fal.ai",
       link: "https://fal.ai/dashboard/keys",
+    },
+  },
+  {
+    provider: "huggingface",
+    name: "huggingfaceApiKey",
+    label: "Токен Hugging Face",
+    /*
+      The field is *not* described as free, because it is not: the Hub's own pricing table
+      lists no monthly credits at all for free accounts on Inference Providers. Saying
+      otherwise here would be the kind of claim an editor acts on and the invoice refutes.
+    */
+    hint: "Запасной движок улучшения обложек, когда ключ fal.ai не задан. У Hugging Face нужны кредиты Inference.",
+    service: "huggingface.co",
+    testLabel: "Тест подключения",
+    instructions: {
+      title: "Как получить токен Hugging Face?",
+      steps: [
+        "Войдите на huggingface.co и откройте Access Tokens в настройках профиля.",
+        "Создайте токен типа Read — для улучшения фото прав на запись не требуется.",
+        "Скопируйте значение, начинающееся с hf_, и вставьте в поле слева.",
+        "Для бесплатного аккаунта нужны кредиты Inference Providers: бесплатным они не выдаются.",
+      ],
+      linkLabel: "Открыть токены Hugging Face",
+      link: "https://huggingface.co/settings/tokens",
     },
   },
 ];

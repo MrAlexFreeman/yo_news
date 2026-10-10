@@ -45,6 +45,7 @@ export const ALLOWED_KEYS = [
   "LIVE_STREAM_URL",
   "LIVE_STREAM_TITLE",
   "FAL_API_KEY",
+  "HUGGINGFACE_API_KEY",
 ] as const;
 
 export type SettingKey = (typeof ALLOWED_KEYS)[number];
@@ -58,6 +59,7 @@ export const FIELD_BY_NAME: Record<string, SettingKey> = {
   deepinfraApiKey: "DEEPINFRA_API_KEY",
   vkAccessToken: "VK_ACCESS_TOKEN",
   falApiKey: "FAL_API_KEY",
+  huggingfaceApiKey: "HUGGINGFACE_API_KEY",
 };
 
 /**
@@ -324,7 +326,25 @@ const API_KEY_PATTERN_BY_FIELD: Record<string, RegExp> = {
   // TypeScript rejects it outright, and a runtime that did not would quietly accept a
   // hundred-odd unrelated symbols as a valid key.
   falApiKey: /^[A-Za-z0-9._~:-]+$/,
+  // The `hf_` prefix is not decoration. Hugging Face issues every access token in this
+  // shape and the dashboard offers nothing else to paste, so requiring it turns "this is
+  // not the right kind of credential" into a message at the point of paste instead of a
+  // 401 from the provider after the key is stored.
+  //
+  // The body is `A-Za-z0-9` — base62, the alphabet of a random token — and deliberately
+  // no underscore: the separator is the prefix's own, and a second one inside the body
+  // would mean a pasted sentence rather than a token.
+  huggingfaceApiKey: /^hf_[A-Za-z0-9]+$/,
 };
+
+/**
+ * The literal every Hugging Face access token begins with.
+ *
+ * Exported so the test-connection route and the form hint quote one string, and so a
+ * check can assert the pattern's prefix against it instead of re-typing `hf_` in a
+ * place that would keep passing if the pattern changed without it.
+ */
+export const HUGGINGFACE_TOKEN_PREFIX = "hf_";
 
 /** The charset for one request field, defaulting to the strict token shape. */
 export function apiKeyPatternFor(name: string): RegExp {
@@ -341,6 +361,17 @@ export function validateApiKeyField(name: string, value: string): string | null 
   const trimmed = value.trim();
 
   if (!trimmed) return null;
+
+  /*
+    Hugging Face's own message, checked before the length rule and before the generic
+    charset one. A wrong credential here is almost never a malformed token — it is a
+    Read token pasted where a Write one belongs, or a token from the wrong provider
+    entirely — and "contains invalid characters" describes none of those. The generic
+    fallback below still catches a genuine typo in the body.
+  */
+  if (name === "huggingfaceApiKey" && !trimmed.startsWith(HUGGINGFACE_TOKEN_PREFIX)) {
+    return `Ключ Hugging Face начинается с «${HUGGINGFACE_TOKEN_PREFIX}». Убедитесь, что это access-токен из huggingface.co/settings/tokens, а не токен другого сервиса.`;
+  }
 
   if (trimmed.length < MIN_API_KEY_LENGTH) {
     return `Ключ слишком короткий — минимум ${MIN_API_KEY_LENGTH} символов.`;
