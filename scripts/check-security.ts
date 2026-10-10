@@ -15,7 +15,6 @@ import {
   parseMediaField,
 } from "../src/lib/article-media";
 import { buildDzenContent } from "../src/lib/dzen-feed-html";
-import { sanitizeArticleHtml } from "../src/lib/sanitize";
 import { normalizeTagList, parseTagsField, tagKey } from "../src/lib/tags";
 import {
   AI_HINT_LIMIT,
@@ -112,8 +111,10 @@ import {
   isSearchable,
   normaliseQuery,
 } from "../src/lib/article-search";
-import { ARTICLE_LINK_CLASS } from "../src/lib/dompurify";
+import { ARTICLE_LINK_CLASS, hostOf, isInternalHref } from "../src/lib/dompurify";
+import { siteUrl } from "../src/lib/site";
 import { stockCreditColumns } from "../src/lib/stock-credit";
+import { sanitizeArticleHtml } from "../src/lib/sanitize";
 import {
   automaticPlateAllowed,
   buildReadAlsoHtml,
@@ -2503,16 +2504,42 @@ function checkArticleLinks() {
     "многострочная метка не склеена",
   );
 
-  // --- storefront rendering ------------------------------------------------
-  const rendered = sanitizeArticleHtml('<p>Ссылка: <a href="/news/x">материал</a></p>');
+/*
+    An external link, and the two halves of the rule side by side. One link cannot tell
+    "internal gets no target, external keeps it" from "everything loses the target", so
+    the two are asserted against each other rather than as separate observations.
+  */
+  const rendered = sanitizeArticleHtml(
+    '<p>Своя: <a href="/news/x">материал</a> Чужая: <a href="https://other.example/x">источник</a></p>',
+  );
+  const own = rendered.match(/<a\b[^>]*href="\/news\/x"[^>]*>/)?.[0] ?? "";
+  const theirs = rendered.match(/<a\b[^>]*href="https:\/\/other\.example\/x"[^>]*>/)?.[0] ?? "";
+
   check(
-    "Ссылки: на витрине есть target=_blank",
-    rendered.includes('target="_blank"'),
-    "открывается в новой вкладке",
+    "Ссылки: своя открывается в этой вкладке",
+    own !== "" && !own.includes("target"),
+    own || "не найдена",
   );
   check(
-    "Ссылки: на витрине есть rel=noopener noreferrer",
-    rendered.includes('rel="noopener noreferrer"'),
+    "Ссылки: чужая по-прежнему в новой вкладке",
+    theirs !== "" &&
+      theirs.includes('target="_blank"') &&
+      theirs.includes('rel="noopener noreferrer"'),
+    theirs || "не найдена",
+  );
+/*
+    The two halves of the rule, asserted against each other rather than as separate
+    observations. One link cannot distinguish "internal gets no target, external keeps
+    it" from "everything loses the target", and the easy mistake is the second.
+  */
+  check(
+    "Ссылки: на витрине своя без target, чужая с ним",
+    !own.includes("target") && theirs.includes('target="_blank"'),
+    `${own} || ${theirs}`,
+  );
+  check(
+    "Ссылки: на витрине у чужой rel=noopener noreferrer",
+    theirs.includes('rel="noopener noreferrer"'),
     "защита opener",
   );
   check(
@@ -3057,12 +3084,33 @@ function checkLinkPolicy() {
     ARTICLE_LINK_CLASS,
   );
 
-  // A link with no stated target still gets the site's default.
+  /*
+    No target at all, and that is the change.
+
+    This assertion used to say the opposite — that a link with no stated target "still gets
+    the site's default", and the default was _blank. An internal link gets nothing now, so
+    a reader who follows a cross-reference between two stories stays where they are instead
+    of opening a tab per article. The surrounding checks are the ones that still matter:
+    the colour, and an author's own `target` in either direction.
+  */
   const bare = sanitizeArticleHtml('<a href="/news/x">текст</a>');
   check(
-    "Ссылка: без target подставляется умолчание _blank",
-    bare.includes('target="_blank"'),
-    "по умолчанию",
+    "Ссылка: внутренняя без target не получает _blank",
+    bare.includes(ARTICLE_LINK_CLASS) && !bare.includes('target='),
+    bare,
+  );
+
+  /*
+    An external link with no stated target still does get the new tab. Both halves of the
+    rule are asserted side by side so a later change cannot satisfy one by breaking the
+    other — the easy mistake is to drop the target for everything.
+  */
+  const bareExternal = sanitizeArticleHtml('<a href="https://other.example/x">текст</a>');
+  check(
+    "Ссылка: внешняя без target по-прежнему в новой вкладке",
+    bareExternal.includes('target="_blank"') &&
+      bareExternal.includes('rel="noopener noreferrer"'),
+    bareExternal,
   );
 
   // The regression this configuration exists to prevent. DOMPurify judges the value
@@ -3168,6 +3216,7 @@ checkImageUpscale();
   await checkUnsplash();
   await checkStockQuery();
   await checkReadAlso();
+  await checkLinkTargets();
 
 /**
  * The "read also" plate: what an editor inserts, and how a body comes apart around it.
@@ -3314,7 +3363,133 @@ async function checkReadAlso() {
   );
 }
  /**
- * Turning a Russian headline into keywords Unsplash can match.
+ * Which links leave the tab, and which stay in it.
+ *
+ * A rule that looks like one condition and is not: "starts with a slash" is not the same as
+ * "is internal". `//host/path` passes the site's URI allowlist and names another origin, so
+ * the ordering of the two tests — protocol-relative *before* relative — is what keeps a
+ * link to somebody else's server from silently losing its `target="_blank"`.
+ */
+async function checkLinkTargets() {
+  const HOST = "eartnews.ru";
+
+  /* ---- the decision itself ---- */
+  check(
+    "Ссылки: относительный адрес — свой",
+    isInternalHref("/news/medved", HOST) &&
+      isInternalHref("/category/society", HOST) &&
+      isInternalHref("/news/medved?x=1&y=2", HOST) &&
+      isInternalHref("/news/medved#fragment", HOST) &&
+      isInternalHref("/tags", HOST),
+    "всё под корнем",
+  );
+  check(
+    "Ссылки: абсолютный адрес своего домена — свой",
+    isInternalHref("https://eartnews.ru/news/medved", HOST) &&
+      isInternalHref("http://eartnews.ru/news/medved", HOST) &&
+      isInternalHref("https://www.eartnews.ru/news/medved", HOST) &&
+      isInternalHref("https://EARTNEWS.RU/news/medved", HOST),
+    "схема, www и регистр не важны",
+  );
+  check(
+    "Ссылки: фрагмент — тот же документ",
+    isInternalHref("#kickers", HOST) && isInternalHref("#", HOST),
+    "# и пустой якорь",
+  );
+  check(
+    "Links: чужой домен и протокол-относительный — чужие",
+    // The case that decides the ordering. `//example.com/x` passes ALLOWED_URI_REGEXP,
+    // because that expression accepts anything starting with a slash.
+    !isInternalHref("//evil.example.com/x", HOST) &&
+      !isInternalHref("https://other.example/news/medved", HOST) &&
+      !isInternalHref("http://subdomain.eartnews.ru/news/medved", HOST),
+    "поддомен — тоже чужой",
+  );
+  check(
+    "Ссылки: почта, телефон и мусор — чужие",
+    !isInternalHref("mailto:someone@example.com", HOST) &&
+      !isInternalHref("tel:+73430000000", HOST) &&
+      !isInternalHref("javascript:alert(1)", HOST) &&
+      !isInternalHref("", HOST) &&
+      !isInternalHref("   ", HOST),
+    "ни один не ведёт на себя",
+  );
+
+  /* ---- what the sanitiser does with them ---- */
+  /*
+    The host is resolved first, and the fixture is built from it.
+
+    Doing it this way rather than writing `https://eartnews.ru/…` into the markup is the
+    difference between a check that reports on the rule and one that reports on whether a
+    .env happened to be loaded: on the VPS NEXT_PUBLIC_SITE_URL is quoted in .env, in
+    development it is localhost, and an address that does not match the environment is
+    treated as external and gets a target the assertion then correctly fails to find.
+  */
+  const configuredHost = hostOf(siteUrl);
+  const absoluteOwn = configuredHost ? `https://${configuredHost}/news/two` : null;
+
+  const page = sanitizeArticleHtml(
+    [
+      '<a href="/news/one">своя относительная</a>',
+      absoluteOwn ? `<a href="${absoluteOwn}">своя абсолютная</a>` : "",
+      '<a href="https://other.example/x">чужая</a>',
+      '<a href="//evil.example.com/x">протокол-относительная</a>',
+      '<a href="/news/three" target="_blank">редактор выбрал новую вкладку</a>',
+      '<a href="https://other.example/y" target="_self">редактор выбрал эту вкладку</a>',
+    ].join(""),
+  );
+
+  const anchors = [...page.matchAll(/<a\b[^>]*>/g)].map((match) => match[0]);
+  const byHref = (needle: string) => anchors.find((anchor) => anchor.includes(`href="${needle}"`));
+
+  const internal = byHref("/news/one");
+  check(
+    "Ссылки: своя относительная открывается в этой вкладке",
+    Boolean(internal) && !internal!.includes("target"),
+    internal ?? "ссылка не найдена",
+  );
+
+  const internalAbsolute = absoluteOwn ? byHref(absoluteOwn) : null;
+  check(
+    "Ссылки: своя абсолютная тоже без target",
+    Boolean(internalAbsolute) && !internalAbsolute!.includes("target"),
+    internalAbsolute ?? `хост не настроен (${siteUrl})`,
+  );
+
+  const external = byHref("https://other.example/x");
+  check(
+    "Ссылки: чужая по-прежнему в новой вкладке",
+    Boolean(external) &&
+      external!.includes('target="_blank"') &&
+      external!.includes('rel="noopener noreferrer"'),
+    external ?? "ссылка не найдена",
+  );
+
+  const protocolRelative = byHref("//evil.example.com/x");
+  check(
+    "Ссылки: протокол-относительная не теряет новую вкладку",
+    // Without the check above this passes the allowlist, gets read as internal, and a link
+    // to another origin quietly loses the target that keeps the reader's place.
+    Boolean(protocolRelative) && protocolRelative!.includes('target="_blank"'),
+    protocolRelative ?? "ссылка не найдена",
+  );
+
+  const editorBlank = byHref("/news/three");
+  check(
+    "Links: явный выбор редактора сохраняется",
+    Boolean(editorBlank) && editorBlank!.includes('target="_blank"') && !editorBlank!.includes("rel="),
+    editorBlank ?? "ссылка не найдена",
+  );
+
+  const editorSelf = byHref("https://other.example/y");
+  check(
+    "Links: редактор сам попросил эту вкладку",
+    Boolean(editorSelf) && editorSelf!.includes('target="_self"'),
+    editorSelf ?? "ссылка не найдена",
+  );
+}
+
+/**
  *
  * The parser matters more than it looks: Unsplash answers a query it cannot match with an
  * empty list rather than an error, so a stray `"` or a `Keywords:` prefix in the model's

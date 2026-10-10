@@ -2,6 +2,7 @@ import DOMPurify from "isomorphic-dompurify";
 
 import { ensureNoVkAutoplay } from "@/lib/video-embed";
 import { slugFromEntityHref } from "@/lib/entity-card";
+import { siteUrl } from "@/lib/site";
 
 /**
  * The one DOMPurify instance this project uses, with a single attribute hook.
@@ -102,6 +103,59 @@ export const ARTICLE_LINK_CLASS = "text-amber-600 hover:text-amber-700 underline
  */
 export const ENTITY_LINK_CLASS = "entity-link";
 
+/** The hostname `NEXT_PUBLIC_SITE_URL` names, or null when it is not a URL. */
+export function hostOf(url: string): string | null {
+  try {
+    const hostname = new URL(url.trim()).hostname.toLowerCase();
+    return hostname === "" ? null : hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a link leaves the site, and so needs a new tab.
+ *
+ * **The rule:** internal = a site-relative path, a bare fragment, or the site's own host.
+ * Everything else — another domain, a protocol-relative address, `mailto:`, a bare word —
+ * is external.
+ *
+ * `//example.com/x` is the case that decides how this is written. It passes
+ * `ALLOWED_URI_REGEXP`, because that expression accepts anything starting with `/`, and it
+ * was measured passing the sanitiser intact — so treating "starts with a slash" as internal
+ * would strip `target="_blank"` from a link pointing at another site entirely. The
+ * protocol-relative form is therefore checked *before* the relative one, and that ordering
+ * is the whole reason the two are separate tests rather than one `startsWith("/")`.
+ *
+ * `www.` is folded away on both sides so `https://www.eartnews.ru/news/x` and
+ * `https://eartnews.ru/news/x` are the same site. A subdomain is *not* folded: `m.news…`
+ * would be a different site, and one this publication does not run.
+ *
+ * The host is a parameter rather than read from the environment here, because this module
+ * is shared with the RSS feed and the rule is worth asserting directly for a given pair of
+ * addresses.
+ */
+export function isInternalHref(href: string, siteHost?: string | null): boolean {
+  const value = href.trim();
+  if (!value) return false;
+
+  // Before the "/" test: this one names a different origin.
+  if (value.startsWith("//")) return false;
+
+  // A fragment stays on the page the reader is already on.
+  if (value.startsWith("#")) return true;
+
+  if (value.startsWith("/")) return true;
+
+  const own = siteHost === undefined ? hostOf(siteUrl) : siteHost;
+  if (own === null) return false;
+
+  const target = hostOf(value);
+  // null for a non-URL such as `mailto:` or a bare word — neither is this site, and both
+  // are already handled by the scheme allowlist upstream.
+  return target !== null && target === own;
+}
+
 /**
  * Article-page rules.
  *
@@ -132,15 +186,25 @@ function applyArticlePolicy(node: unknown) {
       return;
     }
 
-    // The target is a default, not an override. The link dialog has an "open in a
-    // new tab" checkbox and expresses "same tab" as target="_self" precisely so
-    // this default does not undo it — forcing _blank unconditionally would make
-    // the checkbox a decoration. `rel` travels with the target we set ourselves;
-    // an author's own rel is left alone.
-    if (!element.getAttribute?.("target")) {
-      element.setAttribute?.("target", "_blank");
-      element.setAttribute?.("rel", "noopener noreferrer");
-    }
+    /*
+      The target is a default, and only for links that leave the site.
+
+      An internal link gets nothing: a reader who clicks «Читайте также» — or any
+      cross-reference between two stories — expects to arrive on that page, and a new tab
+      for it is the difference between one window and eleven. External links keep
+      `target="_blank"` so a reader comparing a source with the article does not lose
+      their place, and `rel` travels with the target we set ourselves.
+
+      An author's own `target` still wins, in either direction. The link dialog expresses
+      "same tab" as `target="_self"` precisely so this default does not undo it, and an
+      editor who deliberately sent a link to a new tab keeps that choice.
+    */
+    if (element.getAttribute?.("target")) return;
+
+    if (isInternalHref(href)) return;
+
+    element.setAttribute?.("target", "_blank");
+    element.setAttribute?.("rel", "noopener noreferrer");
     return;
   }
 

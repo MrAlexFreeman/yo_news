@@ -475,9 +475,12 @@ export function ContentEditor({
 
     const attrs: { href: string; target: string; rel?: string } = {
       href: request.url,
-      // "_self" rather than omitting target, because the storefront applies _blank
-      // to a link that states no preference — omitting it would make the dialog's
-      // "new tab" checkbox a decoration.
+      // "_self" rather than omitting target, so the dialog's checkbox stays a statement of
+      // intent. It used to be the only way to say "same tab": the storefront forced
+      // _blank on any link that stated no preference. It no longer does — an internal link
+      // gets no target at all (see `isInternalHref`) — but an explicit value is still
+      // worth writing, because an external link whose editor said "same tab" now depends
+      // on this attribute surviving rather than on the default happening to be right.
       target: request.blank ? "_blank" : "_self",
     };
     if (request.blank) attrs.rel = "noopener noreferrer";
