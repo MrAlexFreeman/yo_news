@@ -9,7 +9,7 @@ import {
   parseVkUploadResult,
   publishArticleToVk,
   VK_LEAD_MAX,
-  VK_LINK_PHOTO_SIZING,
+  vkPhotoAttachmentId,
 } from "../src/lib/vk-publisher";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -100,10 +100,19 @@ function stubVk(options: {
       });
 
     if (method === "photos.getWallUploadServer") {
+      // Measured: album_id, upload_url, user_id — and no `photo` field, which the module
+      // used to read and put into the multipart body as `undefined`.
       return respond({ album_id: -14, upload_url: "https://upload.vk.com/photo", user_id: 7 });
     }
     if (method === "photos.saveWallPhoto") {
-      return respond(options.noPhotoId ? {} : { server: 1, photo: "ph_9", hash: "h" });
+      // The measured shape: an array of photo objects, not the documented `{ photo: string }`.
+      // Reading `.photo` off this yields undefined, which is how a cover gets uploaded,
+      // paid for and then dropped from the post.
+      return respond(
+        options.noPhotoId
+          ? {}
+          : [{ album_id: -14, id: 457240126, owner_id: 276313599, access_key: "k" }],
+      );
     }
     if (method === "wall.post") {
       return respond({ post_id: 555 });
@@ -182,15 +191,14 @@ async function main() {
 
   // --- attachments --------------------------------------------------------
   check(
-    "Вложения: без фото остаётся одна ссылка",
-    buildAttachments(null, "only-link") === "http://localhost:3000/news/only-link",
-    buildAttachments(null, "only-link"),
+    "Вложения: без фото вложений нет",
+    buildAttachments(null, "only-link") === "",
+    JSON.stringify(buildAttachments(null, "only-link")),
   );
   check(
-    "Вложения: с фото — сначала фото, потом ссылка",
-    buildAttachments("ph_9", "both") ===
-      "ph_9,http://localhost:3000/news/both",
-    buildAttachments("ph_9", "both"),
+    "Вложения: с фото — одно фото, без запятой и хвоста",
+    buildAttachments("photo276313599_457240126", "both") === "photo276313599_457240126",
+    buildAttachments("photo276313599_457240126", "both"),
   );
 
   // --- the upload answer VK actually sends ---------------------------------
@@ -256,13 +264,14 @@ async function main() {
     `owner_id=${post?.params.owner_id}`,
   );
   /*
-    The link is an attachment even with no photo. It is what makes VK render the preview
-    card; a URL that only exists inside `message` renders as blue text or as nothing,
-    depending on the client.
+    The brief asked for the link here too. VK refuses a link attachment on this community —
+    error 100 on every API version from 5.92 to 5.199 and every link_photo_sizing_rule
+    value, all measured on production — so passing one would stop the post going out at
+    all. The link stays in the message, where VK renders its own preview for a bare URL.
   */
   check(
-    "wall.post: ссылка в attachments даже без обложки",
-    post?.params.attachments === "https://example.com/news/text-post",
+    "wall.post: без обложки вложений нет вовсе",
+    post?.params.attachments === undefined,
     `attachments=${post?.params.attachments ?? "нет"}`,
   );
   check(
@@ -272,16 +281,19 @@ async function main() {
   );
 
   /*
-    Measured on production: VK answers a wall.post carrying a link attachment without this
-    with error 100, "Violated: link_photo_sizing_rule. No photo given". The message reads as
-    though a photo were required and satisfied, which is why it is worth asserting the
-    parameter rather than trusting the wording.
+    An empty attachments string is not "no attachments" to VK: it reads as a malformed
+    attachment and the post is refused. Omitting the parameter entirely is the only way to
+    ask for a plain-text post.
   */
   check(
-    "wall.post: задан link_photo_sizing_rule для карточки превью",
-    post?.params.link_photo_sizing_rule === VK_LINK_PHOTO_SIZING &&
-      /^\d+x\d+$/.test(post?.params.link_photo_sizing_rule ?? ""),
-    `link_photo_sizing_rule=${post?.params.link_photo_sizing_rule}`,
+    "wall.post: пустая строка вложений не отправляется",
+    buildAttachments(null, "only-link") === "",
+    JSON.stringify(buildAttachments(null, "only-link")),
+  );
+  check(
+    "wall.post: с обложкой вложение — ровно одно фото",
+    buildAttachments("ph_9", "both") === "ph_9" && buildAttachments(null, "both") === "",
+    `${buildAttachments("ph_9", "both")} / ${buildAttachments(null, "both")}`,
   );
   check(
     "Текст поста: ссылка помечена «Читать полностью»",
@@ -370,10 +382,34 @@ async function main() {
     methods.join(" → "),
   );
   check(
-    "С обложкой: attachments = фото + ссылка",
-    calls.at(-1)?.params.attachments ===
-      "ph_9,https://example.com/news/with-cover",
+    "С обложкой: вложение — только фото",
+    calls.at(-1)?.params.attachments === "photo276313599_457240126",
     `attachments=${calls.at(-1)?.params.attachments}`,
+  );
+
+  /*
+    The three shapes saveWallPhoto is answered with in the wild, so that a change of VK's
+    mood costs a warning rather than a silent coverless post.
+  */
+  check(
+    "id фото собирается из ответа saveWallPhoto",
+    vkPhotoAttachmentId([{ id: 457240126, owner_id: 276313599 }]) ===
+      "photo276313599_457240126" &&
+      vkPhotoAttachmentId({ id: 1, owner_id: 2 }) === "photo2_1" &&
+      vkPhotoAttachmentId("photo-3_4") === "photo-3_4" &&
+      vkPhotoAttachmentId("-5_6") === "photo-5_6",
+    JSON.stringify(
+      vkPhotoAttachmentId([{ id: 457240126, owner_id: 276313599 }]),
+    ),
+  );
+  check(
+    "id фото: без владельца вложение не строится",
+    // A half-built id is worse than none: VK rejects the whole post rather than ignoring it.
+    vkPhotoAttachmentId([{ id: 1 }]) === null &&
+      vkPhotoAttachmentId([]) === null &&
+      vkPhotoAttachmentId(null) === null &&
+      vkPhotoAttachmentId({ owner_id: 1 }) === null,
+    "null, а не кривая строка",
   );
 
   /*
@@ -432,8 +468,7 @@ async function main() {
     afterOutage.ok === true &&
       uploads.length === 3 &&
       uploads[0].status === 504 &&
-      calls.at(-1)?.params.attachments ===
-        "ph_9,https://example.com/news/retried",
+      calls.at(-1)?.params.attachments === "photo276313599_457240126",
     `попыток=${uploads.length}, attachments=${calls.at(-1)?.params.attachments}`,
   );
 
@@ -457,13 +492,13 @@ async function main() {
     JSON.stringify(uploadFailed),
   );
   /*
-    Degraded, not abandoned: the link attachment is what makes the preview card, so a post
-    without a cover still shows a headline and a description where before it showed nothing
-    but blue text.
+    Degraded, not abandoned: the link is still in the message, so VK shows its own preview
+    for it. Only the photo is lost.
   */
   check(
-    "Ошибка загрузки обложки: остаётся ссылка-вложение + warning",
-    calls.at(-1)?.params.attachments === "https://example.com/news/bad-cover" &&
+    "Ошибка загрузки обложки: пост без вложений, ссылка в тексте + warning",
+    calls.at(-1)?.params.attachments === undefined &&
+      Boolean(calls.at(-1)?.params.message?.includes("https://example.com/news/bad-cover")) &&
       typeof uploadFailed.warning === "string",
     `${calls.at(-1)?.params.attachments} / ${uploadFailed.warning ?? "нет warning"}`,
   );

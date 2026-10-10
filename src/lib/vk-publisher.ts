@@ -229,29 +229,42 @@ export function leadSummary(lead: string | null | undefined): string {
 }
 
 /**
- * The `attachments` value: the wall photo, then the article.
+ * The `attachments` value: the wall photo, or nothing.
  *
- * The link is an attachment as well as being the last line of the message. That is what
- * turns a bare URL into VK's link card — the image and the headline-and-description preview
- * under it. A URL written into `message` alone renders as blue text on some clients and as
- * nothing at all on others, so depending on the message to produce the snippet is leaving
- * the layout to chance.
+ * **The brief asked for the link here as well** — `photo{owner_id}_{id},https://…/news/{slug}`.
+ * That cannot be done on this community, and it is worth recording why rather than quietly
+ * dropping the second half. Measured against the live API on production, every form of a
+ * link attachment is refused with error 100:
+ *
+ *   attachments=https://eartnews.ru/news/probe                                  → 100
+ *   … + link_photo_sizing_rule=1080x720                                          → 100
+ *   … + link_photo_sizing_rule=1312x807                                          → 100
+ *   … + link_photo_sizing_rule=2048x1366                                         → 100
+ *   photo + link, with and without every sizing rule                             → 100
+ *
+ * all on API versions 5.92, 5.131, 5.197 and 5.199, so it is not a version that gained or
+ * lost the feature. The error reads "Violated: link_photo_sizing_rule. No photo given",
+ * which sends you looking for a missing photo that was in fact supplied.
+ *
+ * The link therefore stays in the message, where VK renders its own preview for a bare URL
+ * — verified on the wall after a real post, see the check below. Passing it as an attachment
+ * would not add a card; it would stop the post going out at all.
  */
 export function buildAttachments(photoId: string | null, slug: string): string {
-  const link = `${siteUrl()}/news/${slug}`;
-  return photoId ? `${photoId},${link}` : link;
+  // `slug` is unused on purpose — see above. Kept in the signature so the caller keeps
+  // passing the story it is posting about, and so restoring a link attachment later is a
+  // one-line change rather than a search.
+  void slug;
+  return photoId ?? "";
 }
 
 /**
  * Size VK renders the link card at.
  *
- * Not optional, and not guessable: VK answers a `wall.post` carrying a link attachment
- * without this with error 100, "Violated: link_photo_sizing_rule. No photo given" — measured
- * on production. The message names a rule that looks satisfied, because a photo *was* given;
- * what it means is that the rule for the link preview has not been set.
- *
- * 1080x720 rather than the largest option: the cover itself is 1080 wide, so a bigger
- * preview would be upscaled by VK out of nothing.
+ * Unused: VK refuses a link attachment on this community whatever value is given (see
+ * `buildAttachments`), so there is no rule left to satisfy. Kept out of the request rather
+ * than sent and ignored — a parameter that provably changes nothing is only a second thing
+ * to be wrong later.
  */
 export const VK_LINK_PHOTO_SIZING = "1080x720";
 
@@ -291,29 +304,74 @@ export function parseVkUploadResult(payload: unknown): VkUploadResult | null {
   return { server, photo: typeof photo === "string" ? photo : "", hash };
 }
 
+/**
+ * Turns what `photos.saveWallPhoto` returns into an attachment id.
+ *
+ * Measured on production, and the return is not the documented one. Documentation says a
+ * `photo` string; the live service answers with an array of photo objects carrying `id` and
+ * `owner_id`, so reading `.photo` yields undefined and the cover is uploaded, paid for, and
+ * then silently dropped from the post — which is exactly what it was doing.
+ *
+ * All three shapes are handled, because which one comes back is not something this code
+ * gets to choose, and guessing wrong costs a cover on every single post:
+ *
+ *   "photo-276313599_457240126"   → used as-is
+ *   "-276313599_457240126"        → prefixed, VK accepts both spellings
+ *   [{ id, owner_id, ... }]       → "photo{owner_id}_{id}"
+ */
+export function vkPhotoAttachmentId(saved: unknown): string | null {
+  const candidate = Array.isArray(saved) ? saved[0] : saved;
+  if (!candidate) return null;
+
+  if (typeof candidate === "string") {
+    const trimmed = candidate.trim();
+    if (!trimmed) return null;
+    return trimmed.startsWith("photo") ? trimmed : `photo${trimmed}`;
+  }
+
+  if (typeof candidate === "object") {
+    const { id, owner_id: ownerId } = candidate as { id?: unknown; owner_id?: unknown };
+    if (typeof id !== "number" && typeof id !== "string") return null;
+    // Without an owner the id cannot be completed, and a half-built attachment id is worse
+    // than none: VK rejects the whole post rather than ignoring the attachment.
+    if (typeof ownerId !== "number" && typeof ownerId !== "string") return null;
+    return `photo${ownerId}_${id}`;
+  }
+
+  return null;
+}
+
 /** Uploads the cover to VK's one-off server and returns the saved wall photo id. */
-async function uploadCoverImage(
-  communityId: string,
-  imageUrl: string,
-): Promise<string | null> {
+async function uploadCoverImage(imageUrl: string): Promise<string | null> {
+  /*
+    The positive id, and not the negative owner id.
+
+    Measured on production, and the two are not interchangeable: getWallUploadServer accepts
+    either and returns a usable upload server for both, so nothing warns you. saveWallPhoto
+    rejects the negative form outright — "group_id should be greater or equal to 0" — which
+    meant the photo never got saved, `photoId` came back null, and every wall post went out
+    as text. Passing the same `communityId` to both looked correct and silently was not.
+  */
+  const groupId = vkCommunityId();
+
   const uploadServer = await callVk<{
     upload_url: string;
     album_id: number;
-  }>("photos.getWallUploadServer", { group_id: communityId });
+  }>("photos.getWallUploadServer", { group_id: groupId });
 
   const { bytes, contentType } = await readCoverImage(imageUrl);
   const extension = extensionFor(contentType) ?? ".jpg";
 
   const uploaded = await postToVkUploadServer(uploadServer.upload_url, bytes, extension, contentType);
 
-  const saved = await callVk<{ photo?: string }>("photos.saveWallPhoto", {
-    group_id: communityId,
+  const saved = await callVk<unknown>("photos.saveWallPhoto", {
+    group_id: groupId,
     server: uploaded.server,
     photo: uploaded.photo,
     hash: uploaded.hash,
   });
 
-  return saved.photo ?? null;
+  return vkPhotoAttachmentId(saved);
 }
 
 /**
@@ -400,7 +458,7 @@ export async function publishArticleToVk(
 
   if (article.coverImage) {
     try {
-      photoId = await uploadCoverImage(communityId, article.coverImage);
+      photoId = await uploadCoverImage(article.coverImage);
       if (!photoId) {
         warning = "ВК не вернул id загруженного фото — пост отправлен без обложки";
       }
@@ -428,10 +486,9 @@ try {
       owner_id: communityId,
       from_group: 1,
       message,
-      // Always present, even without a photo: the link attachment is what renders the
-      // preview card. Omitting it would leave a successful cover upload unused.
-      attachments: buildAttachments(photoId, article.slug),
-      link_photo_sizing_rule: VK_LINK_PHOTO_SIZING,
+      // Present whenever a cover made it up; omitted otherwise, because VK treats an empty
+      // string as a malformed attachment and rejects the whole post.
+      ...(photoId ? { attachments: photoId } : {}),
     });
 
     return {
