@@ -25,11 +25,30 @@ const VK_API_BASE = "https://api.vk.com/method";
 const VK_API_VERSION = "5.199";
 
 export type VkArticle = {
+  /** Database id, for the log line only — a repost that misbehaves has to be findable. */
+  id?: string;
   title: string;
   lead?: string | null;
   slug: string;
   coverImage?: string | null;
 };
+
+/**
+ * Every line this module writes starts with this.
+ *
+ * Not decoration: diagnosing the missing covers meant reading `pm2 logs`, and the one useful
+ * line was buried among the AI-cover chatter. `grep '\[vk\]'` is now the whole story of a
+ * repost, and the prefix is what makes that possible.
+ */
+export const VK_LOG_PREFIX = "[vk]";
+
+function log(...parts: unknown[]): void {
+  console.log(VK_LOG_PREFIX, ...parts);
+}
+
+function logError(...parts: unknown[]): void {
+  console.error(VK_LOG_PREFIX, ...parts);
+}
 
 export type VkPublishResult = {
   ok: boolean;
@@ -44,33 +63,48 @@ export type VkPublishResult = {
 
 type VkEnvelope<T> = {
   response?: T;
-  error?: { error_code?: number; error_msg?: string };
+  error?: { error_code?: number; error_msg?: string; error_subcode?: number };
 };
 
 /**
- * VK accepts the group id with or without the leading minus, but the `owner_id`
- * parameter always needs the negative form.
+ * The last meaningful piece of whatever an editor put in `VK_COMMUNITY_ID`.
  *
  * Editors paste whatever the address bar shows, so all of these have to work:
  *
- *   "-241944021"                    -> -241944021
- *   "241944021"                     -> -241944021
- *   "https://vk.ru/club241944021"   -> -241944021
- *   "public241944021"               -> -241944021
- *   "https://vk.ru/eartnews"        -> -publiceartnews
+ *   "-241944021"                    -> "241944021"
+ *   "241944021"                     -> "241944021"
+ *   "https://vk.ru/club241944021"   -> "club241944021"
+ *   "public241944021"               -> "public241944021"
+ *   "https://vk.ru/eartnews"        -> "eartnews"
+ */
+export function vkCommunitySegment(): string {
+  const raw = process.env.VK_COMMUNITY_ID?.trim() ?? "";
+  return raw.split(/[/?#]/).filter(Boolean).pop() ?? "";
+}
+
+/** A positive numeric community id, or null when the config holds a short name. */
+export function vkCommunityGroupId(): string | null {
+  /*
+    The leading minus is accepted here because it is a legitimate way to configure the
+    community — `vkOwnerId` supports it, the deployment briefs show it, and an editor copying
+    the number out of a VK admin URL may well have it. Stripping it here rather than refusing
+    the value is what keeps `-241944021` and `241944021` from taking different paths.
+  */
+  const digits = vkCommunitySegment().match(/^-?(?:club|public)?(\d+)$/i);
+  return digits ? digits[1] : null;
+}
+
+/**
+ * `owner_id` is `-group_id`: the wall belongs to the community, and VK spells that with the
+ * minus.
  *
- * The last case is a custom short name rather than a number: VK addresses those
+ * A custom short name rather than a number needs a different spelling — VK addresses those
  * as "public" + the slug. Falling through to a raw concatenation would send
- * owner_id="-https://vk.ru/eartnews", which fails every wall.post with an opaque
- * API error that reads like a token problem.
+ * owner_id="-https://vk.ru/eartnews", which fails every wall.post with an opaque API error
+ * that reads like a token problem.
  */
 export function vkOwnerId(): string {
-  const raw = process.env.VK_COMMUNITY_ID?.trim() ?? "";
-
-  // Reduce a full URL to its last path segment, so "https://vk.ru/eartnews" and a
-  // bare "eartnews" take the same branch. A bare id has no separator and is
-  // already its own segment.
-  const segment = raw.split(/[/?#]/).filter(Boolean).pop() ?? "";
+  const segment = vkCommunitySegment();
 
   const fromClub = segment.match(/^club(\d+)$/i);
   if (fromClub) return `-${fromClub[1]}`;
@@ -82,7 +116,7 @@ export function vkOwnerId(): string {
 
   if (/^[a-z][a-z0-9_.]*$/i.test(segment)) return `-public${segment}`;
 
-  return `-${raw}`;
+  return `-${process.env.VK_COMMUNITY_ID?.trim() ?? ""}`;
 }
 
 /**
@@ -165,12 +199,36 @@ async function callVk<T>(
   }
 
   const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  const raw = await response.text().catch(() => "");
+
   if (!response.ok) {
+    logError(`${method} → HTTP ${response.status}: ${raw.slice(0, 200)}`);
     throw new Error(`VK ${method} failed with HTTP ${response.status}`);
   }
 
-  const payload = (await response.json()) as VkEnvelope<T>;
+  let payload: VkEnvelope<T>;
+  try {
+    payload = JSON.parse(raw) as VkEnvelope<T>;
+  } catch {
+    // VK does answer these endpoints with HTML on a bad day, and the parse error used to be
+    // the only thing an operator saw — with neither the method name nor the body.
+    logError(`${method} → ответ не JSON: ${raw.slice(0, 200)}`);
+    throw new Error(`VK ${method}: ответ не является JSON`);
+  }
+
   if (payload.error) {
+    /*
+      The whole error object, not just the message.
+
+      `error_code` and `error_msg` alone are not enough to tell two failures apart — "Access
+      denied" covers a dozen causes — and this line is what an operator reads when a repost
+      misbehaves at two in the morning.
+    */
+    logError(
+      `${method} → ошибка ВК ${payload.error.error_code ?? "?"}${
+        payload.error.error_subcode ? `/${payload.error.error_subcode}` : ""
+      }: ${payload.error.error_msg ?? "без описания"}`,
+    );
     throw new Error(
       `VK ${method}: ${payload.error.error_msg ?? "unknown error"} (${payload.error.error_code ?? "?"})`,
     );
@@ -285,6 +343,23 @@ type VkUploadResult = { server: number; photo: string; hash: string };
  *
  * The enveloped form is still accepted because VK has changed this before and a future
  * server that wraps it should degrade into working rather than into a missing cover.
+ *
+ * **A non-empty `photo` is required, and this is the measurement the whole feature hung on.**
+ * The live endpoint answers two different 200s:
+ *
+ *   {"server":903529,"photo":"[{…\"photo\":\"9bce4ffabc:w\"…}]","hash":"…"}   1682 bytes
+ *   {"server":903529,"photo":"","hash":"…"}                                    70 bytes
+ *
+ * The second is a *failed* upload reported as success. `photos.saveWallPhoto` refuses it —
+ * error 100, "photo is undefined" — so accepting it here meant the cover was never saved,
+ * `photoId` came back null and every post went out as bare text. An earlier version of this
+ * function documented the empty string as normal ("the identifier is minted at saveWallPhoto
+ * from the server and hash") and passed it along; the check suite agreed because its stub
+ * returned `photo: ""` too. Neither was ever measured against the live endpoint.
+ *
+ * Treating it as a failure makes it retryable instead, and the retry is what fixes it: the
+ * empty answer was measured on the *first* attempt in run after run, with the next attempt
+ * returning a full payload.
  */
 export function parseVkUploadResult(payload: unknown): VkUploadResult | null {
   const candidate =
@@ -298,10 +373,10 @@ export function parseVkUploadResult(payload: unknown): VkUploadResult | null {
   if (typeof server !== "number" || !Number.isFinite(server)) return null;
   if (typeof hash !== "string" || hash.length === 0) return null;
 
-  // `photo` comes back as an empty string on the wall upload — the identifier is minted at
-  // saveWallPhoto from the server and hash. It is required to be present, so that a
-  // truncated or error body cannot pass as a success.
-  return { server, photo: typeof photo === "string" ? photo : "", hash };
+  // The identifier itself. Empty means the upload did not happen, whatever the status said.
+  if (typeof photo !== "string" || photo.length === 0) return null;
+
+  return { server, photo, hash };
 }
 
 /**
@@ -341,37 +416,114 @@ export function vkPhotoAttachmentId(saved: unknown): string | null {
   return null;
 }
 
-/** Uploads the cover to VK's one-off server and returns the saved wall photo id. */
-async function uploadCoverImage(imageUrl: string): Promise<string | null> {
-  /*
-    The positive id, and not the negative owner id.
+/**
+ * A failure worth another attempt: a 5xx from the upload server, an answer that is not JSON,
+ * or a 200 that carried no photo. Anything else is a rejection and is rethrown.
+ */
+class RetryableUploadError extends Error {}
 
-    Measured on production, and the two are not interchangeable: getWallUploadServer accepts
-    either and returns a usable upload server for both, so nothing warns you. saveWallPhoto
-    rejects the negative form outright — "group_id should be greater or equal to 0" — which
-    meant the photo never got saved, `photoId` came back null, and every wall post went out
-    as text. Passing the same `communityId` to both looked correct and silently was not.
-  */
-  const groupId = vkCommunityId();
+/**
+ * The community id in the form the photo methods demand: a positive integer.
+ *
+ * Measured, and the sign is not cosmetic. `photos.getWallUploadServer` answers for either
+ * sign and hands back an upload address carrying `gid=-241944021`, so nothing warns you;
+ * `photos.saveWallPhoto` then refuses with error 100, "group_id should be greater or equal
+ * to 0", and the cover is lost. Passing `VK_COMMUNITY_ID` through raw also broke every
+ * deployment that configured a club URL or a short name, because `group_id` has to be the
+ * number and nothing else.
+ */
+async function communityGroupIdForPhotos(): Promise<string> {
+  const direct = vkCommunityGroupId();
+  if (direct) return direct;
 
-  const uploadServer = await callVk<{
-    upload_url: string;
-    album_id: number;
-  }>("photos.getWallUploadServer", { group_id: groupId });
+  // A short name is a legitimate way to configure the community — `vkOwnerId` accepts it —
+  // so it is resolved here rather than refused. Measured: groups.getById answers a numeric id
+  // for both "241944021" and "eartnews".
+  const segment = vkCommunitySegment();
+  log(`числовой id в конфигурации отсутствует («${segment}») — уточняю через groups.getById`);
 
+  const listed = await callVk<{ groups?: { id?: number }[] } | { id?: number }[]>(
+    "groups.getById",
+    { group_id: segment },
+  );
+  const groups = Array.isArray(listed) ? listed : listed?.groups;
+  const id = groups?.[0]?.id;
+  if (id === undefined || id === null) {
+    throw new Error(`не удалось определить числовой id сообщества по «${segment}»`);
+  }
+  return String(id);
+}
+
+/** Uploads the cover to VK and returns the saved wall photo attachment id. */
+async function uploadCoverImage(imageUrl: string): Promise<string> {
+  const groupId = await communityGroupIdForPhotos();
   const { bytes, contentType } = await readCoverImage(imageUrl);
   const extension = extensionFor(contentType) ?? ".jpg";
+  log(`обложка прочитана: ${bytes.byteLength} байт, ${contentType}, group_id=${groupId}`);
 
-  const uploaded = await postToVkUploadServer(uploadServer.upload_url, bytes, extension, contentType);
+  let lastProblem = "";
 
-  const saved = await callVk<unknown>("photos.saveWallPhoto", {
-    group_id: groupId,
-    server: uploaded.server,
-    photo: uploaded.photo,
-    hash: uploaded.hash,
-  });
+  for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt += 1) {
+    /*
+      A fresh upload address for every attempt.
 
-  return vkPhotoAttachmentId(saved);
+      The address `getWallUploadServer` hands out carries a one-off hash tied to the album,
+      and re-posting to a used address was measured answering non-JSON about as often as it
+      answered a photo. Asking again is one cheap call next to a lost cover.
+    */
+    const uploadServer = await callVk<{ upload_url: string; album_id?: number }>(
+      "photos.getWallUploadServer",
+      { group_id: groupId },
+    );
+
+    let host = "?";
+    try {
+      host = new URL(uploadServer.upload_url).host;
+    } catch {
+      // Nothing to report beyond the fact that VK sent an address that is not a URL; the POST
+      // below fails with the same information.
+    }
+    log(`шаг 1/3 (попытка ${attempt}/${UPLOAD_ATTEMPTS}): адрес загрузки получен (${host})`);
+
+    let uploaded: VkUploadResult;
+    try {
+      uploaded = await postCoverBytes(uploadServer.upload_url, bytes, extension, contentType);
+    } catch (error) {
+      // A 4xx is the request being wrong, and the next identical one will be wrong too.
+      if (!(error instanceof RetryableUploadError)) throw error;
+      lastProblem = error.message;
+      logError(`шаг 2/3: попытка ${attempt}/${UPLOAD_ATTEMPTS} не удалась — ${lastProblem}`);
+      await sleepBeforeRetry(attempt);
+      continue;
+    }
+    log(
+      `шаг 2/3: файл принят — server=${uploaded.server}, hash=${uploaded.hash}, photo=${uploaded.photo.length} символов`,
+    );
+
+    /*
+      A rejection here is the API saying no, and it will say no again — failing fast keeps a
+      publish an editor is waiting on from spending ten seconds re-asking a question that has
+      been answered.
+    */
+    const saved = await callVk<unknown>("photos.saveWallPhoto", {
+      group_id: groupId,
+      server: uploaded.server,
+      photo: uploaded.photo,
+      hash: uploaded.hash,
+    });
+
+    const attachment = vkPhotoAttachmentId(saved);
+    if (!attachment) {
+      throw new Error("ВК сохранил обложку, но не вернул id фото — вложение собрать не из чего");
+    }
+
+    log(`шаг 3/3: обложка сохранена — ${attachment}`);
+    return attachment;
+  }
+
+  throw new Error(
+    `не удалось загрузить обложку за ${UPLOAD_ATTEMPTS} попыток: ${lastProblem || "причина неизвестна"}`,
+  );
 }
 
 /**
@@ -410,49 +562,63 @@ function uploadBackoff(attempt: number): number {
   return 1_500 * attempt;
 }
 
-async function postToVkUploadServer(
+/**
+ * One POST of the cover bytes, as the multipart part VK expects.
+ *
+ *  - the field is named `photo`, and the part carries a filename with a real extension;
+ *  - the body is read as *text* first.
+ *
+ * The second point is a diagnosis, not a style. This endpoint answers with an HTML error page
+ * on a busy day, and — measured in the production log — with the two bare words
+ * "Security Breach2" when it dislikes the call. `response.json()` turned either into
+ * `Unexpected token 'S', "Security Breach2" is not valid JSON`: an error naming neither the
+ * endpoint, nor the body, nor which attempt it was. That single string was the whole of the
+ * production evidence, and it said nothing.
+ */
+async function postCoverBytes(
   uploadUrl: string,
   bytes: ArrayBuffer,
   extension: string,
   contentType: string,
 ): Promise<VkUploadResult> {
-  let lastProblem = "";
+  // A new body per call: a Blob cannot be appended to a FormData twice.
+  const form = new FormData();
+  form.append("photo", new Blob([bytes], { type: contentType }), `cover${extension}`);
 
-  for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt += 1) {
-    // Built inside the loop because a Blob cannot be appended twice to the same body, and
-    // a new FormData per attempt is cheaper than reasoning about a consumed stream.
-    const form = new FormData();
-    form.append("photo", new Blob([bytes], { type: contentType }), `cover${extension}`);
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30_000),
+  });
 
-    try {
-      const response = await fetch(uploadUrl, {
-        method: "POST",
-        body: form,
-        signal: AbortSignal.timeout(30_000),
-      });
+  const body = await response.text().catch(() => "");
+  const snippet = body.slice(0, 160).replace(/\s+/g, " ").trim();
 
-      if (!response.ok) {
-        // VK serves an HTML error page for these, so the status is the only usable signal.
-        lastProblem = `cover upload failed with HTTP ${response.status}`;
-        // Only a server-side status is worth repeating; a 4xx means the request itself is
-        // wrong and a second identical request will be wrong in exactly the same way.
-        if (response.status < 500) throw new Error(lastProblem);
-        await sleepBeforeRetry(attempt);
-        continue;
-      }
-
-      const result = parseVkUploadResult(await response.json().catch(() => null));
-      if (!result) throw new Error("cover upload returned no usable payload");
-      return result;
-    } catch (error) {
-      // A 4xx or an unreadable body is not going to improve on a second try.
-      if (error instanceof Error && error.message === lastProblem) throw error;
-      lastProblem = error instanceof Error ? error.message : "unknown upload error";
-      await sleepBeforeRetry(attempt);
-    }
+  if (!response.ok) {
+    const detail = `HTTP ${response.status}${snippet ? `: ${snippet}` : ""}`;
+    // 5xx is the upload server being busy — worth repeating. 4xx is the request itself.
+    throw response.status >= 500
+      ? new RetryableUploadError(detail)
+      : new Error(`ВК отверг загрузку обложки: ${detail}`);
   }
 
-  throw new Error(lastProblem || "cover upload failed");
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = null;
+  }
+
+  const result = parseVkUploadResult(parsed);
+  if (result) return result;
+
+  // A 200 with nothing usable behind it: the measured `photo: ""`, or a body that is not JSON
+  // at all. Both deserve another attempt, and both have to say what they were.
+  throw new RetryableUploadError(
+    parsed
+      ? "ВК ответил 200, но без photo — загрузка не состоялась"
+      : `ответ сервера загрузки не JSON: ${snippet || "пусто"}`,
+  );
 }
 
 /**
@@ -506,36 +672,31 @@ export async function publishArticleToVk(
 
   const communityId = vkOwnerId();
   const message = buildPostText(article);
-  /** The wall photo, or null when there was no cover or the upload failed. */
+  /** The wall photo attachment, or null when there was no cover or the upload failed. */
   let photoId: string | null = null;
   let warning: string | undefined;
+
+  log(
+    `публикация: статья ${article.id ?? "без id"} «${article.slug}», обложка: ${
+      article.coverImage ?? "нет"
+    }, owner_id=${communityId}`,
+  );
 
   if (article.coverImage) {
     try {
       photoId = await uploadCoverImage(article.coverImage);
-      if (!photoId) {
-        warning = "ВК не вернул id загруженного фото — пост отправлен без обложки";
-      }
     } catch (error) {
       // The post itself is still worth publishing without the image.
       warning = `Не удалось загрузить обложку: ${
         error instanceof Error ? error.message : "неизвестная ошибка"
       }`;
+      logError(`обложка не загружена, пост уйдёт без неё — ${warning}`);
     }
+  } else {
+    log("обложки нет — пост уйдёт только текстом со ссылкой");
   }
 
-  /**
- * Size VK renders the link card at.
- *
- * Not optional, and not guessable: VK answers a `wall.post` carrying a link attachment
- * without this with error 100, "Violated: link_photo_sizing_rule. No photo given" — measured
- * on production. The message names a rule that looks satisfied, because a photo *was* given;
- * what it means is that the rule for the link preview has not been set.
- *
- * 1080x720 rather than the largest option: the cover itself is 1080 wide, so a bigger
- * preview would be upscaled by VK from nothing.
- */
-try {
+  try {
     const posted = await callVk<{ post_id?: number | string }>("wall.post", {
       owner_id: communityId,
       from_group: 1,
@@ -545,6 +706,12 @@ try {
       ...(photoId ? { attachments: photoId } : {}),
     });
 
+    log(
+      `готово: пост ${posted?.post_id ?? "?"}, вложение: ${photoId ?? "нет"}${
+        warning ? `, предупреждение: ${warning}` : ""
+      }`,
+    );
+
     return {
       ok: true,
       postId: posted?.post_id != null ? String(posted.post_id) : null,
@@ -552,9 +719,53 @@ try {
       ...(warning ? { warning } : {}),
     };
   } catch (error) {
+    logError("пост не отправлен:", error instanceof Error ? error.message : error);
     return {
       ok: false,
       error: error instanceof Error ? error.message : "неизвестная ошибка ВК",
     };
+  }
+}
+
+/**
+ * What VK says is actually attached to a post, read back from the API.
+ *
+ * This exists because "the upload returned 200" and "the post carries a picture" are two
+ * different claims, and only the second one is what an editor cares about. The check button
+ * uses it to turn a hopeful green tick into a verified one.
+ *
+ * Returns null when the post cannot be read at all — a different answer from an empty array,
+ * which means it was read and has nothing on it.
+ */
+export async function readWallPostAttachments(postId: string): Promise<string[] | null> {
+  const owner = vkOwnerId();
+  try {
+    const response = await callVk<
+      { items?: { attachments?: { type?: string }[] }[] } | { attachments?: { type?: string }[] }[]
+    >("wall.getById", { posts: `${owner}_${postId}` });
+
+    const items = Array.isArray(response) ? response : (response?.items ?? []);
+    const first = items[0];
+    if (!first) return null;
+
+    return (first.attachments ?? []).map((attachment) => attachment.type ?? "unknown");
+  } catch (error) {
+    logError(`не удалось прочитать пост ${postId}:`, error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+/** Removes a wall post. Used by the test button so a probe does not stay on the wall. */
+export async function deleteWallPost(postId: string): Promise<boolean> {
+  try {
+    await callVk<number>("wall.delete", { owner_id: vkOwnerId(), post_id: postId });
+    log(`тестовый пост ${postId} удалён со стены`);
+    return true;
+  } catch (error) {
+    logError(
+      `тестовый пост ${postId} удалить не удалось:`,
+      error instanceof Error ? error.message : error,
+    );
+    return false;
   }
 }

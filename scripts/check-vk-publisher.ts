@@ -5,13 +5,16 @@
 import {
   buildAttachments,
   buildPostText,
+  deleteWallPost,
   leadSummary,
   parseVkUploadResult,
   publishArticleToVk,
+  readWallPostAttachments,
   resetVkRetrySleep,
   setVkRetrySleep,
   VK_LEAD_MAX,
   UPLOAD_ATTEMPTS,
+  vkCommunityGroupId,
   vkPhotoAttachmentId,
 } from "../src/lib/vk-publisher";
 
@@ -43,6 +46,10 @@ function stubVk(options: {
   /** Fail this many upload attempts with a server-side status before succeeding. */
   uploadFailTimes?: number;
   uploadFailStatus?: number;
+  /** Answer this many attempts with the measured 200-but-empty `photo` before succeeding. */
+  emptyPhotoTimes?: number;
+  /** Report a post with no photo attached, for the read-back used by the test button. */
+  attachmentMissing?: boolean;
 }) {
   const calls: { method: string; params: Record<string, string> }[] = [];
   /** One entry per attempt on the upload endpoint, so retry behaviour is assertable. */
@@ -54,6 +61,7 @@ function stubVk(options: {
     filename: string | null;
   }[] = [];
   let remainingFailures = options.uploadFailTimes ?? 0;
+  let remainingEmpty = options.emptyPhotoTimes ?? 0;
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -85,11 +93,33 @@ function stubVk(options: {
         });
       }
 
-      // Bare, exactly as measured against the live endpoint.
-      return new Response(JSON.stringify({ server: 908118, photo: "", hash: "h_1" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      /*
+        The measured failure shape: HTTP 200 with an empty `photo`.
+
+        It is not the default here on purpose. This stub used to answer `photo: ""` on every
+        attempt while the suite asserted that a cover came out of it — so the checks agreed
+        with the module's wrong belief and production posted bare text for as long as it took
+        someone to read the live responses. `photo: ""` is a *failed* upload, and
+        saveWallPhoto refuses it with error 100.
+      */
+      if (remainingEmpty > 0) {
+        remainingEmpty -= 1;
+        return new Response(JSON.stringify({ server: 908118, photo: "", hash: "h_empty" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      // The measured success shape, bare, exactly as the live endpoint sends it. `photo` is a
+      // non-empty JSON string — the server-side handle that saveWallPhoto needs.
+      return new Response(
+        JSON.stringify({
+          server: 908118,
+          photo: JSON.stringify([{ markers_restarted: true, photo: "9bce4ffabc:w", sizes: [] }]),
+          hash: "h_1",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
     }
 
     const method = url.pathname.split("/").pop() ?? "";
@@ -117,8 +147,29 @@ function stubVk(options: {
           : [{ album_id: -14, id: 457240126, owner_id: 276313599, access_key: "k" }],
       );
     }
+    if (method === "groups.getById") {
+      // Measured against the live service: a numeric id and the short name "eartnews" both
+      // answer the same community, so a slug-configured deployment can resolve the numeric
+      // group_id the photo methods require.
+      return respond({ groups: [{ id: 241944021, name: "Ёновости", screen_name: "eartnews" }] });
+    }
     if (method === "wall.post") {
       return respond({ post_id: 555 });
+    }
+    if (method === "wall.getById") {
+      // Measured: `attachments` is an array of objects carrying a `type`, and it is what the
+      // test button reads to tell "the post has a photo" from "the upload said 200".
+      return respond({
+        items: [
+          {
+            id: 555,
+            attachments: options.attachmentMissing ? [] : [{ type: "photo" }],
+          },
+        ],
+      });
+    }
+    if (method === "wall.delete") {
+      return respond(1);
     }
 
     return new Response(
@@ -212,25 +263,45 @@ async function main() {
   );
 
   // --- the upload answer VK actually sends ---------------------------------
+  const okPhoto = JSON.stringify([{ markers_restarted: true, photo: "9bce4ffabc:w", sizes: [] }]);
   check(
-    "Ответ загрузки: голый объект принимается",
+    "Ответ загрузки: голый объект с непустым photo принимается",
     // The shape measured on the live endpoint. Reading `.response` here is what made every
     // production post go out without a cover, while this suite stayed green throughout.
-    (parseVkUploadResult({ server: 908118, photo: "", hash: "h_1" })?.server ?? 0) ===
+    (parseVkUploadResult({ server: 908118, photo: okPhoto, hash: "h_1" })?.server ?? 0) ===
       908118,
+    JSON.stringify(parseVkUploadResult({ server: 908118, photo: okPhoto, hash: "h_1" })),
+  );
+  /*
+    The regression this whole change exists for.
+
+    The live endpoint answers two different HTTP 200s: one carrying a non-empty `photo`, and
+    one with `photo: ""` — a failed upload reported as success. `saveWallPhoto` refuses the
+    empty one with error 100, "photo is undefined", so accepting it here meant the cover was
+    uploaded, discarded, and every post went out as bare text. `photo: ""` must read as a
+    failure so the caller retries; the retry is what actually recovers, because the empty
+    answer was measured on the first attempt run after run.
+  */
+  check(
+    "Ответ загрузки: пустой photo — это провал, а не успех",
+    parseVkUploadResult({ server: 908118, photo: "", hash: "h_1" }) === null &&
+      parseVkUploadResult({ response: { server: 1, photo: "", hash: "h" } }) === null,
     JSON.stringify(parseVkUploadResult({ server: 908118, photo: "", hash: "h_1" })),
   );
   check(
     "Ответ загрузки: обёрнутый вариант тоже принимается",
-    (parseVkUploadResult({ response: { server: 1, hash: "h" } })?.hash ?? "") === "h",
-    JSON.stringify(parseVkUploadResult({ response: { server: 1, hash: "h" } })),
+    (parseVkUploadResult({ response: { server: 1, photo: okPhoto, hash: "h" } })?.hash ?? "") ===
+      "h",
+    JSON.stringify(parseVkUploadResult({ response: { server: 1, photo: okPhoto, hash: "h" } })),
   );
   check(
     "Ответ загрузки: мусор и ошибка отвергаются",
     parseVkUploadResult(null) === null &&
       parseVkUploadResult({}) === null &&
-      parseVkUploadResult({ server: "not-a-number", hash: "h" }) === null &&
+      parseVkUploadResult({ server: "not-a-number", photo: okPhoto, hash: "h" }) === null &&
       parseVkUploadResult({ server: 1 }) === null &&
+      // The literal production failure: two words of plain text where JSON was expected.
+      parseVkUploadResult("Security Breach2") === null &&
       parseVkUploadResult("<html>504</html>") === null,
     "null там, где разбирать нечего",
   );
@@ -383,6 +454,13 @@ async function main() {
   });
 
   check("С обложкой: ok", withCover.ok === true, JSON.stringify(withCover));
+  check(
+    "С обложкой: фото действительно прикреплено",
+    // The whole point of this suite. `photoId` is the attachment that went out, not a claim
+    // that an upload was attempted.
+    withCover.photoId === "photo276313599_457240126" && withCover.warning === undefined,
+    JSON.stringify(withCover),
+  );
   const methods = calls.map((c) => c.method);
   check(
     "С обложкой: полный цикл загрузки",
@@ -395,6 +473,31 @@ async function main() {
     "С обложкой: вложение — только фото",
     calls.at(-1)?.params.attachments === "photo276313599_457240126",
     `attachments=${calls.at(-1)?.params.attachments}`,
+  );
+  /*
+    `group_id` must be a positive integer, and the sign is not cosmetic.
+
+    Measured live: `photos.getWallUploadServer` answers for either sign and hands back an
+    upload address carrying `gid=-241944021`, so nothing warns you at step 1 — and
+    `photos.saveWallPhoto` then refuses with error 100, "group_id should be greater or equal
+    to 0". A negative value here costs the cover on every post.
+  */
+  const uploadServerCall = calls.find((c) => c.method === "photos.getWallUploadServer");
+  const saveCall = calls.find((c) => c.method === "photos.saveWallPhoto");
+  check(
+    "С обложкой: group_id положительный на обоих шагах",
+    uploadServerCall?.params.group_id === "123456" &&
+      saveCall?.params.group_id === "123456" &&
+      !String(uploadServerCall?.params.group_id).startsWith("-") &&
+      /^\d+$/.test(String(saveCall?.params.group_id)),
+    `getWallUploadServer=${uploadServerCall?.params.group_id}, saveWallPhoto=${saveCall?.params.group_id}`,
+  );
+  check(
+    "С обложкой: пустой photo никогда не уходит в saveWallPhoto",
+    // The production failure, asserted directly: an empty string there is an error 100 and a
+    // coverless post.
+    Boolean(saveCall?.params.photo) && saveCall?.params.photo !== "",
+    `photo=${String(saveCall?.params.photo).slice(0, 60)}`,
   );
 
   /*
@@ -482,6 +585,117 @@ async function main() {
     `попыток=${uploads.length}, attachments=${calls.at(-1)?.params.attachments}`,
   );
 
+  /*
+    The failure that was actually happening in production, and the one no check covered.
+
+    The upload server answers HTTP 200 with `photo: ""` on the first attempt often enough to
+    be the common case. The module used to accept that as a successful upload, hand the empty
+    string to `photos.saveWallPhoto`, collect error 100 "photo is undefined" and post the story
+    as bare text — with a warning that blamed the cover rather than the reading of the answer.
+
+    The stub now answers the empty shape twice before succeeding, which is the measured
+    sequence. A single attempt leaves the post without a cover; the retry is what recovers it.
+  */
+  ({ calls, uploads } = stubVk({ emptyPhotoTimes: 2 }));
+  const emptyFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com/cover")) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 });
+    }
+    return emptyFetch(input, init);
+  }) as typeof fetch;
+
+  const afterEmpty = await publishArticleToVk({
+    title: "Обложка после пустого ответа",
+    slug: "empty-photo",
+    coverImage: "https://example.com/cover.jpg",
+  });
+  check(
+    "Обложка: пустой photo от VK не оставляет пост без фото (повтор)",
+    afterEmpty.ok === true &&
+      uploads.length === 3 &&
+      afterEmpty.photoId === "photo276313599_457240126" &&
+      calls.at(-1)?.params.attachments === "photo276313599_457240126",
+    `попыток=${uploads.length}, photoId=${afterEmpty.photoId ?? "нет"}, attachments=${calls.at(-1)?.params.attachments}`,
+  );
+  check(
+    "Обложка: каждая попытка берёт СВЕЖИЙ адрес загрузки",
+    // A used upload address carries a one-off hash; re-posting to one answered non-JSON about
+    // as often as it answered a photo, so every attempt asks again.
+    calls.filter((c) => c.method === "photos.getWallUploadServer").length ===
+      uploads.length,
+    `адресов=${calls.filter((c) => c.method === "photos.getWallUploadServer").length}, загрузок=${uploads.length}`,
+  );
+  check(
+    "Обложка: пустой photo не попадает в saveWallPhoto ни на одной попытке",
+    calls
+      .filter((c) => c.method === "photos.saveWallPhoto")
+      .every((c) => Boolean(c.params.photo) && c.params.photo !== ""),
+    JSON.stringify(calls.filter((c) => c.method === "photos.saveWallPhoto").map((c) => c.params.photo.slice(0, 20))),
+  );
+
+  /*
+    A community configured by short name instead of a number.
+
+    `vkOwnerId` has always accepted a slug, and the photo pipeline used to pass that same
+    string through as `group_id` — which the API cannot use. The number is asked for once via
+    groups.getById, which was measured answering for both "241944021" and "eartnews".
+  */
+  process.env.VK_COMMUNITY_ID = "https://vk.ru/eartnews";
+  ({ calls, uploads } = stubVk({}));
+  const slugFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com/cover")) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 });
+    }
+    return slugFetch(input, init);
+  }) as typeof fetch;
+
+  const slugConfigured = await publishArticleToVk({
+    title: "Слаг в конфигурации",
+    slug: "slug-config",
+    coverImage: "https://example.com/cover.jpg",
+  });
+  check(
+    "Обложка: сообщество со слагом — числовой group_id уточняется",
+    slugConfigured.ok === true &&
+      slugConfigured.photoId === "photo276313599_457240126" &&
+      calls.some((c) => c.method === "groups.getById") &&
+      calls.find((c) => c.method === "photos.getWallUploadServer")?.params.group_id ===
+        "241944021",
+    `photoId=${slugConfigured.photoId ?? "нет"}, group_id=${
+      calls.find((c) => c.method === "photos.getWallUploadServer")?.params.group_id
+    }`,
+  );
+  process.env.VK_COMMUNITY_ID = "-123456";
+
+  /*
+    saveWallPhoto succeeds but hands back nothing usable. The post still has to go out, and it
+    has to say so — a coverless post with no trace is what the log archaeology had to guess at.
+  */
+  ({ calls, uploads } = stubVk({ noPhotoId: true }));
+  const noIdFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com/cover")) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 });
+    }
+    return noIdFetch(input, init);
+  }) as typeof fetch;
+
+  const noId = await publishArticleToVk({
+    title: "Без id фото",
+    slug: "no-photo-id",
+    coverImage: "https://example.com/cover.jpg",
+  });
+  check(
+    "Обложка: saveWallPhoto без id — пост уходит, но с предупреждением",
+    noId.ok === true &&
+      noId.photoId === null &&
+      calls.at(-1)?.params.attachments === undefined &&
+      (noId.warning?.includes("не вернул id") ?? false),
+    JSON.stringify(noId),
+  );
+
   // --- cover upload fails: degrade to text -----------------------------
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input).includes("example.com/cover")) {
@@ -544,6 +758,69 @@ async function main() {
     "Ошибка wall.post: ok:false, без throw",
     postFailed.ok === false && (postFailed.error?.includes("Access denied") ?? false),
     postFailed.error ?? "нет ошибки",
+  );
+
+  /*
+    What the test button's read-back is built on.
+
+    "The upload answered 200" and "the post carries a picture" are different claims, and only
+    the second one is worth showing an editor. These two calls are how the difference is
+    measured: `wall.getById` reports what VK actually stored.
+  */
+  ({ calls } = stubVk({}));
+  const attached = await readWallPostAttachments("555");
+  check(
+    "Чтение поста: вложения читаются из wall.getById",
+    Array.isArray(attached) &&
+      attached.includes("photo") &&
+      calls.find((c) => c.method === "wall.getById")?.params.posts === "-123456_555",
+    JSON.stringify(attached),
+  );
+
+  ({ calls } = stubVk({ attachmentMissing: true }));
+  const bare = await readWallPostAttachments("555");
+  check(
+    "Чтение поста: пост без фото отличается от поста с фото",
+    // An empty array, not null: the post was read and has nothing on it. `null` means the read
+    // failed, which is a different thing to tell an editor.
+    Array.isArray(bare) && bare.length === 0,
+    JSON.stringify(bare),
+  );
+
+  ({ calls } = stubVk({}));
+  const removed = await deleteWallPost("555");
+  check(
+    "Удаление тестового поста: wall.delete с отрицательным owner_id",
+    removed === true &&
+      calls.find((c) => c.method === "wall.delete")?.params.owner_id === "-123456",
+    `removed=${removed}`,
+  );
+
+  /*
+    The numeric id, in every form an editor might have pasted.
+
+    The photo methods accept only the positive digits, while the config legitimately holds a
+    URL, a short name or a signed number. Getting this wrong costs the cover on every post and
+    says nothing at step 1 — only `photos.saveWallPhoto` refuses, with "group_id should be
+    greater or equal to 0".
+  */
+  const groupIdFor = (input: string): string | null => {
+    const saved = process.env.VK_COMMUNITY_ID;
+    process.env.VK_COMMUNITY_ID = input;
+    const value = vkCommunityGroupId();
+    process.env.VK_COMMUNITY_ID = saved;
+    return value;
+  };
+  check(
+    "Числовой id сообщества: минус снимается, слаг даёт null",
+    groupIdFor("-241944021") === "241944021" &&
+      groupIdFor("241944021") === "241944021" &&
+      groupIdFor("https://vk.ru/club241944021") === "241944021" &&
+      groupIdFor("public241944021") === "241944021" &&
+      // A short name has no digits: it is resolved through groups.getById instead.
+      groupIdFor("https://vk.ru/eartnews") === null &&
+      groupIdFor("eartnews") === null,
+    `-241944021→${groupIdFor("-241944021")}, eartnews→${groupIdFor("eartnews")}`,
   );
 
   globalThis.fetch = realFetch;
