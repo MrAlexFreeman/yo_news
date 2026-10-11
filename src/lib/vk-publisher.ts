@@ -858,9 +858,11 @@ export async function deleteWallPost(postId: string): Promise<boolean> {
   }
 }
 
-/** One post on the community wall, reduced to what a backfill needs. */
+/** One post on the community wall, reduced to what a backfill or a dedupe needs. */
 export type WallPost = {
   id: string;
+  /** Creation time, VK's `date`, in seconds since the epoch. */
+  date: number;
   text: string;
   /** Attachment types, e.g. `["photo"]`; empty means the post carries nothing. */
   attachments: string[];
@@ -869,16 +871,26 @@ export type WallPost = {
 /** The community's wall, newest first. */
 export async function listWallPosts(limit = 100): Promise<WallPost[]> {
   const response = await callVk<
-    { items?: { id?: unknown; text?: unknown; attachments?: { type?: string }[] }[] }
+    {
+      items?: { id?: unknown; date?: unknown; text?: unknown; attachments?: { type?: string }[] }[];
+    }
   >("wall.get", { owner_id: vkOwnerId(), count: limit });
 
   const items = Array.isArray(response) ? response : (response?.items ?? []);
   return items.flatMap((raw) => {
-    const post = raw as { id?: unknown; text?: unknown; attachments?: { type?: string }[] };
+    const post = raw as {
+      id?: unknown;
+      date?: unknown;
+      text?: unknown;
+      attachments?: { type?: string }[];
+    };
     if (post.id === undefined || post.id === null) return [];
     return [
       {
         id: String(post.id),
+        // VK's own creation timestamp, and the only thing that can order two posts that carry
+        // the same text — which is exactly what a burst of duplicates looks like.
+        date: typeof post.date === "number" ? post.date : 0,
         text: typeof post.text === "string" ? post.text : "",
         attachments: (post.attachments ?? []).map((attachment) => attachment.type ?? "unknown"),
       },
@@ -897,6 +909,58 @@ export async function listWallPosts(limit = 100): Promise<WallPost[]> {
 export function extractArticleSlug(text: string): string | null {
   const match = text.match(/\/news\/([A-Za-z0-9_-]+)/);
   return match ? match[1] : null;
+}
+
+/** Which posts stay on the wall and which are copies of another post. */
+export type WallDedupePlan = {
+  /** The earliest post of each article: what remains. */
+  keep: WallPost[];
+  /** Later copies of a story that is already on the wall. */
+  remove: WallPost[];
+};
+
+/**
+ * Splits a wall into one post per article and the copies of it.
+ *
+ * Identity is the article the post links to, not its text: a story that was re-saved between
+ * two reposts can differ by a word, and comparing text would let both copies survive.
+ *
+ * The **earliest** post of a group is kept — it is the one that was published first, and the
+ * later ones are the accident. Ties are broken by id so that a burst inside one second has a
+ * deterministic answer rather than whatever order the API happened to return; the ids are
+ * compared **as numbers**, because `"10" < "9"` is true as strings and would keep the wrong
+ * copy of every pair whose ids cross a power of ten.
+ *
+ * A post with no article link is never a duplicate and never removed. On this wall there is
+ * one such post — an older picture post that has nothing to do with the reposter — and it is
+ * the reason this function returns a plan instead of a list of ids to trust.
+ */
+export function planWallDedupe(posts: readonly WallPost[]): WallDedupePlan {
+  const earliest = new Map<string, WallPost>();
+
+  for (const post of posts) {
+    const slug = extractArticleSlug(post.text);
+    if (!slug) continue;
+
+    const current = earliest.get(slug);
+    const earlier =
+      current !== undefined &&
+      (post.date < current.date ||
+        (post.date === current.date && Number(post.id) < Number(current.id)));
+
+    if (current === undefined || earlier) earliest.set(slug, post);
+  }
+
+  const keep: WallPost[] = [];
+  const remove: WallPost[] = [];
+  const keptIds = new Set([...earliest.values()].map((post) => post.id));
+
+  for (const post of posts) {
+    if (extractArticleSlug(post.text) === null || keptIds.has(post.id)) keep.push(post);
+    else remove.push(post);
+  }
+
+  return { keep, remove };
 }
 
 /**

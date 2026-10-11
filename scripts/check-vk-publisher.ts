@@ -11,6 +11,7 @@ import {
   leadSummary,
   listWallPosts,
   parseVkUploadResult,
+  planWallDedupe,
   publishArticleToVk,
   readWallPostAttachments,
   resetVkRetrySleep,
@@ -186,10 +187,11 @@ function stubVk(options: {
         items: [
           {
             id: 900,
+            date: 1000,
             text: "Заголовок\n\n👉 Читать полностью: https://eartnews.ru/news/one",
             attachments: [],
           },
-          { id: 901, text: "Уже с картинкой", attachments: [{ type: "photo" }] },
+          { id: 901, date: 2000, text: "Уже с картинкой", attachments: [{ type: "photo" }] },
         ],
       });
     }
@@ -920,13 +922,14 @@ async function main() {
   ({ calls, uploads } = stubVk({}));
   const wall = await listWallPosts(100);
   check(
-    "Стена: посты читаются вместе с текстом и вложениями",
+    "Стена: посты читаются вместе с текстом, датой и вложениями",
     wall.length === 2 &&
       wall[0]?.id === "900" &&
+      wall[0]?.date === 1000 &&
       wall[0]?.attachments.length === 0 &&
       wall[1]?.attachments[0] === "photo" &&
       calls.find((c) => c.method === "wall.get")?.params.count === "100",
-    JSON.stringify(wall.map((p) => [p.id, p.attachments])),
+    JSON.stringify(wall.map((p) => [p.id, p.date, p.attachments])),
   );
 
   check(
@@ -940,6 +943,68 @@ async function main() {
       extractArticleSlug("") === null,
     JSON.stringify(extractArticleSlug("https://eartnews.ru/news/one")),
   );
+
+  /*
+    The deletion decision, and the check that matters most in this file.
+
+    Seventeen of the twenty-eight posts on the live wall were copies of six stories, created in
+    a burst before the claim mechanism existed. Which of a group survives is not a matter of
+    taste: deleting the wrong one loses the post that was actually published first, and there is
+    no undo — a deleted wall post cannot be restored through the API.
+  */
+  const wallPost = (id: number, date: number, slug: string | null) => ({
+    id: String(id),
+    date,
+    text: slug ? `Заголовок\n\n👉 Читать полностью: https://eartnews.ru/news/${slug}` : "Пост без ссылки",
+    attachments: [] as string[],
+  });
+
+  {
+    // Newest first, the order `wall.get` returns.
+    const plan = planWallDedupe([
+      wallPost(104, 400, "repeat"),
+      wallPost(103, 300, "other"),
+      wallPost(102, 200, "repeat"),
+      wallPost(101, 100, "repeat"),
+      wallPost(100, 50, null),
+    ]);
+
+    check(
+      "Дубликаты: из группы остаётся самый ранний",
+      plan.remove.map((p) => p.id).join(",") === "104,102" &&
+        plan.keep.map((p) => p.id).join(",") === "103,101,100",
+      `удаляем [${plan.remove.map((p) => p.id)}], оставляем [${plan.keep.map((p) => p.id)}]`,
+    );
+    check(
+      "Дубликаты: пост без ссылки на материал не удаляется",
+      // An older picture post that has nothing to do with the reposter; guessing its identity
+      // is how a tool deletes something that was never a duplicate.
+      plan.keep.some((p) => p.id === "100") && !plan.remove.some((p) => p.id === "100"),
+      JSON.stringify(plan.keep.map((p) => p.id)),
+    );
+    check(
+      "Дубликаты: одинаковые даты разрешаются по id, а не по порядку ответа",
+      (() => {
+        const forward = planWallDedupe([
+          wallPost(10, 500, "tie"),
+          wallPost(9, 500, "tie"),
+        ]);
+        const backward = planWallDedupe([
+          wallPost(9, 500, "tie"),
+          wallPost(10, 500, "tie"),
+        ]);
+        return forward.keep[0]?.id === "9" && backward.keep[0]?.id === "9";
+      })(),
+      "меньший id остаётся",
+    );
+    check(
+      "Дубликаты: без дублей план пуст, и повторный прогон ничего не удаляет",
+      planWallDedupe([wallPost(1, 1, "a"), wallPost(2, 2, "b")]).remove.length === 0 &&
+        // Idempotent: feeding back only what survived produces nothing to remove.
+        planWallDedupe(plan.keep).remove.length === 0,
+      JSON.stringify(planWallDedupe(plan.keep).remove.map((p) => p.id)),
+    );
+  }
 
   ({ calls } = stubVk({}));
   const edited = await editWallPostAttachments("555", "Текст поста", "photo1_2");
