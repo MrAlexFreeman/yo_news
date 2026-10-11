@@ -313,6 +313,33 @@ function checkRows() {
       new Set([...overflow.popular, ...overflow.highlights].map((row) => row.id)).size === 8,
     `${overflow.popular.length} + ${overflow.highlights.length}, уникальных 8`,
   );
+
+  /*
+    The starvation the deeper pool exposed, measured on the live site.
+
+    Both rows are drawn from "popular", so their candidate lists are largely the same stories.
+    While a row was three cards the second row was refilled from the first row's leftovers and
+    the overlap was invisible. A pool of eight changes that: the first row now takes all eight of
+    its own, and a second row whose list is those same eight in another order is left with one —
+    which is what seven of the eight most-read stories belonging to one rubric produced.
+
+    The reserve is the fix, and this asserts both halves of it: without the reserve the row is
+    short, with it the row is full.
+  */
+  const overlapping = ["a", "b", "c", "d", "e", "f", "g", "h"].map((id) => story(id));
+  const reserve = ["i", "j", "k", "l", "m", "n"].map((id) => story(id));
+  const starved = composeLoopRows(overlapping, overlapping, [], 8);
+  const rescued = composeLoopRows(overlapping, [...overlapping, ...reserve], [], 8);
+  check(
+    "Сетка: совпадающий список оставляет вторую строку без материала",
+    starved.popular.length === 8 && starved.highlights.length === 0,
+    `${starved.popular.length} и ${starved.highlights.length}`,
+  );
+  check(
+    "Сетка: резерв свежих материалов наполняет вторую строку",
+    rescued.popular.length === 8 && rescued.highlights.length === 6,
+    `${rescued.popular.length} и ${rescued.highlights.length}`,
+  );
 }
 
 function checkPlateMarkup() {

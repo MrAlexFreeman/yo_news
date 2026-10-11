@@ -452,6 +452,28 @@ export async function getLoopHighlights(
 }
 
 /**
+ * The freshest published stories, other than the one being read.
+ *
+ * The closing grid's second row reserve. That row's own list is drawn from "popular", which is
+ * also where the first row comes from, so once the first row takes its whole pool the second can
+ * be left with a single card — measured on the live wall, where seven of the eight most-read
+ * stories belonged to the article's own rubric and left the second row one. Freshness is a
+ * different ordering, so it still has something to offer, and it is the same fallback the plate
+ * uses when a story has no rubric.
+ *
+ * `LOOP_FIELDS` rather than `LIST_FIELDS` because the grid prints a reading time and the only
+ * honest source for that is the body. Only these few rows carry it; the listing queries do not.
+ */
+export async function getLoopFresh(excludeId: string, take: number): Promise<LoopArticle[]> {
+  return prisma.article.findMany({
+    where: { status: "published", deletedAt: null, id: { not: excludeId } },
+    orderBy: BY_FRESHNESS,
+    take,
+    select: LOOP_FIELDS,
+  });
+}
+
+/**
  * The sidebar's "most read right now": the most-read stories of the last few hours.
  *
  * `now` is a parameter rather than a hidden `new Date()` so the window is testable and so

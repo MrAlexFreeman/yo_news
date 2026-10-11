@@ -24,6 +24,7 @@ import { formatDateTime } from "@/lib/date";
 import { forumSectionForArticle } from "@/lib/forum-rubric";
 import { sanitizeArticleHtml } from "@/lib/sanitize";
 import {
+  getLoopFresh,
   getLoopHighlights,
   getLoopReadAlso,
   getLoopRubricPopular,
@@ -51,6 +52,10 @@ const LOOP_ROW_SIZE = 3;
  */
 const LOOP_CANDIDATES = 8;
 const LOOP_POOL_SIZE = 8;
+const LOOP_POPULAR_CANDIDATES = 8;
+const LOOP_HIGHLIGHT_CANDIDATES = 8;
+/** The second row's reserve, because its own list overlaps the first row's almost entirely. */
+const LOOP_FRESH_CANDIDATES = 12;
 
 type PageParams = { slug: string };
 
@@ -165,11 +170,23 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     it, and a second round trip to find that out would be a waterfall over a decision
     that costs a hash.
   */
-  const [readAlsoCandidates, popularCandidates, highlightCandidates] = await Promise.all([
-    getLoopReadAlso(rubricSlug, article.id, LOOP_CANDIDATES),
-    getLoopRubricPopular(rubricSlug, article.id, LOOP_CANDIDATES),
-    getLoopHighlights([article.id], LOOP_CANDIDATES),
-  ]);
+  const [readAlsoCandidates, popularCandidates, highlightCandidates, freshCandidates] =
+    await Promise.all([
+      getLoopReadAlso(rubricSlug, article.id, LOOP_CANDIDATES),
+      getLoopRubricPopular(rubricSlug, article.id, LOOP_POPULAR_CANDIDATES),
+      getLoopHighlights([article.id], LOOP_HIGHLIGHT_CANDIDATES),
+      // The freshest material on the site, as the second row's reserve.
+      //
+      // Both rows used to be drawn from "popular" and both were three cards, so the second row
+      // could be topped up from the first row's leftovers and nobody noticed the two lists were
+      // the same stories in nearly the same order. Deepening the rows to a pool of eight is what
+      // exposed it: the first row now takes all eight of its own, and a second row whose list is
+      // the same eight in a different order is left showing one card.
+      //
+      // So the second row gets a source that is not popularity — the day's freshest stories,
+      // which is also the fallback the block is supposed to have when a rubric runs dry.
+      getLoopFresh(article.id, LOOP_FRESH_CANDIDATES),
+    ]);
 
   /*
     The body, cleaned of a dangling kicker before anything is decided about it.
@@ -221,7 +238,10 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   // the story the plate just offered.
   const rows = composeLoopRows(
     popularCandidates,
-    highlightCandidates,
+    // The second row's own list first, then the freshest stories as its reserve: a row of one
+    // card under a heading reads as a failed request, and this is the list that can be empty
+    // when the first row and it are drawing on the same stories.
+    [...highlightCandidates, ...freshCandidates],
     [article.id, plateStory?.id ?? null],
     LOOP_POOL_SIZE,
   );
