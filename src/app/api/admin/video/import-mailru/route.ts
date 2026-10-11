@@ -163,9 +163,7 @@ function failureMessage(reason: MailruFailure, detail?: string): string {
     case "dispatcher":
       return `Облако Mail.ru не ответило на запрос диспетчера${detail ? ` (${detail})` : ""}. Попробуйте позже.`;
     case "not-found":
-      return "По этой ссылке файл не найден — возможно, публикация удалена.";
-    case "not-a-video":
-      return `По ссылке не видеофайл${detail ? `: ${detail}` : ""}.`;
+      return "По этой ссылке файл не найден — возможно, публикация удалена или ссылка ведёт на папку, а не на файл.";
     case "too-large":
       return `Файл больше ${Math.round(MAX_BYTES / 1024 / 1024)} МБ — перенести не получится.`;
     case "unreachable":

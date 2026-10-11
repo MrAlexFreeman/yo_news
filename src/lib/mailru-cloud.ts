@@ -2,29 +2,40 @@
  * Облако Mail.ru: a public link resolved into a stream of bytes.
  *
  * ---------------------------------------------------------------------------
- * Why this exists at all, and why it cannot be an embed
+ * Why this exists at all
  * ---------------------------------------------------------------------------
- * `cloud.mail.ru` refuses to be framed — it answers with `X-Frame-Options: SAMEORIGIN` and
- * a `Content-Security-Policy: frame-ancestors` list that does not include this site. That
- * was measured, and it is why a pasted Mail.ru Cloud link shows an error inside an article
- * rather than a player. The video therefore has to be *moved*: fetched here and uploaded to
- * VK, whose player does embed.
+ * `cloud.mail.ru` refuses to be framed — it answers with `X-Frame-Options: SAMEORIGIN` and a
+ * `Content-Security-Policy: frame-ancestors` list that does not include this site. Both
+ * measured, and together they mean a pasted Mail.ru Cloud link shows an error inside an
+ * article rather than a player. The video therefore has to be *moved*: fetched here and
+ * uploaded to VK, whose player does embed.
  *
  * ---------------------------------------------------------------------------
- * What was measured against the live service
+ * The resolution, measured against a real public link
  * ---------------------------------------------------------------------------
- * `GET https://cloud.mail.ru/api/v2/dispatcher` answers with a per-session download base:
+ * A public file link is `cloud.mail.ru/public/<key>/<id>/<filename>` — **three** segments
+ * after `/public`, not two — and the file is fetched from the dispatcher's base with the
+ * whole of that tail appended:
  *
- *   { "body": { "weblink_get": [ { "url": "https://cloclo63.cloud.mail.ru/public/<token>/g/no" } ] } }
+ *   GET https://cloud.mail.ru/api/v2/dispatcher
+ *     → body.weblink_get[0].url = "https://cloclo59.cloud.mail.ru/public/<token>/g/no"
  *
- * and `GET {base}/{key}` answers 404 with `{"error":"NOT/FOUND"}` for a key that is not
- * there. So the dispatcher is called per import — the token in that path is part of the
- * session and a cached base goes stale.
+ *   GET {base}/<key>/<id>/<filename>
+ *     → 301 Location: https://cloclo63.datacloudmail.ru/public/get/<token>/no/<filename>
+ *     → 200 (or 206 for a ranged request), Content-Length: 5303307
  *
- * **`api/v2/tokens/download`, which the brief names, is not usable here.** It answers
- * `403 {"body":"user"}`: it wants an authenticated Mail.ru session, and a public link gives
- * us none. The dispatcher route is the one that works without a login, which is what a
- * newsroom pasting a public link has.
+ * Two details from that measurement are load-bearing and were both wrong in an earlier
+ * version of this file, which had been written from a guess:
+ *
+ *  - `{base}/<key>` and `{base}/<key>/<id>` answer **404**. Only the complete tail reaches
+ *    the file, so a resolver that stopped after the first segment never found anything.
+ *  - The answer is a **redirect**, and to a *different* host — `datacloudmail.ru` rather
+ *    than `cloud.mail.ru`. Following it is required, and re-checking where it landed is the
+ *    only thing standing between this and an open proxy.
+ *
+ * `api/v2/tokens/download`, which the brief names, is not usable here: it answers
+ * `403 {"body":"user"}` and wants an authenticated Mail.ru session, which a public link
+ * does not provide.
  *
  * ---------------------------------------------------------------------------
  * The security property, which matters more than the feature
@@ -34,8 +45,9 @@
  * read its own metadata and hand it back. Three things close it, and all three are
  * asserted:
  *
- *   1. only `cloud.mail.ru/public/<key>/<name>` is accepted as input — a host allowlist and
- *      a path shape, not a substring match;
+ *   1. only `cloud.mail.ru/public/…` is accepted as input — a host equality test and a path
+ *      shape, not a substring match, because `cloud.mail.ru.evil.example` contains the host
+ *      name and is not the host;
  *   2. every URL actually fetched is checked against a host allowlist, *including the URL a
  *      response was redirected to* — `response.url` is re-validated, because a redirect is
  *      the whole trick;
@@ -50,20 +62,33 @@ const PUBLIC_HOST = "cloud.mail.ru";
  * Download hosts: where the dispatcher sends us and where it redirects.
  *
  * A suffix match rather than an exact list, because the dispatcher rotates through
- * `cloclo1…cloclo64.cloud.mail.ru` and names a different one every call. The leading dot in
- * the check is what keeps `evil-cloud.mail.ru` out.
+ * `cloclo1…cloclo64` on both domains and names a different one every call. The leading dot
+ * is what keeps `evilcloud.mail.ru` out — without it both of those end in the bare host and
+ * would pass.
  */
 const DOWNLOAD_HOST_SUFFIXES = [".cloud.mail.ru", ".datacloudmail.ru"] as const;
 
-/** Keys in a public link: opaque, URL-safe, and not empty. */
-const KEY_PATTERN = /^[A-Za-z0-9_-]{3,64}$/;
+/**
+ * What a path segment may be.
+ *
+ * Any printable character except a separator, because a public link's filename is whatever
+ * the person called the file: `Мой фильм.mp4` with a space and a Cyrillic letter is an
+ * ordinary name, and an earlier version of this module allowed only `[A-Za-z0-9._-]` and
+ * refused such a link outright.
+ *
+ * What is excluded is what makes a segment stop being a segment: a slash or a backslash
+ * (either would address something else), and control characters including NUL. `.` and `..`
+ * are refused separately below rather than by the character class, because they are made of
+ * allowed characters.
+ */
+const SEGMENT_PATTERN = /^[^\u0000-\u001f\u007f/\\]{1,128}$/;
 
-/** One import, and the two parts of the public address it came from. */
+/** One import: the path inside the share, and the filename it ends with. */
 export type MailruPublicLink = {
-  /** The public folder hash — the first segment. */
-  key1: string;
-  /** The file name inside it — the second segment, percent-decoded. */
-  key2: string;
+  /** Every segment after `/public`, in order. The whole tail fetches the file. */
+  segments: string[];
+  /** The last segment — the name the video is given and the check that it is a video. */
+  filename: string;
 };
 
 /**
@@ -72,7 +97,12 @@ export type MailruPublicLink = {
  * Strict on purpose, and the strictness is the first line of defence rather than a
  * formality: `cloud.mail.ru.evil.example` ends with `.example`, not with the host, so an
  * `includes("cloud.mail.ru")` test would accept it — and that is the shape an attacker
- * would send.
+ * sends.
+ *
+ * Two segments are accepted as well as three, because the file's tail is whatever the
+ * share's address says it is and this module has only ever measured the three-segment form.
+ * Refusing a two-segment link that happens to work would be trading a real feature for a
+ * guess about a shape.
  */
 export function parseMailruPublicLink(input: string): MailruPublicLink | null {
   const trimmed = input.trim();
@@ -88,23 +118,26 @@ export function parseMailruPublicLink(input: string): MailruPublicLink | null {
   if (parsed.protocol !== "https:") return null;
   if (parsed.hostname.toLowerCase() !== PUBLIC_HOST) return null;
 
-  const segments = parsed.pathname.split("/").filter(Boolean);
-  if (segments[0] !== "public" || segments.length < 3) return null;
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  if (parts[0] !== "public" || parts.length < 3) return null;
 
-  const [key1, rawName] = [segments[1]!, segments[2]!];
-  if (!KEY_PATTERN.test(key1)) return null;
+  const segments: string[] = [];
+  for (const raw of parts.slice(1)) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      return null;
+    }
 
-  let key2: string;
-  try {
-    key2 = decodeURIComponent(rawName);
-  } catch {
-    return null;
+    // A segment that is not a plain token is not part of a share address. This is what
+    // stops `..` and an encoded `/` from addressing something outside the share.
+    if (!SEGMENT_PATTERN.test(decoded) || decoded === "." || decoded === "..") return null;
+    segments.push(decoded);
   }
 
-  // A name with a slash in it would address something other than the file that was linked.
-  if (!key2 || key2.includes("/") || key2.includes("\0")) return null;
-
-  return { key1, key2 };
+  const filename = segments[segments.length - 1]!;
+  return { segments, filename };
 }
 
 /** True when a pasted string is an Облако Mail.ru public link. */
@@ -124,76 +157,32 @@ export function isCloudDownloadHost(hostname: string): boolean {
   return DOWNLOAD_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
 
-/** The URL that lists a public folder, given the dispatcher's base. */
-export function buildListingUrl(weblinkBase: string, key1: string): string {
-  const base = weblinkBase.replace(/\/+$/, "") || "/";
-  const separator = base.endsWith("/") ? "" : "/";
-  return `${base}${separator}${encodeURIComponent(key1)}`;
+/** The address of the file, given the dispatcher's base and the share's tail. */
+export function buildFilePathUrl(weblinkBase: string, segments: readonly string[]): string {
+  const base = weblinkBase.replace(/\/+$/, "");
+  const tail = segments.map((segment) => encodeURIComponent(segment)).join("/");
+  return `${base}/${tail}`;
 }
 
-/** A file found in a public folder listing. */
-export type MailruFile = {
-  name: string;
-  size: number;
-  /** The address to fetch it from, as the listing gave it. */
-  url: string;
-};
+export const MAILRU_DISPATCHER_URL = "https://cloud.mail.ru/api/v2/dispatcher";
 
-/**
- * Picks the wanted file out of a folder listing.
- *
- * The listing is third-party JSON, so nothing about it is trusted: the name is compared
- * after decoding, the size is only believed if it is a finite number, and the URL is
- * returned as a string for the caller to re-validate against the host allowlist rather than
- * being followed here.
- *
- * The wanted name is matched case-insensitively — the address bar's copy of a Cyrillic or
- * mixed-case filename is not guaranteed to come back with the same casing. When no entry
- * matches by name, the first video-ish file is taken, because a public link to a single
- * file is the common case and its listing holds exactly one.
- */
-export function pickFileFromListing(listing: unknown, wantedName: string): MailruFile | null {
-  const entries = extractEntries(listing);
-  if (entries.length === 0) return null;
+/** Fetch, as the caller injects it: the checks stub it, production passes `fetch`. */
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-  const wanted = wantedName.toLowerCase();
-  const byName = entries.find((entry) => entry.name.toLowerCase() === wanted);
-  const chosen = byName ?? entries.find((entry) => isVideoName(entry.name)) ?? null;
+/** Why a resolution failed, so the route can answer with a sentence rather than a code. */
+export type MailruFailure =
+  | "not-a-link"
+  | "dispatcher"
+  | "not-found"
+  | "too-large"
+  | "unreachable";
 
-  return chosen;
-}
+export type MailruResolution =
+  | { ok: true; url: string; filename: string; size: number }
+  | { ok: false; reason: MailruFailure; detail?: string };
 
-function extractEntries(listing: unknown): MailruFile[] {
-  const body = (listing as { body?: unknown } | null)?.body;
-  const list = (body as { list?: unknown } | null)?.list;
-  if (!Array.isArray(list)) return [];
-
-  const files: MailruFile[] = [];
-
-  for (const raw of list) {
-    if (!raw || typeof raw !== "object") continue;
-    const entry = raw as Record<string, unknown>;
-
-    // A folder is not a file: its `type` says so, and following it would fetch a page.
-    if (entry.type === "folder") continue;
-    if (typeof entry.name !== "string" || !entry.name || entry.name.includes("/")) continue;
-    if (typeof entry.weblink !== "string" || !entry.weblink) continue;
-
-    const size = typeof entry.size === "number" && Number.isFinite(entry.size) ? entry.size : 0;
-    files.push({ name: entry.name, size, url: entry.weblink });
-  }
-
-  return files;
-}
-
-/** Video extensions this site is willing to move into VK. */
-const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".mkv", ".avi"] as const;
-
-/** True for a filename that looks like a video. */
-export function isVideoName(name: string): boolean {
-  const lower = name.toLowerCase();
-  return VIDEO_EXTENSIONS.some((extension) => lower.endsWith(extension));
-}
+/** How long the dispatcher and the file probe may take. */
+const METADATA_TIMEOUT_MS = 30_000;
 
 /** The dispatcher's answer, or null when it is not the shape we measured. */
 export function readDispatcherBase(payload: unknown): string | null {
@@ -215,33 +204,17 @@ export function readDispatcherBase(payload: unknown): string | null {
   return first.url;
 }
 
-export const MAILRU_DISPATCHER_URL = "https://cloud.mail.ru/api/v2/dispatcher";
-
-/** Fetch, as the caller injects it: the checks stub it, production passes `fetch`. */
-export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
-
-/** Why a resolution failed, so the route can answer with a sentence rather than a code. */
-export type MailruFailure =
-  | "not-a-link"
-  | "dispatcher"
-  | "not-found"
-  | "not-a-video"
-  | "too-large"
-  | "unreachable";
-
-export type MailruResolution =
-  | { ok: true; url: string; filename: string; size: number }
-  | { ok: false; reason: MailruFailure; detail?: string };
-
-/** How long the dispatcher and the listing may take. Short: both are small JSON answers. */
-const METADATA_TIMEOUT_MS = 20_000;
-
 /**
- * Resolves a public link to a download address, without downloading anything.
+ * Resolves a public link to a download address, without keeping the file.
  *
- * Two requests at most: the dispatcher, then the folder listing. The file itself is
- * fetched by the caller, streamed, because a video is not something to hold in memory on
- * this box.
+ * Two requests: the dispatcher, then the file itself — and the second is abandoned the
+ * moment its headers have been read. Proving the file exists and how big it is does not
+ * require downloading it, and on a metered VPS reading a 500 MB film to learn its length
+ * would be the expensive way to find out it is too big.
+ *
+ * The address returned is `response.url` — where the redirect landed — rather than the
+ * address asked for. It has already been checked against the host allowlist, and returning
+ * it spares the download a second trip through Mail.ru's redirector.
  */
 export async function resolveMailruDownload(
   fetchImpl: FetchLike,
@@ -263,80 +236,54 @@ export async function resolveMailruDownload(
   const base = readDispatcherBase(dispatcherPayload);
   if (!base) return { ok: false, reason: "dispatcher", detail: "неожиданный ответ" };
 
-  /*
-    One request to the public path. A file link answers with bytes; a folder link answers
-    with JSON. Which of the two it is cannot be known in advance, so the content type
-    decides — and in the folder case the body is a small listing that is fine to read into
-    memory, unlike the file.
-  */
-  const listingUrl = buildListingUrl(base, link.key1);
+  const fileUrl = buildFilePathUrl(base, link.segments);
+
   let response: Response;
   try {
-    response = await fetchImpl(listingUrl, {
-      headers: { Accept: "application/json, */*" },
+    response = await fetchImpl(fileUrl, {
+      headers: { Accept: "*/*" },
+      // The redirect to the CDN is part of the flow, so it is followed — and `response.url`
+      // below is where it went.
+      redirect: "follow",
       signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
     });
   } catch (error) {
     return { ok: false, reason: "unreachable", detail: messageOf(error) };
   }
 
+  // The headers are all that is needed; the body is abandoned so a large file is not
+  // pulled down just to be measured. Called before every early return, or the socket stays
+  // open until the collector notices.
+  await response.body?.cancel().catch(() => {});
+
+  if (response.status === 404) return { ok: false, reason: "not-found" };
   if (!response.ok) {
-    return {
-      ok: false,
-      reason: response.status === 404 ? "not-found" : "unreachable",
-      detail: `HTTP ${response.status}`,
-    };
+    return { ok: false, reason: "unreachable", detail: `HTTP ${response.status}` };
   }
 
-  // A redirect that left the allowed hosts is refused before anything is downloaded.
-  const finalHost = hostOf(response.url);
-  if (!finalHost || !isCloudDownloadHost(finalHost)) {
-    return { ok: false, reason: "unreachable", detail: `перенаправление на ${finalHost ?? "?"}` };
+  const landed = hostOf(response.url);
+  if (!landed || !isCloudDownloadHost(landed)) {
+    return { ok: false, reason: "unreachable", detail: `перенаправление на ${landed ?? "?"}` };
   }
 
-  if (!isJsonResponse(response)) {
-    // A single-file link: the listing URL *is* the file.
-    return acceptFile(response.url || listingUrl, link.key2, sizeOf(response), maxBytes);
+  /*
+    A folder link answers with a page rather than a file. Distinguished by the content type
+    the CDN sends for a real file — `application/octet-stream`, measured — because the
+    address alone cannot say.
+  */
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (contentType.includes("text/html") || contentType.includes("json")) {
+    return { ok: false, reason: "not-found", detail: "по ссылке не файл" };
   }
 
-  let listing: unknown;
-  try {
-    listing = await response.json();
-  } catch (error) {
-    return { ok: false, reason: "unreachable", detail: messageOf(error) };
-  }
+  const size = Number(response.headers.get("content-length"));
+  const known = Number.isFinite(size) && size > 0 ? size : 0;
+  if (known > maxBytes) return { ok: false, reason: "too-large", detail: String(known) };
 
-  const file = pickFileFromListing(listing, link.key2);
-  if (!file) return { ok: false, reason: "not-found" };
-  if (!isVideoName(file.name)) return { ok: false, reason: "not-a-video", detail: file.name };
-
-  const fileHost = hostOf(file.url);
-  if (!fileHost || !isCloudDownloadHost(fileHost)) {
-    return { ok: false, reason: "unreachable", detail: `ссылка на ${fileHost ?? "?"}` };
-  }
-
-  return acceptFile(file.url, file.name, file.size, maxBytes);
+  return { ok: true, url: response.url || fileUrl, filename: link.filename, size: known };
 }
 
-function acceptFile(
-  url: string,
-  filename: string,
-  size: number,
-  maxBytes: number,
-): MailruResolution {
-  if (size > maxBytes) return { ok: false, reason: "too-large", detail: `${size}` };
-  return { ok: true, url, filename, size };
-}
-
-function isJsonResponse(response: Response): boolean {
-  return (response.headers.get("content-type") ?? "").toLowerCase().includes("json");
-}
-
-function sizeOf(response: Response): number {
-  const header = Number(response.headers.get("content-length"));
-  return Number.isFinite(header) && header > 0 ? header : 0;
-}
-
+/** The hostname of a URL, or null when it is not one. */
 export function hostOf(url: string): string | null {
   try {
     return new URL(url).hostname;

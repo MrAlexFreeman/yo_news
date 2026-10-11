@@ -167,10 +167,9 @@ import {
   validateEntityCard,
 } from "../src/lib/entity-card";
 import {
-  buildListingUrl,
+  buildFilePathUrl,
   isCloudDownloadHost,
   parseMailruPublicLink,
-  pickFileFromListing,
   readDispatcherBase,
   resolveMailruDownload,
 } from "../src/lib/mailru-cloud";
@@ -438,34 +437,85 @@ async function checkArticleHtml() {
 async function checkMailruImport() {
   /* ---- what counts as a public link ---- */
   check(
-    "Облако: публичная ссылка разбирается на ключи",
-    parseMailruPublicLink("https://cloud.mail.ru/public/abcDEF123/Мой фильм.mp4")?.key1 ===
-      "abcDEF123" &&
-      parseMailruPublicLink("https://cloud.mail.ru/public/abcDEF123/Мой фильм.mp4")?.key2 ===
-        "Мой фильм.mp4" &&
-      parseMailruPublicLink("cloud.mail.ru/public/abcDEF123/video.mp4") !== null,
-    "ключ и имя файла",
+    "Облако: публичная ссылка разбирается на сегменты",
+    /*
+      The shape measured against a real link: three segments after `/public`, not two. The
+      first version of this module assumed two and would have built `{base}/<key>/<id>`,
+      which the live service answers with 404 — so the whole tail is what is kept.
+    */
+    (() => {
+      const three = parseMailruPublicLink(
+        "https://cloud.mail.ru/public/BsGQ/AKpGNMp1i/VID_20261010_203149.mp4",
+      );
+      const two = parseMailruPublicLink("https://cloud.mail.ru/public/abcDEF123/video.mp4");
+      const encoded = parseMailruPublicLink(
+        "https://cloud.mail.ru/public/BsGQ/AKpGNMp1i/%D0%9C%D0%BE%D0%B9%20%D1%84%D0%B8%D0%BB%D1%8C%D0%BC.mp4",
+      );
+      return (
+        three?.segments.join("/") === "BsGQ/AKpGNMp1i/VID_20261010_203149.mp4" &&
+        three?.filename === "VID_20261010_203149.mp4" &&
+        two?.segments.length === 2 &&
+        two?.filename === "video.mp4" &&
+        encoded?.filename === "Мой фильм.mp4"
+      );
+    })(),
+    JSON.stringify(
+      parseMailruPublicLink("https://cloud.mail.ru/public/BsGQ/AKpGNMp1i/VID_20261010_203149.mp4"),
+    ),
   );
   check(
     "Облако: всё остальное — не публичная ссылка",
     /*
-      The first case is the one that matters, and it is written with a *valid* key and a
-      *valid* filename on purpose.
+      The first case is the one that matters, and it is written with *valid* segments on
+      purpose.
 
-      An earlier version used `/public/a/b`, whose key is too short to pass the key check —
-      so the link was refused by the key rule and the host rule was never reached. A
+      An earlier version used `/public/a/b`, whose segments were too short to pass the
+      segment rule — so the link was refused there and the host rule was never reached. A
       mutation that replaced the host comparison with `includes("cloud.mail.ru")` passed it.
       With a well-formed address there is nothing left to refuse it except the host, which
       is what the check is for.
     */
-    parseMailruPublicLink("https://cloud.mail.ru.evil.example/public/abcDEF123/video.mp4") ===
-      null &&
-      parseMailruPublicLink("http://cloud.mail.ru/public/abcdef/video.mp4") === null &&
+    parseMailruPublicLink(
+      "https://cloud.mail.ru.evil.example/public/abcDEF123/abcdef/video.mp4",
+    ) === null &&
+      parseMailruPublicLink("http://cloud.mail.ru/public/abcdef/abcdef/video.mp4") === null &&
       parseMailruPublicLink("https://cloud.mail.ru/disk/abcdef") === null &&
       parseMailruPublicLink("https://cloud.mail.ru/public/abcdef") === null &&
-      parseMailruPublicLink("https://cloud.mail.ru/public/ab/../../etc/passwd") === null &&
+      /*
+        Traversal, in the form the URL parser does not fold away.
+
+        `/public/ab/../etc/passwd` is *normalised* by `new URL` into `/public/etc/passwd`
+        before this code sees it — still inside the share, so nothing is escaped, but it
+        means that spelling cannot be used to assert the guard. A percent-encoded `%2E%2E`
+        survives as two dots and is refused by the rule below, which is the one that matters.
+      */
+      parseMailruPublicLink("https://cloud.mail.ru/public/ab/%2E%2E/x.mp4") === null &&
+      parseMailruPublicLink("https://cloud.mail.ru/public/ab/..%2Fetc/x.mp4") === null &&
       parseMailruPublicLink("") === null,
-    "только https, только /public/<ключ>/<файл>",
+    "только https, только /public/…",
+  );
+  check(
+    "Облако: ни один сегмент не оказывается переходом вверх",
+    // Asserted on the parsed result rather than on a rejection, because the URL parser
+    // normalises `..` away: what must never happen is a `..` reaching the address builder.
+    parseMailruPublicLink("https://cloud.mail.ru/public/ab/../etc/passwd")?.segments.every(
+      (segment) => segment !== "." && segment !== "..",
+    ) === true,
+    JSON.stringify(
+      parseMailruPublicLink("https://cloud.mail.ru/public/ab/../etc/passwd")?.segments ?? null,
+    ),
+  );
+  check(
+    "Облако: имя файла с кириллицей и пробелом принимается",
+    // The name the person gave their file. Refusing it would refuse an ordinary link.
+    parseMailruPublicLink(
+      "https://cloud.mail.ru/public/BsGQ/AKpGNMp1i/%D0%9C%D0%BE%D0%B9%20%D1%84%D0%B8%D0%BB%D1%8C%D0%BC.mp4",
+    )?.filename === "Мой фильм.mp4",
+    JSON.stringify(
+      parseMailruPublicLink(
+        "https://cloud.mail.ru/public/BsGQ/AKpGNMp1i/%D0%9C%D0%BE%D0%B9%20%D1%84%D0%B8%D0%BB%D1%8C%D0%BC.mp4",
+      )?.filename ?? null,
+    ),
   );
 
   /* ---- where a download may come from ---- */
@@ -495,40 +545,20 @@ async function checkMailruImport() {
     "чужая база не принимается",
   );
   check(
-    "Облако: адрес листинга собирается без двойного слэша",
-    buildListingUrl("https://h.cloud.mail.ru/base/", "abc") ===
-      "https://h.cloud.mail.ru/base/abc" &&
-      buildListingUrl("https://h.cloud.mail.ru/base", "abc") ===
-        "https://h.cloud.mail.ru/base/abc",
-    "один слэш",
-  );
-
-  /* ---- the folder listing ---- */
-  const listing = {
-    body: {
-      list: [
-        { name: "Папка", type: "folder", weblink: "https://cloclo1.cloud.mail.ru/x" },
-        { name: "VidEO.MP4", type: "file", size: 1024, weblink: "https://cloclo1.cloud.mail.ru/v" },
-        { name: "doc.pdf", type: "file", size: 10, weblink: "https://cloclo1.cloud.mail.ru/d" },
-      ],
-    },
-  };
-  check(
-    "Облако: файл из листинга выбирается по имени, без учёта регистра",
-    pickFileFromListing(listing, "video.mp4")?.name === "VidEO.MP4",
-    pickFileFromListing(listing, "video.mp4")?.name ?? "не найден",
-  );
-  check(
-    "Облако: папки и записи без адреса в листинге пропускаются",
-    // A folder has no bytes to move, and an entry without a weblink is not a file we can
-    // fetch; taking either would fail later with a confusing message.
-    pickFileFromListing(
-      { body: { list: [{ name: "Папка", type: "folder" }, { name: "v.mp4" }] } },
-      "v.mp4",
-    ) === null &&
-      pickFileFromListing({ body: { list: [] } }, "v.mp4") === null &&
-      pickFileFromListing(null, "v.mp4") === null,
-    "null, а не догадка",
+    "Облако: адрес файла — весь хвост ссылки, без двойного слэша",
+    // The measured working address. Stopping after the first segment is what the live
+    // service answers with 404.
+    buildFilePathUrl("https://h.cloud.mail.ru/public/tok/g/no", [
+      "BsGQ",
+      "AKpGNMp1i",
+      "VID_20261010_203149.mp4",
+    ]) === "https://h.cloud.mail.ru/public/tok/g/no/BsGQ/AKpGNMp1i/VID_20261010_203149.mp4" &&
+      buildFilePathUrl("https://h.cloud.mail.ru/base/", ["a", "b"]) ===
+        "https://h.cloud.mail.ru/base/a/b" &&
+      // A Cyrillic or spaced name is encoded, not pasted raw into the path.
+      buildFilePathUrl("https://h.cloud.mail.ru/base", ["Мой фильм.mp4"]) ===
+        "https://h.cloud.mail.ru/base/%D0%9C%D0%BE%D0%B9%20%D1%84%D0%B8%D0%BB%D1%8C%D0%BC.mp4",
+    "один слэш, сегменты закодированы",
   );
 
   /* ---- the resolution, against a stubbed network ---- */
@@ -556,108 +586,83 @@ async function checkMailruImport() {
     );
 
   const stub =
-    (listingResponse: () => Response) =>
+    (fileResponse: () => Response) =>
     async (input: string): Promise<Response> => {
       if (input.includes("/api/v2/dispatcher")) return dispatcherOk();
-      return listingResponse();
+      return fileResponse();
     };
 
-  const link = { key1: "abcDEF123", key2: "video.mp4" };
+  /** The shape a real file link answers with, measured: octet-stream and a length. */
+  const fileResponse = (overrides: { url?: string; status?: number; length?: number; type?: string } = {}) =>
+    at(
+      new Response(overrides.status && overrides.status >= 400 ? null : new Uint8Array(0), {
+        status: overrides.status ?? 200,
+        headers: {
+          "content-type": overrides.type ?? "application/octet-stream",
+          ...(overrides.length === undefined ? {} : { "content-length": String(overrides.length) }),
+        },
+      }),
+      overrides.url ?? "https://cloclo63.datacloudmail.ru/public/get/tok/no/VID.mp4",
+    );
 
-  const fromListing = await resolveMailruDownload(
-    stub(() =>
-      at(
-        new Response(JSON.stringify(listing), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-        "https://cloclo63.cloud.mail.ru/base/abcDEF123",
-      ),
-    ) as never,
+  const link = {
+    segments: ["BsGQ", "AKpGNMp1i", "VID_20261010_203149.mp4"],
+    filename: "VID_20261010_203149.mp4",
+  };
+
+  const resolved = await resolveMailruDownload(
+    stub(() => fileResponse({ length: 5_303_307 })) as never,
     link,
     500 * 1024 * 1024,
   );
   check(
-    "Облако: листинг превращается в адрес файла",
-    fromListing.ok &&
-      fromListing.url === "https://cloclo1.cloud.mail.ru/v" &&
-      fromListing.filename === "VidEO.MP4",
-    JSON.stringify(fromListing),
-  );
-
-  const foreignFile = await resolveMailruDownload(
-    stub(() =>
-      at(
-        new Response(
-          JSON.stringify({
-            body: {
-              list: [
-                { name: "v.mp4", type: "file", size: 1, weblink: "https://evil.example/v.mp4" },
-              ],
-            },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
-        "https://cloclo63.cloud.mail.ru/base/abcDEF123",
-      ),
-    ) as never,
-    link,
-    500 * 1024 * 1024,
-  );
-  check(
-    "Облако: файл на чужом хосте не принимается",
-    !foreignFile.ok && foreignFile.reason === "unreachable",
-    JSON.stringify(foreignFile),
+    "Облако: файл разрешается в адрес CDN, размер известен",
+    resolved.ok &&
+      resolved.url === "https://cloclo63.datacloudmail.ru/public/get/tok/no/VID.mp4" &&
+      resolved.filename === "VID_20261010_203149.mp4" &&
+      resolved.size === 5_303_307,
+    JSON.stringify(resolved),
   );
 
   const redirected = await resolveMailruDownload(
-    stub(() =>
-      at(
-        new Response(JSON.stringify(listing), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-        // What a redirect off the allowlist looks like: the body arrives, but from
-        // somewhere the resolver was never willing to read.
-        "https://evil.example/steal",
-      ),
-    ) as never,
+    // What a redirect off the allowlist looks like: a good body, from a host the resolver
+    // was never willing to read.
+    stub(() => fileResponse({ url: "https://evil.example/steal" })) as never,
     link,
     500 * 1024 * 1024,
   );
   check(
-    "Облако: ответ, приехавший с чужого хоста, не разбирается",
+    "Облако: ответ, приехавший с чужого хоста, не принимается",
     !redirected.ok && redirected.reason === "unreachable",
     JSON.stringify(redirected),
   );
 
   const missing = await resolveMailruDownload(
-    stub(() => at(new Response('{"error":"NOT/FOUND"}', { status: 404 }), "https://cloclo63.cloud.mail.ru/base/x")) as never,
+    stub(() => fileResponse({ status: 404, url: "https://cloclo63.cloud.mail.ru/base/x" })) as never,
     link,
     500 * 1024 * 1024,
   );
   check(
-    "Облако: 404 от листинга — «файл не найден», а не ошибка сети",
+    "Облако: 404 — «файл не найден», а не ошибка сети",
     !missing.ok && missing.reason === "not-found",
     JSON.stringify(missing),
   );
 
+  const asPage = await resolveMailruDownload(
+    // A folder link answers with a page, not bytes. Reported as «не найден», because from
+    // the editor's seat the two are the same problem: this link has no video behind it.
+    stub(() => fileResponse({ type: "text/html; charset=utf-8" })) as never,
+    link,
+    500 * 1024 * 1024,
+  );
+  check(
+    "Облако: ссылка на страницу, а не на файл, распознаётся",
+    !asPage.ok && asPage.reason === "not-found",
+    JSON.stringify(asPage),
+  );
+
   const tooBig = await resolveMailruDownload(
-    stub(() =>
-      at(
-        new Response(
-          JSON.stringify({
-            body: {
-              list: [
-                { name: "v.mp4", type: "file", size: 900 * 1024 * 1024, weblink: "https://c.cloud.mail.ru/v" },
-              ],
-            },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
-        "https://cloclo63.cloud.mail.ru/base/abcDEF123",
-      ),
-    ) as never,
+    stub(() => fileResponse({ length: 900 * 1024 * 1024 })) as never,
     link,
     500 * 1024 * 1024,
   );
