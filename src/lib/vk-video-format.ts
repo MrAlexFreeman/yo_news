@@ -28,6 +28,13 @@ export class VkVideoError extends Error {
  * URL says. Without this check, anyone able to influence the API response — or
  * anyone who pointed the app at a mock — could make the server stream an uploaded
  * video to an arbitrary address, including one inside the network this box sits in.
+ *
+ * The list is measured, not copied from documentation, and `ovu.mycdn.me` is the entry
+ * that proves why. It was missing, and `video.save` for community video answers with an
+ * upload address on exactly that host — Mail.ru's CDN, which serves VK's uploads. So the
+ * guard refused every real upload: the browser route failed with «Адрес загрузки указывает
+ * не на ВК: ovu.mycdn.me» and had been failing since the day it shipped, because nothing
+ * exercised it against the live API.
  */
 const UPLOAD_HOST_ALLOWED = new Set([
   "vk.com",
@@ -38,6 +45,8 @@ const UPLOAD_HOST_ALLOWED = new Set([
   "vkvideo.ru",
   "www.vkvideo.ru",
   "api.vk.com",
+  // Where VK actually sends community video bytes. Measured against the live API.
+  "ovu.mycdn.me",
   "sun9.com",
   "sun-1.com",
   "sun-2.com",

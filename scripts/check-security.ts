@@ -3403,6 +3403,17 @@ function checkVkVideo() {
     "https://api.vk.com/upload.php",
     "https://sun9.com/upload.php",
     "https://userapi.com/upload.php",
+    /*
+      The host the live API actually uses for community video.
+
+      Measured with a real `video.save`: the answer's `upload_url` was on `ovu.mycdn.me`.
+      It was not in this list, so the guard refused every genuine upload — the browser route
+      had been failing with «Адрес загрузки указывает не на ВК: ovu.mycdn.me» for as long as
+      it existed, because nothing had ever exercised it against the real service. The check
+      is here so that removing it again fails rather than hides.
+    */
+    "https://ovu.mycdn.me/?extra=1&sig=abc",
+    "https://ovu.mycdn.me/upload",
   ];
   for (const url of good) {
     let ok = false;
