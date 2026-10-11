@@ -6,15 +6,16 @@ import { ChevronRight, MessageSquare } from "lucide-react";
 import { ArticleGallery } from "@/components/article-gallery";
 import { ArticleSidebar } from "@/components/article-sidebar";
 import { ArticleVideo } from "@/components/article-video";
-import { ContinueReading } from "@/components/continue-reading";
 import { CoverImage } from "@/components/cover-image";
 import { PhotoCredit } from "@/components/photo-credit";
 import { ArticleBodyWithCards } from "@/components/entity-card";
+import { PersonalizedContinueReading } from "@/components/personalized-continue-reading";
 import { ReadAlsoBlock } from "@/components/read-also-block";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { ViewCounter } from "@/components/view-counter";
+import type { LoopCardStory } from "@/components/loop-card";
 import { parseMedia } from "@/lib/article-media";
-import { plainTextPreview } from "@/lib/article-html";
+import { plainTextPreview, stripTrailingKicker } from "@/lib/article-html";
 import { composeLoopRows, pickStable, splitForLoop } from "@/lib/content-loop";
 import { automaticPlateAllowed, splitAroundReadAlso } from "@/lib/read-also";
 import { readingMinutes } from "@/lib/reading-time";
@@ -40,11 +41,16 @@ export const revalidate = 300;
 const LOOP_ROW_SIZE = 3;
 
 /**
- * How many stories each loop query returns. More than the three a row shows, so the page
- * still has three cards left after it has excluded the current story and the one the
- * plate offered, without a second round trip.
+ * How many stories each loop query returns, and how deep the pool behind each row is.
+ *
+ * More than the three a row shows, and now for two reasons rather than one. The page still has
+ * to be able to exclude the story being read and the one the plate offered — and the grid is
+ * filtered again in the browser against the stories this reader has already opened, which can
+ * remove all three of the first cards. A pool of three would leave that reader with an empty
+ * row; a pool of eight leaves them a choice.
  */
-const LOOP_CANDIDATES = 5;
+const LOOP_CANDIDATES = 8;
+const LOOP_POOL_SIZE = 8;
 
 type PageParams = { slug: string };
 
@@ -165,7 +171,14 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     getLoopHighlights([article.id], LOOP_CANDIDATES),
   ]);
 
-  const body = sanitizeArticleHtml(article.contentHtml);
+  /*
+    The body, cleaned of a dangling kicker before anything is decided about it.
+
+    The strip runs on the sanitised body, and before the split, so a «Читайте также:» left at
+    the end is neither rendered nor counted as a paragraph the plate could be placed after.
+    See `stripTrailingKicker` for what it does and does not touch.
+  */
+  const body = stripTrailingKicker(sanitizeArticleHtml(article.contentHtml));
 
   /*
     The body, taken apart at whatever plates it carries — read once, from the sanitised
@@ -210,8 +223,20 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     popularCandidates,
     highlightCandidates,
     [article.id, plateStory?.id ?? null],
-    LOOP_ROW_SIZE,
+    LOOP_POOL_SIZE,
   );
+
+  /**
+   * A database row as a card, with the reading time computed here and the body left behind.
+   *
+   * `LoopCardStory` carries no `contentHtml` on purpose: the grid's cards cross to the browser
+   * so they can be filtered by what the reader has already opened, and eight article bodies in
+   * the RSC payload would be more bytes than the rest of the page put together.
+   */
+  const toCard = (story: (typeof rows.popular)[number]): LoopCardStory => {
+    const { contentHtml, ...rest } = story;
+    return { ...rest, minutes: readingMinutes(contentHtml) };
+  };
 
   /*
     The body, in pieces, with the plates already decided.
@@ -534,8 +559,17 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           sit here: both answered "what else is there", the new one answers it with two
           labelled rows and six cards, and keeping both would put two near-identical
           blocks within a screen of each other.
+
+          It is handed a pool rather than exactly six cards and reorders it in the reader's
+          browser, so a story they have already opened is not offered back to them. See
+          `PersonalizedContinueReading`.
         */}
-        <ContinueReading popular={rows.popular} highlights={rows.highlights} />
+        <PersonalizedContinueReading
+          currentSlug={article.slug}
+          popular={rows.popular.map(toCard)}
+          highlights={rows.highlights.map(toCard)}
+          rowSize={LOOP_ROW_SIZE}
+        />
 
         <SubscribeBlock variant="inline" className="mt-10" />
       </article>

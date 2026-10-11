@@ -3,7 +3,6 @@ import Link from "next/link";
 import { CoverImage } from "@/components/cover-image";
 import { RubricLabel } from "@/components/article-card";
 import { formatDate, formatTime } from "@/lib/date";
-import { readingMinutes } from "@/lib/reading-time";
 
 /**
  * One card of the closing "Продолжить чтение" grid.
@@ -16,15 +15,20 @@ import { readingMinutes } from "@/lib/reading-time";
  *
  * `min-h-10` on the headline link, against 24px minimum in WCAG 2.2: a two-line headline
  * at 15px is already taller than that on desktop, but a single-line one is not.
+ *
+ * **`minutes` arrives computed, and the body does not arrive at all.** The card used to take
+ * `contentHtml` and count the words in it, which was free while the grid was rendered on the
+ * server. The grid is now filtered in the reader's browser against the stories they have
+ * already opened, so these props cross the RSC boundary — and sending eight full article
+ * bodies to the browser to display three cards would be the largest thing on the page.
  */
-
-/** Structural, not the database row: the tests build these from literals. */
 export type LoopCardStory = {
   id: string;
   slug: string;
   title: string;
   coverImage: string | null;
-  contentHtml: string;
+  /** Reading time, precomputed from the body on the server. */
+  minutes: number;
   publishedAt: Date | null;
   createdAt: Date;
   category: { name: string; slug: string } | null;
@@ -68,7 +72,7 @@ export function LoopCard({ story }: { story: LoopCardStory }) {
             {formatDate(timestamp)}, {formatTime(timestamp)}
           </time>
           {" · "}
-          {readingMinutes(story.contentHtml)} мин
+          {story.minutes} мин
         </p>
       </article>
     );
@@ -113,7 +117,7 @@ export function LoopCard({ story }: { story: LoopCardStory }) {
             {formatDate(timestamp)}, {formatTime(timestamp)}
           </time>
           {" · "}
-          {readingMinutes(story.contentHtml)} мин
+          {story.minutes} мин
         </p>
       </div>
     </article>

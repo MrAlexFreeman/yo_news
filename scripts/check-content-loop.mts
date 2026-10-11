@@ -18,6 +18,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ContinueReading } from "../src/components/continue-reading";
 import { LoopCard } from "../src/components/loop-card";
+import { PersonalizedContinueReading } from "../src/components/personalized-continue-reading";
 import { NowReading } from "../src/components/now-reading";
 import { ReadAlsoBlock } from "../src/components/read-also-block";
 import {
@@ -32,6 +33,13 @@ import {
   splitForLoop,
   stableIndex,
 } from "../src/lib/content-loop";
+import { stripTrailingKicker } from "../src/lib/article-html";
+import {
+  pickUnseen,
+  readViewed,
+  rememberViewed,
+  VIEWED_LIMIT,
+} from "../src/lib/viewed-articles";
 
 type Check = { name: string; ok: boolean; detail: string };
 const checks: Check[] = [];
@@ -60,7 +68,9 @@ function story(id: string, over: Record<string, unknown> = {}) {
     slug: `material-${id}`,
     title: `Заголовок материала ${id}`,
     coverImage: `/uploads/${id}.jpg`,
-    contentHtml: `<p>${words(540)}</p>`,
+    // Precomputed on the server in production; the card no longer receives the body, so a
+    // literal here is the same shape the page hands it.
+    minutes: 5,
     publishedAt: NOW,
     createdAt: NOW,
     category: { name: "Расследования", slug: "investigations" },
@@ -307,7 +317,11 @@ function checkRows() {
 
 function checkPlateMarkup() {
   const html = renderToStaticMarkup(
-    createElement(ReadAlsoBlock, { story: story("plate") }),
+    createElement(ReadAlsoBlock, {
+      // The plate still counts the words itself: its story comes from the database on the
+      // server and never crosses to the browser, so it keeps the body.
+      story: { ...story("plate"), contentHtml: `<p>${words(540)}</p>` },
+    }),
   );
 
   check(
@@ -553,7 +567,7 @@ function checkNoCoverCard() {
     id: "c1",
     slug: "material-bez-foto",
     title: "Материал без фотографии",
-    contentHtml: `<p>${"слово ".repeat(540)}</p>`,
+    minutes: 3,
     publishedAt: NOW,
     createdAt: NOW,
     category: { name: "Дом и сад", slug: "home-garden" },
@@ -635,6 +649,172 @@ function checkSingleCard() {
   */
 }
 
+/**
+ * The dangling kicker, and the personalisation of the closing grid.
+ *
+ * Both are about the reader reaching the end of a story: one is a promise of more reading with
+ * nothing behind it, the other is a promise of more reading with stories the reader has already
+ * finished behind it. Neither is visible in a screenshot when it is working, which is why both
+ * are asserted on the strings and the lists they produce.
+ */
+function checkTrailingKicker() {
+  check(
+    "Хвост: висячий «Читайте также:» без ссылки срезается",
+    stripTrailingKicker("<p>Первый абзац.</p><p>Читайте также:</p>") ===
+      "<p>Первый абзац.</p>" &&
+      stripTrailingKicker("<p>Абзац.</p>\n<p>Читайте также</p>\n") === "<p>Абзац.</p>\n",
+    JSON.stringify(stripTrailingKicker("<p>Абзац.</p>\n<p>Читайте также</p>\n")),
+  );
+
+  /*
+    The three shapes that must survive, and each is a real body on this site: the kicker that
+    keeps its promise, the kicker that carries prose, and a sentence that merely contains the
+    words. Deleting any of them would be the strip eating an article's last line.
+  */
+  const withLink = `<p>Первый.</p><p>Читайте также: <a href="/news/x">Заголовок</a></p>`;
+  const withProse = `<p>Прочитайте также, как <a href="/news/x">медведь наведался</a></p>`;
+  const inSentence = `<p>Точные обстоятельства, а также состояние водителя установят.</p>`;
+  check(
+    "Хвост: кикер со ссылкой, с прозой и в середине фразы не трогается",
+    stripTrailingKicker(withLink) === withLink &&
+      stripTrailingKicker(withProse) === withProse &&
+      stripTrailingKicker(inSentence) === inSentence,
+    "все три сохранены",
+  );
+
+  check(
+    "Хвост: кикер в середине тела не срезается",
+    // Only the last paragraph is considered: the site cannot know whether the paragraph after
+    // this one was meant to be the link.
+    stripTrailingKicker("<p>Читайте также:</p><p>Продолжение текста.</p>") ===
+      "<p>Читайте также:</p><p>Продолжение текста.</p>",
+    "середина не тронута",
+  );
+
+  check(
+    "Хвост: регистр и лишняя пунктуация не мешают",
+    stripTrailingKicker("<p>Абзац.</p><p>ЧИТАЙТЕ ТАКЖЕ:</p>") === "<p>Абзац.</p>" &&
+      stripTrailingKicker("<p>Абзац.</p><p>Читать далее:</p>") === "<p>Абзац.</p>",
+    "срезано",
+  );
+
+  check(
+    "Хвост: тело без кикера возвращается байт в байт",
+    stripTrailingKicker("<p>Один.</p><p>Два.</p>") === "<p>Один.</p><p>Два.</p>" &&
+      stripTrailingKicker("") === "",
+    "без изменений",
+  );
+}
+
+/** A `localStorage` stand-in: the module is written against two methods, not the browser. */
+function fakeStorage(initial: string | null = null) {
+  let value = initial;
+  return {
+    getItem: () => value,
+    setItem: (_key: string, next: string) => {
+      value = next;
+    },
+    read: () => value,
+  };
+}
+
+function checkViewedArticles() {
+  const empty = fakeStorage();
+  check(
+    "Прочитанное: битое значение читается как пустой список",
+    readViewed(fakeStorage(null)).length === 0 &&
+      readViewed(fakeStorage("не json")).length === 0 &&
+      readViewed(fakeStorage('{"a":1}')).length === 0 &&
+      readViewed(fakeStorage('["ok", 5, "", null]')).join(",") === "ok",
+    JSON.stringify(readViewed(fakeStorage('["ok", 5, "", null]'))),
+  );
+
+  const kept = rememberViewed(empty, "pervyy");
+  rememberViewed(empty, "vtoroy");
+  check(
+    "Прочитанное: свежий материал встаёт в начало",
+    kept.join(",") === "pervyy" && readViewed(empty).join(",") === "vtoroy,pervyy",
+    readViewed(empty).join(","),
+  );
+
+  const repeated = rememberViewed(fakeStorage('["a","b","c"]'), "c");
+  check(
+    "Прочитанное: повторный заход не дублирует и поднимает наверх",
+    repeated.join(",") === "c,a,b",
+    repeated.join(","),
+  );
+
+  const long = rememberViewed(
+    fakeStorage(JSON.stringify(Array.from({ length: VIEWED_LIMIT }, (_, i) => `s${i}`))),
+    "novyy",
+  );
+  check(
+    "Прочитанное: список ограничен и не растёт бесконечно",
+    long.length === VIEWED_LIMIT && long[0] === "novyy" && !long.includes(`s${VIEWED_LIMIT - 1}`),
+    `длина ${long.length}`,
+  );
+
+  const card = (slug: string) => ({ slug, title: slug });
+  const pool = ["a", "b", "c", "d", "e"].map(card);
+  check(
+    "Подвал: непрочитанные идут первыми",
+    pickUnseen(pool, ["a", "b"], 3).map((s) => s.slug).join(",") === "c,d,e",
+    pickUnseen(pool, ["a", "b"], 3).map((s) => s.slug).join(","),
+  );
+  check(
+    "Подвал: строка добирается прочитанными, а не остаётся полупустой",
+    // A row of one card under a heading reads as a failed request; two read cards are a
+    // smaller loss than a broken-looking block.
+    pickUnseen(pool, ["a", "b", "c", "d"], 3).map((s) => s.slug).join(",") === "e,a,b",
+    pickUnseen(pool, ["a", "b", "c", "d"], 3).map((s) => s.slug).join(","),
+  );
+  check(
+    "Подвал: когда прочитано всё — список всё равно не пустой",
+    pickUnseen(pool, pool.map((s) => s.slug), 3).length === 3 &&
+      pickUnseen(pool, pool.map((s) => s.slug), 3).map((s) => s.slug).join(",") === "a,b,c",
+    pickUnseen(pool, pool.map((s) => s.slug), 3).map((s) => s.slug).join(","),
+  );
+  check(
+    "Подвал: пустой пул и нулевой размер дают пустоту, а не падение",
+    pickUnseen([], ["a"], 3).length === 0 && pickUnseen(pool, [], 0).length === 0,
+    "пусто",
+  );
+}
+
+/**
+ * The grid as the server renders it, which is also what the browser hydrates against.
+ *
+ * `useSyncExternalStore` answers the empty history on the server, so the HTML carries the first
+ * `rowSize` cards of each row and nothing else — the extra pool exists to be chosen from after
+ * hydration, not to be printed. If this ever renders the whole pool, every reader downloads
+ * eight cards to look at three.
+ */
+function checkPersonalizedGrid() {
+  const pool = ["a", "b", "c", "d", "e", "f", "g", "h"].map((slug) => story(slug));
+  const html = renderToStaticMarkup(
+    createElement(PersonalizedContinueReading, {
+      currentSlug: "material-tekushchiy",
+      popular: pool.slice(0, 4),
+      highlights: pool.slice(4),
+      rowSize: 3,
+    }),
+  );
+
+  check(
+    "Подвал на сервере: ровно три карточки в строке, а не весь пул",
+    occurrences(html, "<article") === 6 &&
+      html.includes("/news/material-a") &&
+      !html.includes("/news/material-h"),
+    `карточек: ${occurrences(html, "<article")}`,
+  );
+  check(
+    "Подвал на сервере: обе подписи строк на месте",
+    html.includes("Популярное в этой рубрике") &&
+      html.includes("Главные расследования и события дня"),
+    "две подписи",
+  );
+}
+
 checkParagraphCounting();
 checkSplit();
 checkPlacement();
@@ -647,6 +827,9 @@ checkTrendingFallback();
 checkNowReadingMarkup();
 checkNoCoverCard();
 checkSingleCard();
+checkTrailingKicker();
+checkViewedArticles();
+checkPersonalizedGrid();
 
 console.log("Цикл статьи: врезка в текст, закрывающая сетка, «Сейчас читают»\n");
 for (const { name, ok, detail } of checks) {

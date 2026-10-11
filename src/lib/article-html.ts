@@ -92,6 +92,81 @@ export function normalizeArticleHtml(input: string): string {
 }
 
 /**
+ * Phrases that promise more reading. A body may end with one and nothing behind it.
+ *
+ * Lower case, because the comparison below folds the paragraph's text down to it: an
+ * editor may type «Читайте также», «ЧИТАЙТЕ ТАКЖЕ» or «Читайте так же», and all three are
+ * the same dead end to a reader.
+ */
+const KICKER_PHRASES: readonly string[] = [
+  "читайте также",
+  "читать также",
+  "читайте так же",
+  "почитайте также",
+  "прочитайте также",
+  "читать далее",
+  "смотрите также",
+  "читайте еще",
+  "читайте ещё",
+];
+
+/**
+ * Drops a trailing paragraph that is nothing but a kicker — «Читайте также:» with no link.
+ *
+ * **Why this exists.** A body whose last line is «Читайте также:» and nothing after it reads as
+ * a broken page: the site has promised more and delivered an empty line, at exactly the moment
+ * the reader is deciding whether to stay. It is produced by hand and by models alike — the
+ * phrase is added as a lead-in and the link never gets made.
+ *
+ * **What it does not touch**, and each is a real body on this site:
+ *
+ *   `<p>Читайте также: <a href=…>Заголовок</a></p>`   → kept, the promise is met
+ *   `<p>Прочитайте также, как <a href=…>медведь…</a></p>` → kept, the kicker carries prose
+ *   `<p>…а также состояние водителя установят…</p>`     → kept, not a kicker at all
+ *
+ * So only the **last** paragraph is considered, only when it holds no link, and only when
+ * nothing but the phrase is left after the tags and the trailing punctuation are removed. A
+ * kicker in the middle of a body is left alone: the site cannot know whether the paragraph
+ * after it was meant to be the link.
+ *
+ * Runs on the way out rather than on save, so it also repairs the bodies already stored, and
+ * so a paragraph deleted in the editor is not a decision taken behind the editor's back.
+ */
+export function stripTrailingKicker(html: string): string {
+  // Anchored at the very end, so this is about the article's last line and nothing else.
+  const trailing = /<\/p\s*>\s*$/i.exec(html);
+  if (!trailing) return html;
+
+  const closeStart = trailing.index;
+  const lower = html.toLowerCase();
+  // `<p>` and `<p class=…>` are both openings; `<pre>` is not, and the character after the
+  // `p` is what tells them apart.
+  const openIndex = Math.max(lower.lastIndexOf("<p>", closeStart), lower.lastIndexOf("<p ", closeStart));
+  if (openIndex < 0) return html;
+
+  const gt = html.indexOf(">", openIndex);
+  if (gt < 0 || gt >= closeStart) return html;
+
+  const inner = html.slice(gt + 1, closeStart);
+
+  // A link means the paragraph says where to go. Without one it is the broken case.
+  if (/<a\b/i.test(inner)) return html;
+
+  const text = inner
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[:;,.!?…—–-]+$/u, "")
+    .trim()
+    .toLowerCase();
+
+  if (!KICKER_PHRASES.includes(text)) return html;
+
+  return `${html.slice(0, openIndex)}${html.slice(closeStart + trailing[0].length)}`;
+}
+
+/**
  * Plain-text preview for the editor's "Предпросмотр" panel: strips tags and
  * collapses whitespace so the editor sees approximately the word count and the
  * opening of the story without rendering live markup.
