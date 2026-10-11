@@ -50,6 +50,17 @@ function logError(...parts: unknown[]): void {
   console.error(VK_LOG_PREFIX, ...parts);
 }
 
+/**
+ * Combines two warnings into one sentence.
+ *
+ * A post can hit more than one problem — a cover that failed to upload and then a wall.edit
+ * that failed to repair it — and reporting only the last one leaves the editor fixing the
+ * symptom they can see rather than the first thing that broke.
+ */
+function joinWarning(existing: string | undefined, next: string): string {
+  return existing ? `${existing}; ${next}` : next;
+}
+
 export type VkPublishResult = {
   ok: boolean;
   /** Present when VK returned a post id. */
@@ -662,7 +673,19 @@ export async function publishArticleToVk(
 ): Promise<VkPublishResult> {
   // Both are checked through the resolved values, not through process.env: the
   // token may now live only in the settings table.
-  if (!vkCommunityId() || !(await resolveToken().catch(() => ""))) {
+  //
+  // The failure is logged rather than swallowed. It used to be `.catch(() => "")`, which
+  // turned "the settings table could not be read" into "ВК не настроен: задайте токен" — an
+  // instruction to go and set a token that is already set, and the whole reason a repost that
+  // had been working overnight could report a configuration problem instead of its cause.
+  const token = await resolveToken().catch((error: unknown) => {
+    logError(
+      "не удалось получить токен ВК:",
+      error instanceof Error ? error.message : error,
+    );
+    return "";
+  });
+  if (!vkCommunityId() || !token) {
     return {
       ok: false,
       error:
@@ -705,6 +728,52 @@ export async function publishArticleToVk(
       // string as a malformed attachment and rejects the whole post.
       ...(photoId ? { attachments: photoId } : {}),
     });
+
+    /*
+      Ask VK what ended up on the post, and repair it if the cover was dropped.
+
+      Measured: `wall.post` answers with a post id while the post carries no attachment at
+      all — one occurrence in six attempts during this work, with a photo id that was
+      demonstrably usable minutes later (the same id attached fine when posted by hand). VK
+      returns no error for it, so the only way to know is to read the post back.
+
+      The repair is `wall.edit`, not a second post: the post already exists, and editing its
+      attachments mutates it in place with no window in which the wall has two copies.
+    */
+    if (photoId && posted?.post_id != null) {
+      const postId = String(posted.post_id);
+      const landed = await readWallPostAttachments(postId);
+
+      // `null` means the read failed, which is not evidence of anything; only a post that was
+      // read and has nothing on it is worth repairing.
+      if (landed && landed.length === 0) {
+        logError(`пост ${postId} создан без вложения — дописываю обложку через wall.edit`);
+        try {
+          await callVk("wall.edit", {
+            owner_id: communityId,
+            post_id: postId,
+            attachments: photoId,
+          });
+
+          const repaired = await readWallPostAttachments(postId);
+          if (repaired && repaired.length === 0) {
+            warning = joinWarning(
+              warning,
+              "ВК принял пост без обложки и не прикрепил её даже после правки",
+            );
+          } else {
+            log(`обложка дописана к посту ${postId}`);
+          }
+        } catch (error) {
+          warning = joinWarning(
+            warning,
+            `ВК создал пост без обложки, дописать не удалось: ${
+              error instanceof Error ? error.message : "неизвестная ошибка"
+            }`,
+          );
+        }
+      }
+    }
 
     log(
       `готово: пост ${posted?.post_id ?? "?"}, вложение: ${photoId ?? "нет"}${

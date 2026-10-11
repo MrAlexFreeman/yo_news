@@ -50,6 +50,13 @@ function stubVk(options: {
   emptyPhotoTimes?: number;
   /** Report a post with no photo attached, for the read-back used by the test button. */
   attachmentMissing?: boolean;
+  /**
+   * Report the measured glitch: `wall.post` succeeds, the post comes back with no attachment,
+   * and `wall.edit` is what repairs it.
+   */
+  dropAttachmentOnce?: boolean;
+  /** Refuse the repair, so the warning path is exercised. */
+  editFails?: boolean;
 }) {
   const calls: { method: string; params: Record<string, string> }[] = [];
   /** One entry per attempt on the upload endpoint, so retry behaviour is assertable. */
@@ -62,6 +69,8 @@ function stubVk(options: {
   }[] = [];
   let remainingFailures = options.uploadFailTimes ?? 0;
   let remainingEmpty = options.emptyPhotoTimes ?? 0;
+  /** Starts true unless this stub is simulating VK dropping the attachment. */
+  let attachmentOnPost = !options.dropAttachmentOnce && !options.attachmentMissing;
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -163,10 +172,22 @@ function stubVk(options: {
         items: [
           {
             id: 555,
-            attachments: options.attachmentMissing ? [] : [{ type: "photo" }],
+            attachments: attachmentOnPost ? [{ type: "photo" }] : [],
           },
         ],
       });
+    }
+    if (method === "wall.edit") {
+      // Measured against the live service: a post created with no attachment came back with
+      // `attachments: ["photo"]` after wall.edit was given one.
+      if (options.editFails) {
+        return new Response(
+          JSON.stringify({ error: { error_code: 100, error_msg: "Access denied" } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      attachmentOnPost = true;
+      return respond({ post_id: 555 });
     }
     if (method === "wall.delete") {
       return respond(1);
@@ -471,8 +492,11 @@ async function main() {
   );
   check(
     "С обложкой: вложение — только фото",
-    calls.at(-1)?.params.attachments === "photo276313599_457240126",
-    `attachments=${calls.at(-1)?.params.attachments}`,
+    // Not `calls.at(-1)`: the read-back after the post is now the last call, so the check has
+    // to name the call it means.
+    calls.filter((c) => c.method === "wall.post").at(-1)?.params.attachments ===
+      "photo276313599_457240126",
+    `attachments=${calls.filter((c) => c.method === "wall.post").at(-1)?.params.attachments}`,
   );
   /*
     `group_id` must be a positive integer, and the sign is not cosmetic.
@@ -581,8 +605,9 @@ async function main() {
     afterOutage.ok === true &&
       uploads.length === 3 &&
       uploads[0].status === 504 &&
-      calls.at(-1)?.params.attachments === "photo276313599_457240126",
-    `попыток=${uploads.length}, attachments=${calls.at(-1)?.params.attachments}`,
+      calls.filter((c) => c.method === "wall.post").at(-1)?.params.attachments ===
+        "photo276313599_457240126",
+    `попыток=${uploads.length}, attachments=${calls.filter((c) => c.method === "wall.post").at(-1)?.params.attachments}`,
   );
 
   /*
@@ -615,8 +640,9 @@ async function main() {
     afterEmpty.ok === true &&
       uploads.length === 3 &&
       afterEmpty.photoId === "photo276313599_457240126" &&
-      calls.at(-1)?.params.attachments === "photo276313599_457240126",
-    `попыток=${uploads.length}, photoId=${afterEmpty.photoId ?? "нет"}, attachments=${calls.at(-1)?.params.attachments}`,
+      calls.filter((c) => c.method === "wall.post").at(-1)?.params.attachments ===
+        "photo276313599_457240126",
+    `попыток=${uploads.length}, photoId=${afterEmpty.photoId ?? "нет"}, attachments=${calls.filter((c) => c.method === "wall.post").at(-1)?.params.attachments}`,
   );
   check(
     "Обложка: каждая попытка берёт СВЕЖИЙ адрес загрузки",
@@ -694,6 +720,65 @@ async function main() {
       calls.at(-1)?.params.attachments === undefined &&
       (noId.warning?.includes("не вернул id") ?? false),
     JSON.stringify(noId),
+  );
+
+  /*
+    The glitch that turned up on production while this was being verified.
+
+    `wall.post` answered with a post id and the post carried no attachment at all — with a
+    photo id that attached fine minutes later when posted by hand. VK reports no error for it,
+    so the only way to notice is to read the post back, and the only way to fix it without a
+    second copy on the wall is `wall.edit`.
+  */
+  ({ calls, uploads } = stubVk({ dropAttachmentOnce: true }));
+  const dropFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com/cover")) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 });
+    }
+    return dropFetch(input, init);
+  }) as typeof fetch;
+
+  const repaired = await publishArticleToVk({
+    title: "Отброшенное вложение",
+    slug: "dropped-attachment",
+    coverImage: "https://example.com/cover.jpg",
+  });
+  check(
+    "Обложка: молча отброшенное вложение дописывается через wall.edit",
+    repaired.ok === true &&
+      repaired.warning === undefined &&
+      calls.filter((c) => c.method === "wall.edit").length === 1 &&
+      calls.find((c) => c.method === "wall.edit")?.params.attachments ===
+        "photo276313599_457240126" &&
+      // Read twice: once to notice, once to confirm the repair.
+      calls.filter((c) => c.method === "wall.getById").length === 2 &&
+      calls.filter((c) => c.method === "wall.post").length === 1,
+    `edit=${calls.filter((c) => c.method === "wall.edit").length}, постов=${calls.filter((c) => c.method === "wall.post").length}, warning=${repaired.warning ?? "нет"}`,
+  );
+
+  ({ calls, uploads } = stubVk({ dropAttachmentOnce: true, editFails: true }));
+  const editFailFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com/cover")) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 });
+    }
+    return editFailFetch(input, init);
+  }) as typeof fetch;
+
+  const repairFailed = await publishArticleToVk({
+    title: "Правка не удалась",
+    slug: "edit-failed",
+    coverImage: "https://example.com/cover.jpg",
+  });
+  check(
+    "Обложка: если дописать не удалось — пост остаётся, но с предупреждением",
+    // The post must never be deleted over a missing picture: a coverless post is worth more
+    // than no post at all.
+    repairFailed.ok === true &&
+      calls.every((c) => c.method !== "wall.delete") &&
+      (repairFailed.warning?.includes("дописать не удалось") ?? false),
+    JSON.stringify(repairFailed),
   );
 
   // --- cover upload fails: degrade to text -----------------------------
