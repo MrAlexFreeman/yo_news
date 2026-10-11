@@ -2,8 +2,10 @@
  * Дозаполнение обложек у старых постов стены ВК.
  *
  * Run from the project root:
- *   npx tsx --env-file=.env scripts/backfill-vk-covers.mts          # сухой прогон
- *   npx tsx --env-file=.env scripts/backfill-vk-covers.mts --apply  # вносит правки
+ *   npx tsx --env-file=.env scripts/backfill-vk-covers.mts              # сухой прогон
+ *   npx tsx --env-file=.env scripts/backfill-vk-covers.mts --apply      # вносит правки
+ *   ... --apply --delay=5000                                           # медленнее, если ВК
+ *                                                                      # начал требовать капчу
  *
  * ---------------------------------------------------------------------------
  * Зачем
@@ -37,6 +39,24 @@ import {
 
 const apply = process.argv.includes("--apply");
 
+/**
+ * Pause between edits, in milliseconds.
+ *
+ * VK answers `wall.edit` with error 14, "Captcha needed", once it has seen enough of them in a
+ * row — measured: eleven went through and the twelfth was refused. The pause is what keeps a
+ * backfill of a few dozen posts from turning into a challenge the operator cannot answer from a
+ * terminal.
+ */
+const delayArg = process.argv.find((arg) => arg.startsWith("--delay="));
+const delayMs = delayArg ? Math.max(0, Number(delayArg.split("=")[1]) || 0) : 1500;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** VK's "Captcha needed" (error 14), which is a rate limit rather than a failure to fix. */
+function isCaptchaError(error: unknown): boolean {
+  return error instanceof Error && /Captcha needed \(14\)/.test(error.message);
+}
+
 async function main() {
   if (!vkCommunityId()) {
     console.error("VK_COMMUNITY_ID не задан — запускать не с чем (нужен --env-file=.env).");
@@ -67,8 +87,12 @@ async function main() {
     let repaired = 0;
     let skipped = 0;
     let failed = 0;
+    let stopped = 0;
 
     for (const post of naked) {
+      // Paced, because VK counts these: see `delayMs`.
+      if (apply && repaired + failed > 0) await sleep(delayMs);
+
       const slug = extractArticleSlug(post.text);
       if (!slug) {
         console.log(`  ${post.id}: пропуск — в тексте нет ссылки на материал`);
@@ -106,6 +130,18 @@ async function main() {
           failed += 1;
         }
       } catch (error) {
+        if (isCaptchaError(error)) {
+          /*
+            Stop rather than keep knocking. The work so far is already committed — every post
+            edited before this point keeps its picture — and the run can be repeated later,
+            because it only ever looks at posts that currently have nothing on them.
+          */
+          console.error(
+            `\n  ВК потребовал капчу на посте ${post.id} — останавливаюсь. Повторите запуск позже.`,
+          );
+          stopped = naked.length - repaired - failed - skipped;
+          break;
+        }
         console.error(
           `      ошибка: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -117,6 +153,9 @@ async function main() {
       console.log(
         `\nГотово: исправлено ${repaired}, пропущено ${skipped}, ошибок ${failed}, обложек загружено ${attachmentBySlug.size}`,
       );
+      if (stopped > 0) {
+        console.log(`Осталось необработанных: ${stopped}. Запустите скрипт снова.`);
+      }
     } else {
       const uploads = new Set<string>();
       for (const post of naked) {
