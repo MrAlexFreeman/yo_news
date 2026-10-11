@@ -37,8 +37,15 @@
  * are still duplicates.
  */
 
-import { deleteWallPost, listWallPosts, planWallDedupe } from "@/lib/vk-publisher";
 import { writeFile } from "node:fs/promises";
+
+import {
+  deleteWallPost,
+  extractArticleSlug,
+  listWallPosts,
+  planWallDedupe,
+  setVkTokenSource,
+} from "@/lib/vk-publisher";
 
 const apply = process.argv.includes("--apply");
 
@@ -52,94 +59,120 @@ function isCaptchaError(error: unknown): boolean {
 }
 
 async function main() {
-  const posts = await listWallPosts(100);
-  const { keep, remove } = planWallDedupe(posts);
-
-  console.log(`Всего постов: ${posts.length}`);
-  console.log(`Останется: ${keep.length}, к удалению: ${remove.length}`);
-  console.log(apply ? "РЕЖИМ: удаление\n" : "РЕЖИМ: сухой прогон, ничего не удаляется\n");
-
-  const keptIds = new Set(keep.map((post) => post.id));
-  const removedBySlug = new Map<string, string[]>();
-  for (const post of remove) {
-    const slug = post.text.match(/\/news\/([A-Za-z0-9_-]+)/)?.[1] ?? "—";
-    const list = removedBySlug.get(slug);
-    if (list) list.push(post.id);
-    else removedBySlug.set(slug, [post.id]);
-  }
-
-  for (const post of keep) {
-    const slug = post.text.match(/\/news\/([A-Za-z0-9_-]+)/)?.[1] ?? null;
-    const doomed = slug ? (removedBySlug.get(slug) ?? []) : [];
-    const when = new Date(post.date * 1000).toISOString().slice(0, 16).replace("T", " ");
-    console.log(
-      `  оставляем ${post.id} (${when})${slug ? ` «${slug}»` : " — без ссылки"}${
-        doomed.length ? `, удаляем ${doomed.length}: ${doomed.join(", ")}` : ""
-      }`,
-    );
-  }
-  console.log(`\nПроверка: остаётся ${keptIds.size} постов`);
-
-  if (remove.length === 0) {
-    console.log("Дубликатов нет.");
-    return;
-  }
-
-  if (!apply) {
-    console.log("Сухой прогон: ничего не удалено.");
-    return;
-  }
-
   /*
-    The backup, written before the first deletion.
-    Deleting a wall post is not reversible through the API, and the only copy of what was in
-    one lives in this run's memory until this file is on disk.
+    The token comes from the settings table, like every other VK caller — but read straight
+    through Prisma, because `@/lib/settings` is `server-only` and refuses to load outside the
+    Next runtime, which is what a bare `tsx` process is.
   */
-  const backupPath = `vk-dedupe-backup-${Date.now()}.json`;
-  await writeFile(
-    backupPath,
-    JSON.stringify(
-      {
-        createdAt: new Date().toISOString(),
-        community: process.env.VK_COMMUNITY_ID ?? null,
-        deleted: remove.map((post) => ({
-          id: post.id,
-          date: post.date,
-          text: post.text,
-          attachments: post.attachments,
-        })),
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  console.log(`Резервная копия: ${backupPath}\n`);
+  const { prisma } = await import("@/lib/prisma");
 
-  let deleted = 0;
-  let failed = 0;
-  for (const post of remove) {
-    if (deleted + failed > 0) await sleep(delayMs);
-    try {
-      console.log(`  удаляю ${post.id}: ${(post.text.split("\n")[0] ?? "").slice(0, 60)}`);
-      await deleteWallPost(post.id);
-      deleted += 1;
-    } catch (error) {
-      if (isCaptchaError(error)) {
-        console.error(
-          `\n  ВК потребовал капчу на посте ${post.id} — останавливаюсь. Повторите запуск позже.`,
-        );
-        break;
-      }
-      console.error(`      ошибка: ${error instanceof Error ? error.message : String(error)}`);
-      failed += 1;
+  try {
+    const token = await prisma.appSetting.findUnique({ where: { key: "VK_ACCESS_TOKEN" } });
+    if (!token?.value) {
+      console.error("Токен ВК не задан в базе — удалять нечем.");
+      process.exitCode = 1;
+      return;
     }
-  }
+    setVkTokenSource(async () => token.value);
 
-  console.log(
-    `\nУдалено: ${deleted}, ошибок: ${failed}, осталось: ${remove.length - deleted - failed}`,
-  );
-  if (failed > 0) process.exitCode = 1;
+    const posts = await listWallPosts(100);
+    const { keep, remove } = planWallDedupe(posts);
+
+    console.log(`Всего постов: ${posts.length}`);
+    console.log(`Останется: ${keep.length}, к удалению: ${remove.length}`);
+    console.log(apply ? "РЕЖИМ: удаление\n" : "РЕЖИМ: сухой прогон, ничего не удаляется\n");
+
+    // The doomed posts, grouped under the article whose surviving copy they duplicate.
+    const removedBySlug = new Map<string, string[]>();
+    for (const post of remove) {
+      const slug = extractArticleSlug(post.text) ?? "—";
+      const list = removedBySlug.get(slug);
+      if (list) list.push(post.id);
+      else removedBySlug.set(slug, [post.id]);
+    }
+
+    for (const post of keep) {
+      const slug = extractArticleSlug(post.text);
+      const doomed = slug ? (removedBySlug.get(slug) ?? []) : [];
+      const when = new Date(post.date * 1000).toISOString().slice(0, 16).replace("T", " ");
+      console.log(
+        `  оставляем ${post.id} (${when})${slug ? ` «${slug}»` : " — без ссылки"}${
+          doomed.length ? `, удаляем ${doomed.length}: ${doomed.join(", ")}` : ""
+        }`,
+      );
+    }
+    console.log(
+      `\nПроверка: останется ${keep.length} постов, из них без ссылки на материал — ${countUngrouped(keep)} (не трогаем)`,
+    );
+
+    if (remove.length === 0) {
+      console.log("Дубликатов нет.");
+      return;
+    }
+
+    if (!apply) {
+      console.log("Сухой прогон: ничего не удалено.");
+      return;
+    }
+
+    /*
+      The backup, written before the first deletion.
+      Deleting a wall post is not reversible through the API, and the only copy of what was in
+      one lives in this run's memory until this file is on disk.
+    */
+    const backupPath = `vk-dedupe-backup-${Date.now()}.json`;
+    await writeFile(
+      backupPath,
+      JSON.stringify(
+        {
+          createdAt: new Date().toISOString(),
+          community: process.env.VK_COMMUNITY_ID ?? null,
+          deleted: remove.map((post) => ({
+            id: post.id,
+            date: post.date,
+            text: post.text,
+            attachments: post.attachments,
+          })),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    console.log(`Резервная копия: ${backupPath}\n`);
+
+    let deleted = 0;
+    let failed = 0;
+    for (const post of remove) {
+      if (deleted + failed > 0) await sleep(delayMs);
+      try {
+        console.log(`  удаляю ${post.id}: ${(post.text.split("\n")[0] ?? "").slice(0, 60)}`);
+        await deleteWallPost(post.id);
+        deleted += 1;
+      } catch (error) {
+        if (isCaptchaError(error)) {
+          console.error(
+            `\n  ВК потребовал капчу на посте ${post.id} — останавливаюсь. Повторите запуск позже.`,
+          );
+          break;
+        }
+        console.error(`      ошибка: ${error instanceof Error ? error.message : String(error)}`);
+        failed += 1;
+      }
+    }
+
+    console.log(
+      `\nУдалено: ${deleted}, ошибок: ${failed}, осталось: ${remove.length - deleted - failed}`,
+    );
+    if (failed > 0) process.exitCode = 1;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+/** Posts with no article link, so the run can say how many it is deliberately leaving alone. */
+function countUngrouped(posts: { text: string }[]): number {
+  return posts.filter((post) => extractArticleSlug(post.text) === null).length;
 }
 
 await main();
