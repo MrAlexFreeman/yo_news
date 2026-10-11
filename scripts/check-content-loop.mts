@@ -809,6 +809,104 @@ function checkViewedArticles() {
 }
 
 /**
+ * The grid in a real DOM, with a storage that says two stories have been read.
+ *
+ * The pure function above decides *which* stories; this decides whether the decision reaches
+ * the page at all. The two failure modes are different and only one of them is visible in the
+ * other checks: `pickUnseen` can be perfect while the component never reads storage, never
+ * re-renders after hydration, or writes the visit and forgets to offer anything — and every one
+ * of those leaves the block looking exactly like the version that had no personalisation.
+ *
+ * Mounted into jsdom with effects flushed, the same way the editor suite mounts its component.
+ */
+async function checkPersonalizedClient() {
+  const { installDom } = await import("./tiptap-dom");
+  installDom("https://eartnews.ru/news/material-tekushchiy");
+
+  const react = await import("react");
+  const { createElement } = react;
+  const { createRoot } = await import("react-dom/client");
+  const { PersonalizedContinueReading } = await import(
+    "../src/components/personalized-continue-reading"
+  );
+
+  const act = typeof react.act === "function" ? react.act : null;
+  if (act) {
+    (globalThis as unknown as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+  }
+
+  const scope = globalThis as unknown as { window: Window };
+  scope.window.localStorage.setItem("viewed_articles", JSON.stringify(["material-a"]));
+
+  /*
+    Two globals jsdom does not provide and Next's client link reaches for.
+
+    `self` is the worker-scope alias for the global object, and `requestIdleCallback` is a
+    browser scheduling API jsdom does not implement. Both are used by the link's visibility
+    tracking, which runs on mount — so without them the component throws before it renders and
+    this check would fail for a reason that has nothing to do with the grid.
+  */
+  const globals = globalThis as unknown as Record<string, unknown>;
+  globals.self = globals.self ?? globalThis;
+  globals.requestIdleCallback =
+    globals.requestIdleCallback ??
+    ((callback: (deadline: unknown) => void) =>
+      setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 0));
+  globals.cancelIdleCallback =
+    globals.cancelIdleCallback ?? ((handle: number) => clearTimeout(handle));
+
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+
+  const props = {
+    currentSlug: "material-tekushchiy",
+    popular: ["a", "b", "c", "d"].map((id) => story(id)),
+    highlights: ["e", "f", "g", "h"].map((id) => story(id)),
+    rowSize: 3,
+  };
+
+  if (act) {
+    await act(async () => {
+      root.render(createElement(PersonalizedContinueReading as never, props));
+    });
+  } else {
+    root.render(createElement(PersonalizedContinueReading as never, props));
+    for (let turn = 0; turn < 5; turn += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  const hrefs = Array.from(host.querySelectorAll('a[href^="/news/"]')).map(
+    (anchor) => anchor.getAttribute("href"),
+  );
+
+  check(
+    "Клиент: прочитанный материал уходит из обеих строк",
+    hrefs.length > 0 &&
+      !hrefs.includes("/news/material-a") &&
+      hrefs.includes("/news/material-b") &&
+      hrefs.includes("/news/material-e"),
+    `ссылок ${hrefs.length}, есть a: ${hrefs.includes("/news/material-a")}`,
+  );
+
+  const stored = JSON.parse(scope.window.localStorage.getItem("viewed_articles") ?? "[]") as string[];
+  check(
+    "Клиент: визит записан и старый список сохранён",
+    stored[0] === "material-tekushchiy" && stored.includes("material-a"),
+    JSON.stringify(stored),
+  );
+
+  check(
+    "Клиент: строки остаются по три карточки",
+    // `<article>` per card, not the links: a card with a picture carries two anchors to the
+    // same story — the image and the headline — so counting anchors counts each card twice.
+    host.querySelectorAll("article").length === 6,
+    `карточек ${host.querySelectorAll("article").length}`,
+  );
+}
+
+/**
  * The grid as the server renders it, which is also what the browser hydrates against.
  *
  * `useSyncExternalStore` answers the empty history on the server, so the HTML carries the first
@@ -857,6 +955,7 @@ checkSingleCard();
 checkTrailingKicker();
 checkViewedArticles();
 checkPersonalizedGrid();
+await checkPersonalizedClient();
 
 console.log("Цикл статьи: врезка в текст, закрывающая сетка, «Сейчас читают»\n");
 for (const { name, ok, detail } of checks) {
