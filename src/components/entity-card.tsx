@@ -138,7 +138,16 @@ async function fetchCard(slug: string): Promise<EntityCardView | null> {
 const OPEN_DELAY_MS = 150;
 
 /** And how long it must be gone before the card closes. */
-const CLOSE_DELAY_MS = 180;
+/**
+ * How long a card stays on screen after the pointer leaves the link.
+ *
+ * 300 ms, and the number is the whole difference between a card that is reachable and one
+ * that is not. The card sits 8 px below the link and is a separate element, so the pointer
+ * has to cross a strip that belongs to neither of them; at 180 the crossing was inside the
+ * window on a fast mouse and outside it on a slow one, which is the kind of bug that
+ * reproduces for the person who reported it and nobody else.
+ */
+const CLOSE_DELAY_MS = 300;
 
 /**
  * The popover itself: positioned near the link that opened it.
@@ -152,10 +161,13 @@ const CLOSE_DELAY_MS = 180;
 function EntityPopover({
   card,
   anchor,
+  onKeepOpen,
   onClose,
 }: {
   card: EntityCardView;
   anchor: DOMRect;
+  /** Cancels a pending close, so the card survives the pointer arriving on it. */
+  onKeepOpen: () => void;
   onClose: () => void;
 }) {
   const layer = useRef<HTMLDivElement>(null);
@@ -198,7 +210,21 @@ function EntityPopover({
       role="dialog"
       aria-label={card.title}
       style={{ top: position.top, left: position.left }}
-      onMouseEnter={onClose}
+      /*
+        Entering the card *cancels* the close; leaving it starts one.
+
+        It was `onMouseEnter={onClose}` — the card dismissed itself the instant the pointer
+        arrived on it — and there was no `onMouseLeave` at all, so it never closed on its own
+        either. One wrong prop produced both halves of the reported symptom: the card
+        vanished as the reader reached for «Подробнее об объекте», and a card left behind
+        after the pointer had gone stayed on screen until Escape.
+
+        The 8 px between the link and the card is crossed while the link's close timer is
+        running, which is what `CLOSE_DELAY_MS` is sized for. Entering the card before it
+        fires cancels it, so the gap no longer decides whether the card is reachable.
+      */
+      onMouseEnter={onKeepOpen}
+      onMouseLeave={onClose}
       className="fixed z-50 w-[320px] rounded-lg border border-rule bg-white p-3 shadow-xl"
     >
       {card.category ? (
@@ -372,7 +398,12 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
 
       {active && slug ? (
         card ? (
-          <EntityPopover card={card} anchor={active.anchor} onClose={hide} />
+          <EntityPopover
+            card={card}
+            anchor={active.anchor}
+            onKeepOpen={cancelTimers}
+            onClose={hide}
+          />
         ) : nothingToShow && !loading ? (
           <div
             role="dialog"

@@ -1391,6 +1391,7 @@ async function runRoundTrips() {
   runCommands(make);
   await runMountedEditor();
   await checkSidebarInsertion();
+  await checkEntityPopover();
   report();
 }
 
@@ -2619,6 +2620,152 @@ async function runMountedEditor() {
   root.unmount();
   await settle();
   host.remove();
+}
+
+/**
+ * The card's hover behaviour, driven by real events on a mounted component.
+ *
+ * The reported defect lives in how two props are wired, which no pure function can catch:
+ * the popover dismissed itself on `mouseenter` and had no `mouseleave`, so a card vanished
+ * exactly as the reader reached for «Подробнее об объекте» and then, once it had somehow
+ * stayed, never closed on its own. Both halves are asserted here by dispatching the events
+ * a browser would.
+ *
+ * The link's handlers are native listeners the component attaches itself, so `mouseenter`
+ * is dispatched directly. The popover's come from React, which derives enter/leave from the
+ * bubbling `mouseover`/`mouseout` pair — hence the different events for the two elements.
+ */
+async function checkEntityPopover() {
+  const react = await import("react");
+  const { createElement } = react;
+  const { createRoot } = await import("react-dom/client");
+  const { ArticleBodyWithCards } = await import("../src/components/entity-card");
+
+  const act = react.act as typeof react.act | undefined;
+  if (act) {
+    (globalThis as unknown as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+  }
+
+  /*
+    React's `act` is absent from a production build, and every call site would otherwise
+    repeat the same guard. Wrapped once here.
+  */
+  const withAct = async (run: () => void | Promise<void>) => {
+    if (act) {
+      await act(async () => {
+        await run();
+      });
+      return;
+    }
+    await run();
+  };
+
+  const settle = (ms: number) =>
+    withAct(() => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  /*
+    The card is fetched over HTTP, and the address is relative, so the stub replaces fetch
+    entirely rather than falling through — a real `fetch("/api/entities/x")` throws on an
+    invalid URL in Node and the popover would never open for a reason that has nothing to do
+    with what is under test.
+  */
+  const realFetch = globalThis.fetch;
+  const card = {
+    slug: "test-obekt",
+    title: "Тестовый объект",
+    category: null,
+    summary: "Описание объекта в две строки.",
+    location: null,
+    foundedYear: null,
+    websiteUrl: null,
+    images: [],
+  };
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/api/entities/")) {
+      return new Response(JSON.stringify({ card }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input as never);
+  }) as typeof fetch;
+
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+
+  try {
+    await withAct(() => {
+      root.render(
+        createElement(ArticleBodyWithCards as never, {
+          html:
+            '<p>Текст со ссылкой на <a href="/wiki/test-obekt" class="entity-wiki-link" ' +
+            'data-entity-slug="test-obekt">Тестовый объект</a> внутри.</p>',
+        }),
+      );
+    });
+
+    const link = host.querySelector<HTMLAnchorElement>("a[data-entity-slug]");
+    check("Карточка: ссылка в теле найдена", link !== null, link?.getAttribute("href") ?? "нет");
+
+    const dialog = () => host.querySelector('[role="dialog"]');
+
+    // Native listener on the anchor, so the non-bubbling `mouseenter` is the right event.
+    link?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+    await settle(250);
+    check(
+      "Карточка: открывается при наведении на ссылку",
+      dialog() !== null,
+      dialog() ? "карточка открыта" : "не открылась",
+    );
+
+    /*
+      The defect itself. React derives onMouseEnter from a bubbling `mouseover` whose
+      relatedTarget is outside the element; dispatching it on the card is what a browser
+      does when the pointer crosses the 8 px gap and lands on the popover.
+    */
+    dialog()?.dispatchEvent(
+      new MouseEvent("mouseover", { bubbles: true, relatedTarget: link }),
+    );
+    await settle(450);
+    check(
+      "Карточка: не исчезает, когда курсор переходит на неё",
+      dialog() !== null,
+      dialog() ? "осталась открытой" : "исчезла — читатель не дотянется до ссылки",
+    );
+
+    /*
+      The link out, asserted while the card is still open — a click here would navigate the
+      test process' jsdom and there is nothing to navigate to, so what is asserted is the
+      property the brief names: the address, and the same tab.
+    */
+    const outbound =
+      dialog()?.querySelector<HTMLAnchorElement>("a[href^='/wiki/']") ?? null;
+    check(
+      "Карточка: «Подробнее об объекте» ведёт на /wiki/<slug> в этой вкладке",
+      outbound !== null && !outbound.hasAttribute("target"),
+      outbound
+        ? `${outbound.getAttribute("href")} target=${outbound.getAttribute("target") ?? "нет"}`
+        : "ссылка не найдена",
+    );
+
+    // And it does close when the pointer leaves for good.
+    dialog()?.dispatchEvent(
+      new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }),
+    );
+    await settle(450);
+    check(
+      "Карточка: закрывается, когда курсор ушёл с неё",
+      dialog() === null,
+      dialog() ? "осталась висеть" : "закрылась",
+    );
+  } finally {
+    await withAct(() => {
+      root.unmount();
+    });
+    host.remove();
+    globalThis.fetch = realFetch;
+  }
 }
 
 /**

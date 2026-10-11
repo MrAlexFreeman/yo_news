@@ -195,12 +195,54 @@ export function buildVideoEmbed(input: string): string | null {
   return null;
 }
 
-/** Provider name for a URL, for the editor's error message. */
+/**
+ * Hosts that refuse to be framed, named so the message can say which one and why.
+ *
+ * `cloud.mail.ru` answers with **both** `X-Frame-Options: SAMEORIGIN` and a
+ * `Content-Security-Policy: frame-ancestors 'self' …` list that does not include this site —
+ * measured against the live service, `eartnews.ru` appears nowhere in either. A browser
+ * refuses to render such a frame, so an `<iframe>` pointing at an Облако Mail.ru page shows
+ * an error inside the article rather than a player.
+ *
+ * Which makes this a *message* and not a provider: the brief asks for Mail.ru Cloud embeds
+ * and they cannot be built. The honest thing to ship is a sentence naming the reason, so an
+ * editor who pastes such a link learns that the host forbids it rather than concluding the
+ * editor is broken — and learns what to do instead.
+ *
+ * Only the exact host, not `*.mail.ru`: the refusal was measured on this one and saying it
+ * about a sibling nobody tested would be a guess presented as a finding.
+ */
+const REFUSES_TO_BE_FRAMED = ["cloud.mail.ru"] as const;
+
+/** True for a host that will not render inside an iframe on this site. */
+export function refusesToBeFramed(hostname: string): boolean {
+  return (REFUSES_TO_BE_FRAMED as readonly string[]).includes(hostname.toLowerCase());
+}
+
+/**
+ * Provider name for a URL, for the editor's error message.
+ *
+ * Three outcomes rather than two: one for a host we embed, one for a host that deliberately
+ * blocks embedding, and one for everything else. The middle case is the reason this is more
+ * than a lookup — a generic "unsupported" would be true and useless.
+ */
 export function unsupportedVideoMessage(input: string): string {
+  let parsed: URL;
   try {
-    const parsed = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
-    return `Не удалось встроить видео с ${parsed.hostname}. Поддерживаются YouTube, Rutube и VK Видео.`;
+    parsed = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
   } catch {
     return "Не удалось встроить видео. Поддерживаются YouTube, Rutube и VK Видео.";
   }
+
+  if (refusesToBeFramed(parsed.hostname)) {
+    return (
+      "Облако Mail.ru запрещает встраивать свои страницы в другие сайты: " +
+      "в ответе стоят X-Frame-Options: SAMEORIGIN и Content-Security-Policy с " +
+      "frame-ancestors, где eartnews.ru не указан, поэтому плеер внутри статьи " +
+      "не откроется. Скачайте файл и загрузите его в VK Видео или на YouTube — " +
+      "они встраиваются."
+    );
+  }
+
+  return `Не удалось встроить видео с ${parsed.hostname}. Поддерживаются YouTube, Rutube и VK Видео.`;
 }

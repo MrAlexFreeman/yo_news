@@ -77,6 +77,8 @@ import {
 } from "../src/lib/dzen-publication";
 import {
   buildVideoEmbed,
+  refusesToBeFramed,
+  unsupportedVideoMessage,
   buildVkPlayerUrl,
   ensureNoVkAutoplay,
   isAllowedVideoEmbed,
@@ -365,6 +367,45 @@ function checkArticleHtml() {
     "iframe без src вырезается",
     !sanitizeArticleHtml("<iframe></iframe>").includes("<iframe"),
     "пустой iframe удалён",
+  );
+
+  /*
+    Облако Mail.ru: measured, cannot be embedded, and the editor is told why.
+
+    The brief asks for it as a provider. It cannot be one: `cloud.mail.ru` answers with
+    **both** `X-Frame-Options: SAMEORIGIN` and a `Content-Security-Policy: frame-ancestors`
+    list in which `eartnews.ru` appears nowhere — measured against the live service. A
+    browser refuses such a frame, so an iframe pointing there would render an error inside
+    the article instead of a player.
+
+    Asserted as behaviour rather than described in a comment, so that "why is cloud.mail.ru
+    missing?" is answered by a failing test the next time somebody asks.
+  */
+  check(
+    "Видео: Облако Mail.ru не стало провайдером — хост запрещает встраивание",
+    buildVideoEmbed("https://cloud.mail.ru/public/abc123/video.mp4") === null &&
+      buildVideoEmbed("https://cloud.mail.ru/public/abc123") === null &&
+      refusesToBeFramed("cloud.mail.ru"),
+    "iframe туда не строится",
+  );
+  check(
+    "Видео: сообщение про Облако Mail.ru называет причину и выход",
+    // The generic "unsupported" is true and useless: the editor would paste another link
+    // shape and fail again.
+    unsupportedVideoMessage("https://cloud.mail.ru/public/abc123").includes(
+      "X-Frame-Options",
+    ) &&
+      unsupportedVideoMessage("https://cloud.mail.ru/public/abc123").includes("VK Видео"),
+    unsupportedVideoMessage("https://cloud.mail.ru/public/abc123").slice(0, 100),
+  );
+  check(
+    "Видео: похожий, но другой хост исключением не считается",
+    // Only the host the refusal was measured on. Saying it about a sibling nobody tested
+    // would be a guess presented as a finding.
+    !refusesToBeFramed("mail.ru") &&
+      !refusesToBeFramed("cloud.mail.ru.evil.example") &&
+      unsupportedVideoMessage("https://example.com/watch").includes("example.com"),
+    "исключение точечное",
   );
 }
 
