@@ -766,11 +766,13 @@ check(
 */
 // --- MAX ----------------------------------------------------------------------
 
-const maxShort = planMaxPost(simplePost, { hasCover: true });
+const maxSimple = planMaxPost(simplePost, { hasCover: true });
 check(
-  "MAX: короткий пост целиком, с вложением",
-  !maxShort.truncated && maxShort.text === simplePost.text && maxShort.attachCover,
-  `${maxShort.text.length} символов`,
+  "MAX: короткий пост целиком, одним сообщением, с вложением",
+  maxSimple.chunks.length === 1 &&
+    maxSimple.chunks[0] === simplePost.text &&
+    maxSimple.attachCover,
+  `${maxSimple.chunks.length} сообщение(й), ${maxSimple.chunks[0]?.length ?? 0} символов`,
 );
 
 check(
@@ -781,26 +783,81 @@ check(
 
 check(
   "MAX: ровно 4000 — ещё целиком",
-  !planMaxPost(barePost(paragraph(MAX_MESSAGE_LIMIT), "u")).truncated,
+  planMaxPost(barePost(paragraph(MAX_MESSAGE_LIMIT), "u")).chunks.length === 1,
   "граница включительно",
 );
 
-const maxCut = planMaxPost(barePost(paragraph(MAX_MESSAGE_LIMIT + 1), `${SITE}/news/s`));
+/*
+  Past the limit the article is **continued**, not cut to a teaser.
+
+  This is the difference the brief is about: MAX takes the whole story, and a story longer
+  than one message becomes several messages rather than an announcement. Telegram's planner
+  cuts, because a caption has nowhere to put the rest; MAX's has no such constraint.
+*/
+const maxLong = planMaxPost(barePost(paragraph(MAX_MESSAGE_LIMIT + 1), `${SITE}/news/s`));
 check(
-  "MAX: 4001 — обрезка со ссылкой на полный текст",
-  maxCut.truncated && maxCut.text.endsWith(readingNotice(`${SITE}/news/s`)) && maxCut.text.length < MAX_MESSAGE_LIMIT,
-  `${maxCut.text.length} < ${MAX_MESSAGE_LIMIT}`,
+  "MAX: 4001 — уже два сообщения, а не анонс",
+  maxLong.chunks.length === 2 &&
+    maxLong.chunks.every((chunk) => chunk.length <= MAX_MESSAGE_LIMIT),
+  `${maxLong.chunks.length} сообщения, длины ${maxLong.chunks.map((c) => c.length).join(", ")}`,
 );
 
 /*
-  MAX accepts a message and its attachment in one call, so there is no caption limit to
-  dodge and no reason to split. Asserted because a copy of Telegram's planner here
-  would be the obvious mistake, and it would send two messages where one is correct.
+  Compared without whitespace, and that is the honest form of "nothing is lost".
+
+  A cut at a paragraph boundary drops the `\n\n` that separated the two paragraphs: the
+  second message does not open with a blank line, and a reader sees two messages rather than
+  one text with a gap in it. Every character of content — every word, in order — survives, and
+  that is what this asserts.
 */
+const withoutWhitespace = (value: string) => value.replace(/\s+/g, "");
+
 check(
-  "MAX: не разделён на два сообщения, в отличие от Telegram",
-  planMaxPost(barePost(paragraph(2500), "u")).text.length === 2500,
+  "MAX: ни одно слово не потеряно — куски дают исходный текст",
+  withoutWhitespace(maxLong.chunks.join("")) === withoutWhitespace(paragraph(MAX_MESSAGE_LIMIT + 1)),
+  `${maxLong.chunks.join("").length} против ${MAX_MESSAGE_LIMIT + 1}`,
+);
+
+check(
+  "MAX: куски режутся по абзацам, а не по символам",
+  (() => {
+    const body = Array.from({ length: 12 }, (_, i) => `<p>${paragraph(700, "абвг"[i % 4]!)}</p>`).join("");
+    const post = buildMessengerPost({
+      title: "Длинный",
+      contentHtml: body,
+      slug: "dlinnyy",
+      categoryName: "Общество",
+      siteUrl: SITE,
+    });
+    const chunks = planMaxPost(post).chunks;
+    // Every chunk but the last has to end where a paragraph ended, which is what makes the
+    // continuation read as the article continuing rather than as a message cut off.
+    return (
+      chunks.length > 1 &&
+      chunks.slice(0, -1).every((chunk) => chunk.split("\n\n").length > 1)
+    );
+  })(),
+  "границы по абзацам",
+);
+
+check(
+  "MAX: одна строка текста не разделена, в отличие от Telegram",
+  planMaxPost(barePost(paragraph(2500), "u")).chunks.length === 1,
   "одним сообщением до 4000",
+);
+
+check(
+  "MAX: абзац длиннее сообщения режется, но не исчезает",
+  (() => {
+    const post = barePost(paragraph(9000), `${SITE}/news/s`);
+    const chunks = planMaxPost(post).chunks;
+    return (
+      chunks.length > 1 &&
+      chunks.every((chunk) => chunk.length <= MAX_MESSAGE_LIMIT) &&
+      chunks.join("") === post.text
+    );
+  })(),
+  "длинный абзац разложен по сообщениям",
 );
 
 // --- quotations and pictures in a post ----------------------------------------
@@ -917,10 +974,13 @@ check(
 );
 
 check(
-  "Пост: обрезка длинного текста с цитатой остаётся под лимитом",
-  planMaxPost(barePost(postWithQuoteAndFigure.text.repeat(20), `${SITE}/news/s`)).text.length <
-    MAX_MESSAGE_LIMIT,
-  `${planMaxPost(barePost(postWithQuoteAndFigure.text.repeat(20), "u")).text.length} < ${MAX_MESSAGE_LIMIT}`,
+  "Пост: каждое сообщение MAX остаётся под лимитом",
+  planMaxPost(barePost(postWithQuoteAndFigure.text.repeat(20), `${SITE}/news/s`)).chunks.every(
+    (chunk) => chunk.length <= MAX_MESSAGE_LIMIT,
+  ),
+  planMaxPost(barePost(postWithQuoteAndFigure.text.repeat(20), "u"))
+    .chunks.map((chunk) => chunk.length)
+    .join(", ") + ` <= ${MAX_MESSAGE_LIMIT}`,
 );
 
 // --- the actual Bot API calls, with `fetch` stubbed ---------------------------
@@ -1196,6 +1256,236 @@ try {
   resetTelegramConfigSource();
   if (originalSiteUrl === undefined) delete process.env.NEXT_PUBLIC_SITE_URL;
   else process.env.NEXT_PUBLIC_SITE_URL = originalSiteUrl;
+}
+
+// --- the MAX API calls, with `fetch` stubbed ---------------------------------
+
+/*
+  The MAX half of the same idea: the planner can be right while the requests are not, and the
+  three failures this guards are all failures of the request, not of the plan — a cover that
+  never reaches the message, an attachment token sent with every chunk instead of with the
+  first, and a rollback that leaves half an article in a channel.
+
+  The upload is two calls on the platform: a one-shot URL from `/uploads?type=image`, then the
+  bytes to that URL. Both are answered here, and the second returns the token the message
+  attaches by.
+*/
+const MAX_UPLOAD_URL = "https://upload.example.com/u/1";
+
+type MaxCall = {
+  kind: "ticket" | "upload" | "message" | "delete";
+  json: Record<string, unknown> | null;
+  form: FormData | null;
+  at: number;
+};
+
+const maxCalls: MaxCall[] = [];
+
+function stubMaxFetch(options: { failOnMessage?: number } = {}) {
+  let messages = 0;
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = (init?.method ?? "GET").toUpperCase();
+
+    if (url === COVER_URL) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    }
+
+    const json = () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    if (url.includes("/uploads")) {
+      maxCalls.push({ kind: "ticket", json: null, form: null, at: Date.now() });
+      return new Response(JSON.stringify({ url: MAX_UPLOAD_URL, token: "ticket-token" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (url === MAX_UPLOAD_URL) {
+      maxCalls.push({ kind: "upload", json: null, form: init?.body as FormData, at: Date.now() });
+      return new Response(JSON.stringify({ token: "cover-token" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (method === "DELETE") {
+      maxCalls.push({ kind: "delete", json: null, form: null, at: Date.now() });
+      return json();
+    }
+
+    if (url.includes("/messages")) {
+      messages += 1;
+      maxCalls.push({
+        kind: "message",
+        json: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+        form: null,
+        at: Date.now(),
+      });
+
+      if (options.failOnMessage === messages) {
+        return new Response(
+          JSON.stringify({ code: "attachment.not.ready", message: "not ready" }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+
+      return new Response(JSON.stringify({ message: { body: { mid: `mid-${messages}` } } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+}
+
+try {
+  process.env.NEXT_PUBLIC_SITE_URL = SITE;
+  setMaxConfigSource(async () => ({ token: "max-test-token", chatId: "-7000000001", enabled: true }));
+
+  /** The messages that were posted, in order. */
+  const postedMessages = () =>
+    maxCalls.filter((call) => call.kind === "message").map((call) => call.json ?? {});
+
+  // 1. A short article with a cover: one message, carrying both the text and the picture.
+  maxCalls.length = 0;
+  globalThis.fetch = stubMaxFetch();
+
+  const maxShortArticle = {
+    id: "probe-short",
+    title: "Короткая новость",
+    contentHtml: `<p>${paragraph(300)}</p>`,
+    slug: "korotkaya",
+    categoryName: "Технологии",
+    coverImage: COVER_URL,
+  };
+  const maxShortResult = await publishArticleToMax(maxShortArticle);
+  const shortMessage = postedMessages()[0] ?? {};
+  const shortAttachments = shortMessage.attachments as
+    | { type?: string; payload?: { token?: string } }[]
+    | undefined;
+
+  check(
+    "Мок MAX: короткий пост — одно сообщение с полным текстом",
+    maxShortResult.ok &&
+      postedMessages().length === 1 &&
+      shortMessage.text === buildMessengerPost({ ...maxShortArticle, siteUrl: SITE }).text,
+    `${postedMessages().length} сообщение(й), ${String(shortMessage.text ?? "").length} символов`,
+  );
+
+  check(
+    "Мок MAX: обложка едет вложением к тому же сообщению",
+    shortMessage.attachments !== undefined &&
+      shortAttachments?.[0]?.type === "image" &&
+      shortAttachments?.[0]?.payload?.token === "cover-token",
+    JSON.stringify(shortAttachments ?? null),
+  );
+
+  check(
+    "Мок MAX: текст помечен как html и адресован каналу",
+    shortMessage.format === "html",
+    JSON.stringify(shortMessage.format),
+  );
+
+  check(
+    "Мок MAX: id сообщения возвращается и запоминается",
+    maxShortResult.messageId === "mid-1" &&
+      maxShortResult.messageIds?.join(",") === "mid-1",
+    JSON.stringify(maxShortResult.messageIds ?? null),
+  );
+
+  // 2. A long article: several messages, the picture on the first only.
+  maxCalls.length = 0;
+  globalThis.fetch = stubMaxFetch();
+
+  const maxLongArticle = {
+    id: "probe-long",
+    title: "Длинная новость",
+    contentHtml: `<p>${bodyOfLength(9000)}</p>`,
+    slug: "dlinnaia",
+    categoryName: "Общество",
+    coverImage: COVER_URL,
+  };
+  const maxLongResult = await publishArticleToMax(maxLongArticle);
+  const longMessages = postedMessages();
+  const longText = buildMessengerPost({ ...maxLongArticle, siteUrl: SITE }).text;
+
+  check(
+    "Мок MAX: длинный пост уходит несколькими сообщениями",
+    maxLongResult.ok && longMessages.length > 1,
+    `${longMessages.length} сообщений`,
+  );
+
+  check(
+    "Мок MAX: вместе сообщения дают весь текст без потерь",
+    withoutWhitespace(longMessages.map((message) => String(message.text ?? "")).join("")) ===
+      withoutWhitespace(longText),
+    `${longMessages.map((m) => String(m.text ?? "").length).join("+")} против ${longText.length}`,
+  );
+
+  check(
+    "Мок MAX: обложка прикреплена только к первому сообщению",
+    longMessages[0]?.attachments !== undefined &&
+      longMessages.slice(1).every((message) => message.attachments === undefined),
+    `вложений по сообщениям: ${longMessages.map((m) => (m.attachments ? 1 : 0)).join(",")}`,
+  );
+
+  check(
+    "Мок MAX: ссылка на источник и рубрика в последнем сообщении",
+    String(longMessages.at(-1)?.text ?? "").includes(`${SITE}/news/dlinnaia`) &&
+      String(longMessages.at(-1)?.text ?? "").includes("#Общество"),
+    JSON.stringify(String(longMessages.at(-1)?.text ?? "").slice(-70)),
+  );
+
+  const messageTimes = maxCalls.filter((call) => call.kind === "message").map((call) => call.at);
+  check(
+    "Мок MAX: сообщения разведены по времени — не чаще двух в секунду",
+    messageTimes.length > 1 && messageTimes.slice(1).every((at, i) => at - (messageTimes[i] ?? 0) >= 600),
+    messageTimes.map((at, i) => (i === 0 ? 0 : at - (messageTimes[i - 1] ?? 0))).join(", ") + " мс",
+  );
+
+  // 3. A failure in the middle: nothing is left half-published.
+  maxCalls.length = 0;
+  globalThis.fetch = stubMaxFetch({ failOnMessage: 2 });
+  const maxBrokenResult = await publishArticleToMax(maxLongArticle);
+
+  check(
+    "Мок MAX: обрыв на середине — публикация не считается удавшейся",
+    maxBrokenResult.ok === false && (maxBrokenResult.error ?? "").includes("not ready"),
+    maxBrokenResult.error ?? "",
+  );
+
+  check(
+    "Мок MAX: уже отправленное удаляется, а не остаётся половиной статьи",
+    maxCalls.filter((call) => call.kind === "delete").length === 1 &&
+      maxCalls.find((call) => call.kind === "delete") !== undefined,
+    `удалений: ${maxCalls.filter((call) => call.kind === "delete").length}`,
+  );
+
+  // 4. No cover: one text message and no upload at all.
+  maxCalls.length = 0;
+  globalThis.fetch = stubMaxFetch();
+  const maxNoCover = await publishArticleToMax({ ...maxShortArticle, coverImage: null });
+
+  check(
+    "Мок MAX: без обложки загрузки нет, а сообщение уходит",
+    maxNoCover.ok &&
+      maxCalls.every((call) => call.kind === "message") &&
+      postedMessages()[0]?.attachments === undefined,
+    `вызовов: ${maxCalls.map((call) => call.kind).join(", ")}`,
+  );
+} finally {
+  globalThis.fetch = realFetch;
+  resetMaxConfigSource();
 }
 
 // --- settings validation ------------------------------------------------------

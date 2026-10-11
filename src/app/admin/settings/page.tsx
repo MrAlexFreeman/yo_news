@@ -10,6 +10,7 @@ import {
   type SyndicationState,
 } from "@/app/admin/settings/components/syndication-settings";
 import { VkTestSettings } from "@/app/admin/settings/components/vk-test-settings";
+import { MaxTestSettings } from "@/app/admin/settings/components/max-test-settings";
 import { toLiveStreamView } from "@/lib/live-stream";
 import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
 import { resolveAllSettings, toView } from "@/lib/settings";
@@ -96,6 +97,7 @@ export default async function SettingsPage() {
 
         <SettingsForm initial={initial} />
         <VkTestSettings />
+        <MaxTestSettings />
         <SyndicationSettings initial={syndication} />
         <LiveStreamSettings initial={liveStream} />
       </div>

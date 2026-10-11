@@ -232,6 +232,7 @@ export async function createArticleAction(
           status: true,
           dzenExperiment: true,
           vkPostId: true,
+          maxPostId: true,
           tags: { select: { tag: { select: { slug: true } } } },
         },
       })
@@ -508,17 +509,49 @@ export async function createArticleAction(
     }
 
     if (article.isMax) {
-      try {
-        const max = await publishArticleToMax(shared);
-        messengerNotes.max = max.ok
-          ? (max.summary ?? "опубликовано.")
-          : `не ушло: ${max.error ?? "причина неизвестна"}`;
-        if (max.warning) console.warn(`[max] ${max.warning}`);
-      } catch (error) {
-        messengerNotes.max = `необработанная ошибка: ${
-          error instanceof Error ? error.message : "неизвестная ошибка"
-        }`;
-        console.error("[max] необработанная ошибка репоста:", error);
+      /*
+        The stored id is the guard, in the same spirit as `vkPostId`.
+
+        `enteringPublished` already stops a save of a published story from reposting, but it is
+        a statement about this request, not about the story: take one back to draft and publish
+        it again and the transition is crossed a second time. The row is what remembers.
+      */
+      const alreadyInMax = existing?.maxPostId ?? null;
+
+      if (alreadyInMax) {
+        messengerNotes.max = "Уже было в MAX — повторно не публикуем.";
+      } else {
+        try {
+          const max = await publishArticleToMax(shared);
+
+          if (max.ok) {
+            messengerNotes.max = max.summary ?? "опубликовано.";
+
+            /*
+              Written the moment MAX confirms, before anything else can fail.
+
+              The last id of a multi-message post is what is kept: it is the message whose chunk
+              carries the source line and the rubric, so it is the one an editor would find.
+            */
+            const lastId = max.messageIds?.at(-1) ?? max.messageId ?? null;
+            if (lastId) {
+              await prisma.article.update({
+                where: { id: article.id },
+                data: { maxPostId: lastId },
+              });
+            }
+            if (max.warning) console.warn(`[max] ${max.warning}`);
+          } else {
+            messengerNotes.max = `не ушло: ${max.error ?? "причина неизвестна"}`;
+            // Reported as well as returned: a rollback that could not finish names ids here.
+            if (max.warning) console.warn(`[max] ${max.warning}`);
+          }
+        } catch (error) {
+          messengerNotes.max = `необработанная ошибка: ${
+            error instanceof Error ? error.message : "неизвестная ошибка"
+          }`;
+          console.error("[max] необработанная ошибка репоста:", error);
+        }
       }
     }
   }

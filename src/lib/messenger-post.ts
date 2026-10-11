@@ -634,26 +634,84 @@ export function planTelegramPost(
 }
 
 export type MaxPlan = {
-  text: string;
-  truncated: boolean;
-  /** Whether an image attachment should accompany the message. */
+  /**
+   * The messages the post becomes, in order. One entry unless the article is longer than a
+   * single MAX message, in which case the whole text is continued across several.
+   */
+  chunks: string[];
+  /** Whether the cover should ride on the first message. */
   attachCover: boolean;
 };
 
 /**
+ * Splits a post into chunks no longer than `limit`, at paragraph boundaries.
+ *
+ * This is how MAX gets the whole article: `POST /messages` documents `text` as "до 4000
+ * символов", and the platform has no long-form article object to hand the overflow to — the
+ * attachment types it accepts are image, video, audio, file, sticker, contact, keyboard, share
+ * and location. So a story longer than one message is continued rather than cut, and each
+ * message ends on a paragraph boundary: a message that stops mid-sentence reads as a truncated
+ * one, which is the impression this exists to avoid.
+ *
+ * Only a single paragraph longer than a whole message is cut by character, and that cut is
+ * entity-safe — the body is escaped by this point, and half an `&amp;` is not an entity MAX
+ * accepts.
+ */
+export function chunkForMessenger(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text];
+
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const paragraph of text.split("\n\n")) {
+    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (candidate.length <= limit) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+
+    if (paragraph.length <= limit) {
+      current = paragraph;
+      continue;
+    }
+
+    // A paragraph longer than a message on its own. Cut it and keep the remainder as the
+    // paragraph to pack from — dropping it is the one thing chunking is meant to avoid.
+    let rest = paragraph;
+    while (rest.length > limit) {
+      const piece = cutWithoutSplittingEntity(rest, limit);
+      // A pathological input — an entity longer than the limit — must not loop for ever.
+      const safePiece = piece.length > 0 ? piece : rest.slice(0, limit);
+      chunks.push(safePiece);
+      rest = rest.slice(safePiece.length).replace(/^\s+/, "");
+    }
+    current = rest;
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+/**
  * Decides how a post reaches MAX.
  *
- * Simpler than Telegram's because MAX accepts a message and an attachment in one
- * call, so there is no caption limit to dodge and no reason to split. Only the
- * 4000-character ceiling applies, past which the same teaser is used.
+ * One message when it fits, several when it does not, and the full text either way. The
+ * cover is attached to the **first** message, so the post opens with the picture and the
+ * headline and continues underneath, which is what "пост с обложкой" means on this platform:
+ * MAX takes `text` and `attachments` in a single call, so unlike Telegram there is no caption
+ * to fit and no reason to shorten anything.
  */
 export function planMaxPost(
   post: MessengerPost,
   { hasCover = true }: PlanOptions = {},
 ): MaxPlan {
-  if (post.text.length <= MAX_MESSAGE_LIMIT) {
-    return { text: post.text, truncated: false, attachCover: hasCover };
-  }
-
-  return { text: cutForReading(post), truncated: true, attachCover: hasCover };
+  return {
+    chunks: chunkForMessenger(post.text, MAX_MESSAGE_LIMIT),
+    attachCover: hasCover,
+  };
 }

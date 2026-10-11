@@ -29,6 +29,8 @@ import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
 const MAX_API_BASE = "https://platform-api2.max.ru";
 
 export type MaxArticle = {
+  /** Database id, for the log line only — a repost that misbehaves has to be findable. */
+  id?: string;
   title: string;
   contentHtml: string;
   slug: string;
@@ -44,8 +46,10 @@ export type MaxConfig = {
 
 export type MaxPublishResult = {
   ok: boolean;
-  /** Id of the posted message, when MAX returned one. */
+  /** Id of the first message that landed, for the operator to look it up by. */
   messageId?: string | null;
+  /** Every id the post produced, in order. More than one when the story needed several messages. */
+  messageIds?: string[];
   summary?: string;
   warning?: string;
   error?: string;
@@ -313,11 +317,51 @@ async function sendWithAttachment(
   }
 }
 
+/** Removes one message. Used only to undo a post that could not be finished. */
+async function deleteMessage(config: MaxConfig, messageId: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${MAX_API_BASE}/messages?message_id=${encodeURIComponent(messageId)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: config.token },
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How long to wait between the messages of a multi-part post.
+ *
+ * MAX documents a limit of two messages a second in one chat and asks the sender to queue or
+ * delay. 700 ms is comfortably inside it, and the cost of being wrong is a 429 in the middle
+ * of a published article.
+ */
+const MAX_SEND_GAP_MS = 700;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * Publishes an article to the configured MAX channel.
  *
- * Never throws. A missing token is a short "not configured" result rather than an
- * error, because that is the normal state and an article must not be blocked by it.
+ * **The whole article, not a teaser.** MAX takes `text` and `attachments` in one call, so
+ * there is no caption to fit and the format is the one the site uses everywhere else: the
+ * headline, the body, the source line and the rubric. A story longer than the platform's
+ * 4000-character message limit is continued in further messages — chunked at paragraph
+ * boundaries and spaced by `MAX_SEND_GAP_MS` — rather than cut to an announcement. The cover
+ * rides on the first message.
+ *
+ * **All of it or none of it.** A failure after the first message would leave the channel with
+ * the beginning of a story whose link is in the part that never arrived, which is worse than
+ * no post at all: the messages already sent are deleted and the caller is told the post failed.
+ * If even that cleanup fails, the warning names the ids still up so an operator can remove them.
+ *
+ * Never throws. A missing token is a short "not configured" result rather than an error,
+ * because that is the normal state and an article must not be blocked by it.
  */
 export async function publishArticleToMax(
   article: MaxArticle,
@@ -337,12 +381,19 @@ export async function publishArticleToMax(
 
     const plan = planMaxPost(post, { hasCover: Boolean(article.coverImage) });
 
+    console.log(
+      `[max] публикация: статья ${article.id ?? "без id"} «${article.slug}», обложка: ${
+        article.coverImage ?? "нет"
+      }, текста ${post.text.length} символов, сообщений ${plan.chunks.length}`,
+    );
+
     let attachmentToken: string | null = null;
     let warning: string | undefined;
 
     if (plan.attachCover && article.coverImage) {
       try {
         attachmentToken = await uploadCover(config, article.coverImage);
+        console.log("[max] обложка загружена");
       } catch (error) {
         // The post is still worth sending without the picture.
         warning = `Обложка не отправлена: ${
@@ -352,16 +403,57 @@ export async function publishArticleToMax(
       }
     }
 
-    const sent = await sendWithAttachment(config, plan.text, attachmentToken);
+    const messageIds: string[] = [];
+
+    for (const [index, chunk] of plan.chunks.entries()) {
+      // The first message goes immediately; the rest respect the two-a-second limit.
+      if (index > 0) await sleep(MAX_SEND_GAP_MS);
+
+      let sent: { messageId: string | null };
+      try {
+        // The picture belongs to the opening message, so the post reads as one thing: a cover
+        // and the headline it illustrates, continued underneath.
+        sent = await sendWithAttachment(config, chunk, index === 0 ? attachmentToken : null);
+      } catch (error) {
+        const rolledBack = await Promise.all(messageIds.map((id) => deleteMessage(config, id)));
+        const left = messageIds.filter((_, position) => !rolledBack[position]);
+        const reason = error instanceof Error ? error.message : "неизвестная ошибка";
+
+        console.warn(`[max] сообщение ${index + 1} из ${plan.chunks.length} не ушло: ${reason}`);
+
+        return {
+          ok: false,
+          messageId: messageIds[0] ?? null,
+          messageIds,
+          error: `MAX не принял публикацию: ${reason}`,
+          ...(left.length > 0
+            ? {
+                warning: `Часть поста осталась в канале и удалить её не удалось — уберите вручную: ${left.join(", ")}.`,
+              }
+            : {}),
+        };
+      }
+
+      if (sent.messageId) messageIds.push(sent.messageId);
+      console.log(
+        `[max] сообщение ${index + 1}/${plan.chunks.length} → ${sent.messageId ?? "id не вернулся"}, ${chunk.length} символов`,
+      );
+    }
+
+    const summary =
+      plan.chunks.length > 1
+        ? `MAX: публикация ${plan.chunks.length} сообщениями${attachmentToken ? " с обложкой" : ""}.`
+        : attachmentToken
+          ? "MAX: публикация с обложкой."
+          : "MAX: публикация без обложки.";
+
+    console.log(`[max] готово: ${summary}${warning ? ` Предупреждение: ${warning}` : ""}`);
 
     return {
       ok: true,
-      messageId: sent.messageId,
-      summary: plan.truncated
-        ? "MAX: анонс со ссылкой на полный текст."
-        : attachmentToken
-          ? "MAX: публикация с обложкой."
-          : "MAX: публикация без обложки.",
+      messageId: messageIds[0] ?? null,
+      messageIds,
+      summary,
       ...(warning ? { warning } : {}),
     };
   } catch (error) {
@@ -369,6 +461,27 @@ export async function publishArticleToMax(
     console.warn(`[max] публикация не выполнена: ${message}`);
     return { ok: false, error: message };
   }
+}
+
+/**
+ * Removes messages this bot posted, and reports the ids it could not remove.
+ *
+ * Exported for the settings page's test button: a probe that publishes a real article has to be
+ * able to put the channel back as it found it, and the deletion is the same call the rollback
+ * uses — one implementation, so a change to it cannot fix one and break the other.
+ */
+export async function removeMaxMessages(messageIds: readonly string[]): Promise<string[]> {
+  const config = await configSource();
+  if (!config.token) return [...messageIds];
+
+  const failed: string[] = [];
+  for (const [index, id] of messageIds.entries()) {
+    // Spaced like the sends: the platform's two-a-second limit covers every method on a chat,
+    // not only the ones that publish.
+    if (index > 0) await sleep(MAX_SEND_GAP_MS);
+    if (!(await deleteMessage(config, id))) failed.push(id);
+  }
+  return failed;
 }
 
 /**

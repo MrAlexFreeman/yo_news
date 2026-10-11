@@ -139,6 +139,17 @@ model Article {
   ///
   /// Appended at the end for the same SQLite reason as `vkPostId` above.
   autoRelatedArticle Boolean   @default(true)
+  /// The id MAX returned for this story's last post, if any.
+  ///
+  /// Present for the same reason as `vkPostId`: a repost that happened once must not happen
+  /// again. The guard in front of it is the transition into `published`, which already stops a
+  /// save of a published story from reposting — but a story taken back to draft and published
+  /// a second time crosses that transition again, and storing what MAX returned turns "has this
+  /// gone out already?" from a guess about editor behaviour into a fact read off the row.
+  ///
+  /// The last of a multi-message post is what is kept: it is the one whose chunk carries the
+  /// source line and the rubric, so it identifies the post a reader would find.
+  maxPostId   String?
   tags        ArticleTag[]
 
   @@index([status, publishedAt])
