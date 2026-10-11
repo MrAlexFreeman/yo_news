@@ -246,6 +246,35 @@ async function callMax<T>(
 }
 
 /**
+ * The attachment token out of an upload answer.
+ *
+ * **Measured, and neither response is the documented shape.** `/uploads?type=image` answers
+ * `{"url":"https://iu.oneme.ru/uploadImage?r=…"}` — a URL and nothing else — and posting the
+ * bytes to that URL answers `{"photos":{"0":{"token":"…"}}}`. The token is nested one level
+ * inside a numeric map.
+ *
+ * The first version of this read a top-level `token` from either answer, found none, and threw
+ * "MAX не вернул токен загруженной обложки" on a perfectly good upload — so the picture was
+ * dropped from every post and the log blamed MAX. Kept as a pure function so the shapes above
+ * are asserted rather than assumed.
+ */
+export function readMaxUploadToken(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+
+  const record = payload as { token?: unknown; photos?: unknown };
+  if (typeof record.token === "string" && record.token.length > 0) return record.token;
+
+  if (record.photos && typeof record.photos === "object") {
+    for (const value of Object.values(record.photos as Record<string, unknown>)) {
+      const token = (value as { token?: unknown } | null)?.token;
+      if (typeof token === "string" && token.length > 0) return token;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Uploads the cover and returns the token to attach it by.
  *
  * Two calls, in this order: ask for a URL, then put the bytes on it. The URL is good
@@ -277,12 +306,15 @@ async function uploadCover(config: MaxConfig, coverImage: string): Promise<strin
     throw new Error(`загрузка обложки в MAX не удалась: HTTP ${uploaded.status}`);
   }
 
-  // The token from the first response is the one to attach by; a response that
-  // omits it can still be usable only if the endpoint echoed a new one.
-  const echoed = (await uploaded.json().catch(() => null)) as { token?: string } | null;
-  const token = echoed?.token ?? ticket.token;
+  // Both answers are read with the same function: the token arrives in the upload's response,
+  // and consulting the ticket too costs nothing and survives MAX moving it back.
+  const payload = (await uploaded.json().catch(() => null)) as unknown;
+  const token = readMaxUploadToken(payload) ?? readMaxUploadToken(ticket);
+
   if (!token) {
-    throw new Error("MAX не вернул токен загруженной обложки");
+    throw new Error(
+      `MAX не вернул токен загруженной обложки (ответ: ${JSON.stringify(payload).slice(0, 160)})`,
+    );
   }
   return token;
 }

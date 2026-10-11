@@ -50,6 +50,7 @@ import {
   isMaxCertificateError,
   maxNotConfigured,
   publishArticleToMax,
+  readMaxUploadToken,
   resetMaxConfigSource,
   setMaxConfigSource,
 } from "../src/lib/max-publisher";
@@ -1311,7 +1312,8 @@ function stubMaxFetch(options: { failOnMessage?: number } = {}) {
 
     if (url === MAX_UPLOAD_URL) {
       maxCalls.push({ kind: "upload", json: null, form: init?.body as FormData, at: Date.now() });
-      return new Response(JSON.stringify({ token: "cover-token" }), {
+      // The measured shape: the token is nested one level inside a numeric map, not top-level.
+      return new Response(JSON.stringify({ photos: { "0": { token: "cover-token" } } }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -1482,6 +1484,32 @@ try {
       maxCalls.every((call) => call.kind === "message") &&
       postedMessages()[0]?.attachments === undefined,
     `вызовов: ${maxCalls.map((call) => call.kind).join(", ")}`,
+  );
+
+  /*
+    The token's real shape, measured against the live endpoint.
+
+    `/uploads` answers `{url}` and the upload answers `{"photos":{"0":{"token":"…"}}}`. The
+    first version read a top-level `token` and found none, so the cover was dropped from every
+    post while the log blamed MAX — which is why the shapes are asserted rather than assumed.
+  */
+  check(
+    "MAX: токен обложки читается из измеренной формы ответа",
+    readMaxUploadToken({ photos: { "0": { token: "tok-nested" } } }) === "tok-nested" &&
+      readMaxUploadToken({ token: "tok-flat" }) === "tok-flat" &&
+      readMaxUploadToken({ photos: {} }) === null &&
+      readMaxUploadToken({ url: "https://iu.oneme.ru/x" }) === null &&
+      readMaxUploadToken(null) === null &&
+      readMaxUploadToken("строка") === null,
+    JSON.stringify(readMaxUploadToken({ photos: { "0": { token: "tok-nested" } } })),
+  );
+
+  check(
+    "MAX: вложенный токен доезжает до сообщения как вложение",
+    // The stub answers with the measured nested shape, so the attachment can only be built if
+    // the token is read out of it — the check above would fail on a regression to a flat read.
+    maxLongResult.ok === true,
+    "обложка читается из вложенного ответа",
   );
 } finally {
   globalThis.fetch = realFetch;
