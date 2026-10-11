@@ -843,15 +843,20 @@ export async function readWallPostAttachments(postId: string): Promise<string[] 
   }
 }
 
-/** Removes a wall post. Used by the test button so a probe does not stay on the wall. */
+/**
+ * Removes a wall post.
+ *
+ * Used by the test button so a probe does not stay on the wall, and by the deduplication script
+ * for the copies a burst left behind.
+ */
 export async function deleteWallPost(postId: string): Promise<boolean> {
   try {
     await callVk<number>("wall.delete", { owner_id: vkOwnerId(), post_id: postId });
-    log(`тестовый пост ${postId} удалён со стены`);
+    log(`пост ${postId} удалён со стены`);
     return true;
   } catch (error) {
     logError(
-      `тестовый пост ${postId} удалить не удалось:`,
+      `пост ${postId} удалить не удалось:`,
       error instanceof Error ? error.message : error,
     );
     return false;
