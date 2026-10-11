@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { maxNotConfigured, publishArticleToMax, removeMaxMessages } from "@/lib/max-publisher";
+import { maxNotConfigured, publishArticleToMax, removeMaxMessages, setMaxConfigSource } from "@/lib/max-publisher";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -49,6 +49,18 @@ export async function POST(request: Request) {
   const keep = body.keep === true;
 
   const { getSetting } = await import("@/lib/settings");
+
+  /*
+    The same installation the article action makes, and it has to happen here too.
+
+    The publisher reads its credentials from a replaceable source that defaults to the
+    environment — `setMaxConfigSource` is what points it at the settings table. The article
+    path installs it before publishing; a route that forgot to would report "MAX не настроен"
+    while the settings page showed the token as set, which is exactly what this button did
+    before the line below was added.
+  */
+  setMaxConfigSource();
+
   const config = {
     token: (await getSetting("MAX_BOT_TOKEN")).trim(),
     chatId: (await getSetting("MAX_CHAT_ID")).trim(),

@@ -82,31 +82,56 @@ export async function maxConfig(): Promise<MaxConfig> {
 }
 
 /**
+ * Credentials from the environment alone.
+ *
+ * Separate from `maxConfig` because it must be reachable from a plain Node process, where
+ * `@/lib/settings` throws on import — and it is the first half of the default lookup below.
+ */
+function envMaxConfig(): MaxConfig {
+  return {
+    token: process.env.MAX_BOT_TOKEN?.trim() ?? "",
+    chatId: process.env.MAX_CHAT_ID?.trim() ?? "",
+    enabled: parseEnabled(process.env.MAX_ENABLED ?? "", DEFAULT_SYNDICATION_ENABLED.max),
+  };
+}
+
+/**
  * The config lookup, replaceable — see `setTelegramConfigSource`.
  *
- * The default is the environment rather than `maxConfig`, for the same reason:
- * `maxConfig` reaches `@/lib/settings`, which is `server-only` and throws on import
- * outside a Server Component. A default that only worked in production would make
- * every unit test of this module need its own config injected.
+ * **The default is the environment and then the settings table**, and the second half is not
+ * decoration. It used to be the environment alone, on the reasoning that `maxConfig` reaches
+ * `@/lib/settings`, which is `server-only` and throws outside the Next runtime — true, and the
+ * fallback below is written around it.
+ *
+ * What that cost, measured: a route that forgot to call `setMaxConfigSource` reported
+ * «MAX не настроен: задайте токен бота» while the settings page showed the token as set and
+ * masked. The article path installs the source and worked; the settings button did not, and the
+ * message pointed at a credential that was already there. A publisher that can find its own
+ * credentials cannot be mis-wired this way, so it now does.
  */
-let configSource: () => Promise<MaxConfig> = async () => ({
-  token: process.env.MAX_BOT_TOKEN?.trim() ?? "",
-  chatId: process.env.MAX_CHAT_ID?.trim() ?? "",
-  enabled: parseEnabled(process.env.MAX_ENABLED ?? "", DEFAULT_SYNDICATION_ENABLED.max),
-});
+async function resolveMaxConfig(): Promise<MaxConfig> {
+  const fromEnv = envMaxConfig();
+  if (fromEnv.token) return fromEnv;
+
+  try {
+    return await maxConfig();
+  } catch {
+    // Outside the Next runtime — a plain tsx test, where the settings module refuses to load.
+    // The environment answer stands, and tests install their own source anyway.
+    return fromEnv;
+  }
+}
+
+let configSource: () => Promise<MaxConfig> = resolveMaxConfig;
 
 /** Points the publisher at the settings table. Called once, from the action. */
 export function setMaxConfigSource(resolve: () => Promise<MaxConfig> = maxConfig): void {
   configSource = resolve;
 }
 
-/** Test-only: restores the environment-based lookup. */
+/** Test-only: restores the environment-and-settings lookup. */
 export function resetMaxConfigSource(): void {
-  configSource = async () => ({
-    token: process.env.MAX_BOT_TOKEN?.trim() ?? "",
-    chatId: process.env.MAX_CHAT_ID?.trim() ?? "",
-    enabled: parseEnabled(process.env.MAX_ENABLED ?? "", DEFAULT_SYNDICATION_ENABLED.max),
-  });
+  configSource = resolveMaxConfig;
 }
 
 /**
