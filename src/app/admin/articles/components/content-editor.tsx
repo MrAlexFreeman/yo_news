@@ -16,6 +16,7 @@ import {
   Italic,
   Link as LinkIcon,
   List,
+  Loader2,
   ListOrdered,
   Newspaper,
   Quote,
@@ -46,6 +47,7 @@ import {
 } from "@/app/admin/articles/components/link-dialog";
 import type { MediaItem } from "@/lib/article-media";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
+import { isMailruPublicLink } from "@/lib/mailru-cloud";
 import { cn } from "@/lib/utils";
 
 /**
@@ -351,6 +353,8 @@ export function ContentEditor({
 }: ContentEditorProps) {
   const labelId = useId();
   const [toolbarError, setToolbarError] = useState<string | null>(null);
+  /** Progress for a long job — an import from Облако Mail.ru takes a minute. */
+  const [videoBusy, setVideoBusy] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
   const [entityOpen, setEntityOpen] = useState(false);
@@ -553,10 +557,22 @@ export function ContentEditor({
 
   function insertVideo(editorInstance: NonNullable<typeof editor>) {
     const answer = window.prompt(
-      "Ссылка на видео (YouTube, Rutube или VK Видео):",
+      "Ссылка на видео (YouTube, Rutube, VK Видео или публичная ссылка Облака Mail.ru):",
       "https://",
     );
     if (answer === null) return;
+
+    /*
+      Облако Mail.ru is handled differently from every other provider, and the difference is
+      not a preference: `cloud.mail.ru` refuses to be framed — measured, `X-Frame-Options:
+      SAMEORIGIN` and a `frame-ancestors` list without this site in it — so there is no embed
+      to build. The video is moved to VK instead, which takes a minute, and the editor is
+      told so rather than left wondering why nothing happened.
+    */
+    if (isMailruPublicLink(answer)) {
+      void importFromMailru(editorInstance, answer);
+      return;
+    }
 
     // Built through the vetted provider list rather than interpolated into a src:
     // buildVideoEmbed is what decides a host is one of ours.
@@ -576,6 +592,64 @@ export function ContentEditor({
       .focus()
       .insertContent({ type: "videoEmbed", attrs: { src } })
       .run();
+  }
+
+  /**
+   * Moves a video out of Облако Mail.ru and inserts the VK player.
+   *
+   * Two round trips on the server — Mail.ru dispatcher, then VK — plus the file itself, so
+   * the editor waits. `videoBusy` is the only thing on screen that says so, which is why it
+   * is a separate state from `toolbarError`: a message that reads like an error while the
+   * work is going fine teaches an editor to distrust the messages.
+   */
+  async function importFromMailru(
+    editorInstance: NonNullable<typeof editor>,
+    url: string,
+  ) {
+    setToolbarError(null);
+    setVideoBusy("Переносим видео в ВК — это может занять минуту…");
+
+    try {
+      const response = await fetch("/api/admin/video/import-mailru", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+
+      const payload = (await response.json()) as {
+        videoUrl?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.videoUrl) {
+        setToolbarError(payload.error ?? "Не удалось перенести видео в ВК.");
+        return;
+      }
+
+      // The address VK returned goes through the same provider list as a pasted one, so the
+      // node can only ever carry a src this site already trusts.
+      const embed = buildVideoEmbed(payload.videoUrl);
+      const src = embed
+        ? new RegExp(`<iframe[^>]*\\ssrc="([^"]+)"`).exec(embed)?.[1]
+        : undefined;
+
+      if (!src) {
+        setToolbarError(
+          "ВК вернул ссылку, которую редактор не умеет встраивать. Вставьте адрес ролика вручную.",
+        );
+        return;
+      }
+
+      editorInstance
+        .chain()
+        .focus()
+        .insertContent({ type: "videoEmbed", attrs: { src } })
+        .run();
+    } catch {
+      setToolbarError("Не удалось обратиться к серверу загрузки видео.");
+    } finally {
+      setVideoBusy(null);
+    }
   }
 
   function applyAction(action: ToolbarAction) {
@@ -710,6 +784,13 @@ export function ContentEditor({
           <div className="min-h-[30rem]" aria-hidden />
         )}
       </div>
+
+      {videoBusy ? (
+        <p role="status" className="flex items-center gap-1.5 text-sm text-neutral-500">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          {videoBusy}
+        </p>
+      ) : null}
 
       {toolbarError ? (
         <p role="alert" className="text-sm text-red-600">

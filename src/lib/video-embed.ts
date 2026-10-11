@@ -59,7 +59,20 @@ const PROVIDERS: readonly Provider[] = [
   },
   {
     label: "VK Видео",
-    hosts: ["vk.com", "www.vk.com", "m.vk.com", "vk.ru", "www.vk.ru", "m.vk.ru"],
+    hosts: [
+        "vk.com",
+        "www.vk.com",
+        "m.vk.com",
+        "vk.ru",
+        "www.vk.ru",
+        "m.vk.ru",
+        // The player host VK has been moving links to. A pasted vkvideo address carries
+        // the same ids and is built into the same player URL below.
+        "vkvideo.ru",
+        "www.vkvideo.ru",
+        "vkvideo.com",
+        "www.vkvideo.com",
+      ],
     build: (url: URL): string | null => {
       const fromQuery = url.searchParams.get("z");
       const fromPath = url.pathname.match(/video(-?\d+)_(\d+)/)?.[0];
@@ -133,9 +146,26 @@ export function ensureNoVkAutoplay(url: string): string {
 }
 
 /** Hosts that serve the VK player page this normalises. */
-const VK_PLAYER_HOSTS = ["vk.com", "www.vk.com", "vk.ru", "www.vk.ru"] as const;
+const VK_PLAYER_HOSTS = [
+  "vk.com",
+  "www.vk.com",
+  "vk.ru",
+  "www.vk.ru",
+  // Same player, moved address. Listed so a pasted vkvideo frame gets its autoplay pinned
+  // like any other, rather than slipping through the normaliser.
+  "vkvideo.ru",
+  "www.vkvideo.ru",
+  "vkvideo.com",
+  "www.vkvideo.com",
+] as const;
 
-/** Hosts whose iframes survive sanitising. Mirrors PROVIDERS. */
+/**
+ * Hosts whose iframes survive sanitising.
+ *
+ * The single source of truth for "which players may be framed": the sanitiser imports this
+ * rather than keeping a copy, so adding a provider here cannot leave the hook refusing the
+ * iframe the editor just built.
+ */
 export const VIDEO_EMBED_HOSTS = [
   "www.youtube.com",
   "youtube.com",
@@ -146,6 +176,12 @@ export const VIDEO_EMBED_HOSTS = [
   "www.vk.com",
   "vk.ru",
   "www.vk.ru",
+  // vkvideo is where VK has been moving shared links. The ids in such an address are the
+  // same pair, and `buildVkPlayerUrl` turns them into the same vk.com player below.
+  "vkvideo.ru",
+  "www.vkvideo.ru",
+  "vkvideo.com",
+  "www.vkvideo.com",
 ] as const;
 
 /** True when `url` is an https embed we recognise. */

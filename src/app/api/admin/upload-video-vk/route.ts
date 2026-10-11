@@ -6,20 +6,12 @@ import {
   MalformedUploadError,
   UploadTooLargeError,
   discardTempFile,
-  fileUploadStream,
   isVideoFilename,
   streamFirstFileToDisk,
 } from "@/lib/multipart-stream";
-import { getSetting } from "@/lib/settings";
 import { UPLOAD_DIR } from "@/lib/upload-dir";
-import { VkVideoError, assertVkUploadUrl, callVkApi } from "@/lib/vk-video";
-import {
-  buildUploadName,
-  extractUploadUrl,
-  extractVideoIds,
-  publicVideoUrl,
-} from "@/lib/vk-video-format";
-import { vkCommunityId, vkOwnerId } from "@/lib/vk-publisher";
+import { VkVideoError } from "@/lib/vk-video";
+import { requireVkVideoConfig, uploadVideoFileToVk } from "@/lib/vk-video-upload";
 
 export const runtime = "nodejs";
 
@@ -33,6 +25,10 @@ export const runtime = "nodejs";
  * for this path, and `request.formData()` on that body is a couple of hundred
  * megabytes of heap on a 709 MB box — enough to take the site down rather than fail
  * one request.
+ *
+ * The VK half — reserve, stream, read back the ids — lives in `lib/vk-video-upload.ts`,
+ * shared with the route that imports a video from Облако Mail.ru. What is here is only the
+ * part that differs: the file arrives from the browser instead of from another host.
  */
 
 /** Matches the nginx `client_max_body_size` for this path. */
@@ -53,24 +49,7 @@ export async function POST(request: Request) {
   let tempPath: string | null = null;
 
   try {
-    const token = await getSetting("VK_ACCESS_TOKEN");
-    if (!token) {
-      return NextResponse.json(
-        {
-          error:
-            "Не задан токен ВК. Укажите его в разделе «Настройки» (/admin/settings) или в .env.",
-        },
-        { status: 503 },
-      );
-    }
-
-    const community = vkCommunityId();
-    if (!community) {
-      return NextResponse.json(
-        { error: "Не задан VK_COMMUNITY_ID в .env — некуда загружать видео." },
-        { status: 503 },
-      );
-    }
+    const { token, community } = await requireVkVideoConfig();
 
     const upload = await streamFirstFileToDisk(request, {
       maxBytes: MAX_BYTES,
@@ -96,84 +75,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // Step 1: reserve the video record. VK answers with a one-off upload address.
-    const saved = await callVkApi<unknown>(
-      "video.save",
+    const result = await uploadVideoFileToVk({
       token,
-      {
-        group_id: community,
-        name: buildUploadName(),
-        is_private: 0,
-        wallpost: 0,
-        // No description: it is filled in by video.edit when the article publishes,
-        // because at upload time the headline is usually still being written.
-        no_comments: 1,
-      },
-    );
-
-    const uploadUrl = assertVkUploadUrl(extractUploadUrl(saved));
-
-    // Step 2: send the bytes. Streamed from the temp file, never buffered whole.
-    //
-    // `duplex: "half"` is required by undici for any request body that is a stream
-    // rather than a fully-formed buffer, and the cast is what lets it through
-    // TypeScript's BodyInit — Node's ReadStream is a valid undici body that the DOM
-    // lib does not know about.
-    const uploadResponse = await fetch(uploadUrl, {
-      method: "POST",
-      body: fileUploadStream(upload.filePath) as unknown as BodyInit,
-      headers: { "Content-Type": "application/octet-stream" },
-      duplex: "half",
-      signal: AbortSignal.timeout(30 * 60_000),
-    } as RequestInit);
-
-    if (!uploadResponse.ok) {
-      throw new VkVideoError(
-        `ВК отклонил файл: HTTP ${uploadResponse.status}`,
-        "upload",
-      );
-    }
-
-    // VK answers 200 with a plain-number body on success; anything in `error` is
-    // a real failure even on a 200.
-    const uploadedBody = await uploadResponse.text().catch(() => "");
-    if (uploadedBody.trim().startsWith("{")) {
-      const parsed = JSON.parse(uploadedBody) as {
-        error?: { error_msg?: string; error_code?: number };
-      };
-      if (parsed.error) {
-        throw new VkVideoError(
-          `ВК отклонил файл: ${parsed.error.error_msg ?? "неизвестная ошибка"} (${
-            parsed.error.error_code ?? "?"
-          })`,
-          "upload",
-        );
-      }
-    }
-
-    // The ids sometimes come back from video.save and sometimes only after the
-    // upload, so both are consulted before giving up.
-    const ids = extractVideoIds(saved) ?? (await resolveIds(token, community));
-
-    if (!ids?.videoId) {
-      throw new VkVideoError(
-        "ВК принял файл, но не вернул id видео — ссылку собрать не из чего.",
-        "save",
-      );
-    }
-
-    console.log(
-      `[vk-video] ${publicVideoUrl(ids.ownerId || vkOwnerId(), ids.videoId)} ← ${
-        upload.filename
-      }, ${Math.round(upload.size / 1024 / 1024)} МБ`,
-    );
-
-    return NextResponse.json({
-      success: true,
-      videoUrl: publicVideoUrl(ids.ownerId || vkOwnerId(), ids.videoId),
-      videoId: ids.videoId,
-      ownerId: ids.ownerId || vkOwnerId(),
+      community,
+      filePath: upload.filePath,
+      label: `${upload.filename}, ${Math.round(upload.size / 1024 / 1024)} МБ`,
     });
+
+    return NextResponse.json({ success: true, ...result });
   } catch (error) {
     if (error instanceof UploadTooLargeError) {
       return NextResponse.json({ error: error.message }, { status: 413 });
@@ -200,24 +109,3 @@ export async function POST(request: Request) {
     if (tempPath) await discardTempFile(tempPath);
   }
 }
-
-/** Asks VK which videos the community has, to recover ids when save omitted them. */
-async function resolveIds(
-  token: string,
-  community: string,
-): Promise<{ videoId: string; ownerId: string } | null> {
-  const listed = await callVkApi<unknown>(
-    "video.get",
-    token,
-    { owner_id: community, count: 1, v: VK_API_VERSION },
-    15_000,
-  );
-
-  const items = Array.isArray(listed) ? listed : [];
-  const first = items[0] as Record<string, unknown> | undefined;
-  if (!first || first.video_id === undefined) return null;
-
-  return { videoId: String(first.video_id), ownerId: String(first.owner_id ?? community) };
-}
-
-const VK_API_VERSION = "5.199";

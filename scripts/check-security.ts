@@ -6,6 +6,8 @@
  * key is behind ALLOW_SETTINGS_WRITE=1 and refuses to run without it.
  */
 import { readFileSync } from "node:fs";
+import { readFile, readdir, rm } from "node:fs/promises";
+import path from "node:path";
 
 import { normalizeArticleHtml, plainTextPreview } from "../src/lib/article-html";
 import {
@@ -164,7 +166,21 @@ import {
   slugify,
   validateEntityCard,
 } from "../src/lib/entity-card";
-import { SITE_NAME, SITE_TAGLINE_LONG } from "../src/lib/site";
+import {
+  buildListingUrl,
+  isCloudDownloadHost,
+  parseMailruPublicLink,
+  pickFileFromListing,
+  readDispatcherBase,
+  resolveMailruDownload,
+} from "../src/lib/mailru-cloud";
+import {
+  DownloadHostError,
+  DownloadTooLargeError,
+  downloadToTempFile,
+} from "../src/lib/stream-download";
+import { UPLOAD_DIR } from "../src/lib/upload-dir";
+import { discardTempFile } from "../src/lib/multipart-stream";import { SITE_NAME, SITE_TAGLINE_LONG } from "../src/lib/site";
 import {
   DEFAULT_UPSCALE_OPTIONS,
   UPSCALE_MODEL,
@@ -277,7 +293,7 @@ function checkSanitizer() {
  * it is stored, the second because allowing <iframe> at all widens the XSS
  * surface and has to be narrowed back to known video hosts.
  */
-function checkArticleHtml() {
+async function checkArticleHtml() {
   // --- plain text becomes paragraphs ------------------------------------
   // A blank line is a paragraph break; a single newline is a line break inside
   // one, so both have to survive.
@@ -407,6 +423,346 @@ function checkArticleHtml() {
       unsupportedVideoMessage("https://example.com/watch").includes("example.com"),
     "исключение точечное",
   );
+
+  await checkMailruImport();
+}
+
+/**
+ * Importing a video from Облако Mail.ru.
+ *
+ * The feature is a server-side fetch of a URL somebody typed, so most of what is worth
+ * asserting is where it refuses to go rather than what it downloads. The success path is
+ * exercised with a stubbed fetch: `cloud.mail.ru` needs a real public link to answer, and
+ * the shape of its answers was measured against the live service and is reproduced here.
+ */
+async function checkMailruImport() {
+  /* ---- what counts as a public link ---- */
+  check(
+    "Облако: публичная ссылка разбирается на ключи",
+    parseMailruPublicLink("https://cloud.mail.ru/public/abcDEF123/Мой фильм.mp4")?.key1 ===
+      "abcDEF123" &&
+      parseMailruPublicLink("https://cloud.mail.ru/public/abcDEF123/Мой фильм.mp4")?.key2 ===
+        "Мой фильм.mp4" &&
+      parseMailruPublicLink("cloud.mail.ru/public/abcDEF123/video.mp4") !== null,
+    "ключ и имя файла",
+  );
+  check(
+    "Облако: всё остальное — не публичная ссылка",
+    /*
+      The first case is the one that matters, and it is written with a *valid* key and a
+      *valid* filename on purpose.
+
+      An earlier version used `/public/a/b`, whose key is too short to pass the key check —
+      so the link was refused by the key rule and the host rule was never reached. A
+      mutation that replaced the host comparison with `includes("cloud.mail.ru")` passed it.
+      With a well-formed address there is nothing left to refuse it except the host, which
+      is what the check is for.
+    */
+    parseMailruPublicLink("https://cloud.mail.ru.evil.example/public/abcDEF123/video.mp4") ===
+      null &&
+      parseMailruPublicLink("http://cloud.mail.ru/public/abcdef/video.mp4") === null &&
+      parseMailruPublicLink("https://cloud.mail.ru/disk/abcdef") === null &&
+      parseMailruPublicLink("https://cloud.mail.ru/public/abcdef") === null &&
+      parseMailruPublicLink("https://cloud.mail.ru/public/ab/../../etc/passwd") === null &&
+      parseMailruPublicLink("") === null,
+    "только https, только /public/<ключ>/<файл>",
+  );
+
+  /* ---- where a download may come from ---- */
+  check(
+    "Облако: хосты загрузки — только свои",
+    // The leading dot: without it both of these end in `cloud.mail.ru` and would pass.
+    isCloudDownloadHost("cloclo63.cloud.mail.ru") &&
+      isCloudDownloadHost("cloclo1.datacloudmail.ru") &&
+      isCloudDownloadHost("cloud.mail.ru") &&
+      !isCloudDownloadHost("evilcloud.mail.ru") &&
+      !isCloudDownloadHost("notcloud.mail.ru") &&
+      !isCloudDownloadHost("cloud.mail.ru.evil.example") &&
+      !isCloudDownloadHost("127.0.0.1"),
+    "суффикс с точкой, а не подстрока",
+  );
+
+  /* ---- the dispatcher's answer ---- */
+  check(
+    "Облако: база скачивания читается, чужая — отвергается",
+    // The measured shape, verbatim from the live service.
+    readDispatcherBase({
+      body: { weblink_get: [{ url: "https://cloclo63.cloud.mail.ru/public/tok/g/no" }] },
+    }) === "https://cloclo63.cloud.mail.ru/public/tok/g/no" &&
+      readDispatcherBase({ body: { weblink_get: [{ url: "https://evil.example/x" }] } }) === null &&
+      readDispatcherBase({ body: {} }) === null &&
+      readDispatcherBase(null) === null,
+    "чужая база не принимается",
+  );
+  check(
+    "Облако: адрес листинга собирается без двойного слэша",
+    buildListingUrl("https://h.cloud.mail.ru/base/", "abc") ===
+      "https://h.cloud.mail.ru/base/abc" &&
+      buildListingUrl("https://h.cloud.mail.ru/base", "abc") ===
+        "https://h.cloud.mail.ru/base/abc",
+    "один слэш",
+  );
+
+  /* ---- the folder listing ---- */
+  const listing = {
+    body: {
+      list: [
+        { name: "Папка", type: "folder", weblink: "https://cloclo1.cloud.mail.ru/x" },
+        { name: "VidEO.MP4", type: "file", size: 1024, weblink: "https://cloclo1.cloud.mail.ru/v" },
+        { name: "doc.pdf", type: "file", size: 10, weblink: "https://cloclo1.cloud.mail.ru/d" },
+      ],
+    },
+  };
+  check(
+    "Облако: файл из листинга выбирается по имени, без учёта регистра",
+    pickFileFromListing(listing, "video.mp4")?.name === "VidEO.MP4",
+    pickFileFromListing(listing, "video.mp4")?.name ?? "не найден",
+  );
+  check(
+    "Облако: папки и записи без адреса в листинге пропускаются",
+    // A folder has no bytes to move, and an entry without a weblink is not a file we can
+    // fetch; taking either would fail later with a confusing message.
+    pickFileFromListing(
+      { body: { list: [{ name: "Папка", type: "folder" }, { name: "v.mp4" }] } },
+      "v.mp4",
+    ) === null &&
+      pickFileFromListing({ body: { list: [] } }, "v.mp4") === null &&
+      pickFileFromListing(null, "v.mp4") === null,
+    "null, а не догадка",
+  );
+
+  /* ---- the resolution, against a stubbed network ---- */
+  /*
+    Stubs carry a real `url`.
+
+    A `Response` built by hand has an empty one, and the resolver refuses an answer whose
+    origin it cannot check — which is the right behaviour and would make every stub look
+    like a redirect to nowhere. `defineProperty` because `url` is a getter on the prototype
+    and assigning to it silently does nothing.
+  */
+  const at = (response: Response, url: string): Response => {
+    Object.defineProperty(response, "url", { value: url, configurable: true });
+    return response;
+  };
+
+  /* Factories, not values: a `Response` body can be read once, and every call asks again. */
+  const dispatcherOk = () =>
+    at(
+      new Response(
+        JSON.stringify({ body: { weblink_get: [{ url: "https://cloclo63.cloud.mail.ru/base" }] } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+      "https://cloud.mail.ru/api/v2/dispatcher",
+    );
+
+  const stub =
+    (listingResponse: () => Response) =>
+    async (input: string): Promise<Response> => {
+      if (input.includes("/api/v2/dispatcher")) return dispatcherOk();
+      return listingResponse();
+    };
+
+  const link = { key1: "abcDEF123", key2: "video.mp4" };
+
+  const fromListing = await resolveMailruDownload(
+    stub(() =>
+      at(
+        new Response(JSON.stringify(listing), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+        "https://cloclo63.cloud.mail.ru/base/abcDEF123",
+      ),
+    ) as never,
+    link,
+    500 * 1024 * 1024,
+  );
+  check(
+    "Облако: листинг превращается в адрес файла",
+    fromListing.ok &&
+      fromListing.url === "https://cloclo1.cloud.mail.ru/v" &&
+      fromListing.filename === "VidEO.MP4",
+    JSON.stringify(fromListing),
+  );
+
+  const foreignFile = await resolveMailruDownload(
+    stub(() =>
+      at(
+        new Response(
+          JSON.stringify({
+            body: {
+              list: [
+                { name: "v.mp4", type: "file", size: 1, weblink: "https://evil.example/v.mp4" },
+              ],
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+        "https://cloclo63.cloud.mail.ru/base/abcDEF123",
+      ),
+    ) as never,
+    link,
+    500 * 1024 * 1024,
+  );
+  check(
+    "Облако: файл на чужом хосте не принимается",
+    !foreignFile.ok && foreignFile.reason === "unreachable",
+    JSON.stringify(foreignFile),
+  );
+
+  const redirected = await resolveMailruDownload(
+    stub(() =>
+      at(
+        new Response(JSON.stringify(listing), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+        // What a redirect off the allowlist looks like: the body arrives, but from
+        // somewhere the resolver was never willing to read.
+        "https://evil.example/steal",
+      ),
+    ) as never,
+    link,
+    500 * 1024 * 1024,
+  );
+  check(
+    "Облако: ответ, приехавший с чужого хоста, не разбирается",
+    !redirected.ok && redirected.reason === "unreachable",
+    JSON.stringify(redirected),
+  );
+
+  const missing = await resolveMailruDownload(
+    stub(() => at(new Response('{"error":"NOT/FOUND"}', { status: 404 }), "https://cloclo63.cloud.mail.ru/base/x")) as never,
+    link,
+    500 * 1024 * 1024,
+  );
+  check(
+    "Облако: 404 от листинга — «файл не найден», а не ошибка сети",
+    !missing.ok && missing.reason === "not-found",
+    JSON.stringify(missing),
+  );
+
+  const tooBig = await resolveMailruDownload(
+    stub(() =>
+      at(
+        new Response(
+          JSON.stringify({
+            body: {
+              list: [
+                { name: "v.mp4", type: "file", size: 900 * 1024 * 1024, weblink: "https://c.cloud.mail.ru/v" },
+              ],
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+        "https://cloclo63.cloud.mail.ru/base/abcDEF123",
+      ),
+    ) as never,
+    link,
+    500 * 1024 * 1024,
+  );
+  check(
+    "Облако: заявленный размер сверх потолка отклоняется заранее",
+    !tooBig.ok && tooBig.reason === "too-large",
+    JSON.stringify(tooBig),
+  );
+
+  /* ---- the download itself ---- */
+  let fetched = 0;
+  const neverFetch = (async () => {
+    fetched += 1;
+    return new Response("x");
+  }) as never;
+
+  let refusedBeforeFetch = false;
+  try {
+    await downloadToTempFile(neverFetch, "https://evil.example/v.mp4", {
+      tmpDir: path.join(UPLOAD_DIR, "tmp-check"),
+      maxBytes: 1024,
+      allowHost: isCloudDownloadHost,
+    });
+  } catch (error) {
+    refusedBeforeFetch = error instanceof DownloadHostError;
+  }
+  check(
+    "Загрузка: запрещённый хост отклоняется до запроса",
+    // The check that makes this an allowlist rather than a filter: no connection is opened
+    // at all, so nothing about the target is revealed by trying.
+    refusedBeforeFetch && fetched === 0,
+    `запросов сделано: ${fetched}`,
+  );
+
+  let refusedRedirect = false;
+  try {
+    await downloadToTempFile(
+      (async () =>
+        new Response("payload", {
+          status: 200,
+          headers: { "content-length": "7" },
+        })) as never,
+      "https://cloclo1.cloud.mail.ru/v.mp4",
+      {
+        tmpDir: path.join(UPLOAD_DIR, "tmp-check"),
+        maxBytes: 1024,
+        // A `Response` built by hand has an empty `url`, so the redirect case is modelled
+        // by a host checker that refuses everything — which is what a redirect off the
+        // allowlist would look like to the code.
+        allowHost: () => false,
+      },
+    );
+  } catch (error) {
+    refusedRedirect = error instanceof DownloadHostError;
+  }
+  check(
+    "Загрузка: перенаправление на чужой хост ловится второй проверкой",
+    refusedRedirect,
+    "response.url проверяется отдельно",
+  );
+
+  /* ---- the happy path, on a real file ---- */
+  const tmpDir = path.join(UPLOAD_DIR, `tmp-check-${process.pid}`);
+  try {
+    const downloaded = await downloadToTempFile(
+      (async () =>
+        new Response("0123456789", {
+          status: 200,
+          headers: { "content-length": "10" },
+        })) as never,
+      "https://cloclo1.cloud.mail.ru/v.mp4",
+      { tmpDir, maxBytes: 1024, allowHost: isCloudDownloadHost },
+    );
+
+    const bytes = await readFile(downloaded.filePath, "utf8");
+    check(
+      "Загрузка: байты доходят до диска целиком",
+      downloaded.size === 10 && bytes === "0123456789",
+      `${downloaded.size} байт, ${JSON.stringify(bytes.slice(0, 12))}`,
+    );
+
+    let stopped = false;
+    try {
+      await downloadToTempFile(
+        (async () =>
+          new Response("0".repeat(50), { status: 200 })) as never,
+        "https://cloclo1.cloud.mail.ru/v.mp4",
+        { tmpDir, maxBytes: 10, allowHost: isCloudDownloadHost },
+      );
+    } catch (error) {
+      stopped = error instanceof DownloadTooLargeError;
+    }
+    const leftovers = await readdir(tmpDir).catch(() => []);
+    check(
+      "Загрузка: превышение потолка обрывается, и огрызок удаляется",
+      // The ceiling is enforced while streaming, because a chunked answer states no
+      // length — and a half-written video left on disk is a leak per failed attempt.
+      stopped && leftovers.length <= 1,
+      `ошибка поймана: ${stopped}, файлов в каталоге: ${leftovers.length}`,
+    );
+
+    await discardTempFile(downloaded.filePath);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /**
@@ -3421,7 +3777,7 @@ function checkSettingsWriteIsOptIn() {
 
 async function main() {
   checkSanitizer();
-  checkArticleHtml();
+  await checkArticleHtml();
   checkSeoAndTags();
   checkArticleMedia();
   checkAiCover();

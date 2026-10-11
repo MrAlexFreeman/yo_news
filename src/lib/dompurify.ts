@@ -1,6 +1,6 @@
 import DOMPurify from "isomorphic-dompurify";
 
-import { ensureNoVkAutoplay } from "@/lib/video-embed";
+import { VIDEO_EMBED_HOSTS, ensureNoVkAutoplay } from "@/lib/video-embed";
 import { ENTITY_LINK_CLASS, ENTITY_SLUG_ATTRIBUTE, slugFromEntityHref } from "@/lib/entity-card";
 import { siteUrl } from "@/lib/site";
 
@@ -57,18 +57,14 @@ function hasDataUri(node: unknown): boolean {
   });
 }
 
-/** Hosts whose players may be framed. Mirrors PROVIDERS in video-embed.ts. */
-const VIDEO_EMBED_HOSTS: readonly string[] = [
-  "www.youtube.com",
-  "youtube.com",
-  "youtube-nocookie.com",
-  "rutube.ru",
-  "www.rutube.ru",
-  "vk.com",
-  "www.vk.com",
-  "vk.ru",
-  "www.vk.ru",
-];
+/*
+  Hosts whose players may be framed, imported rather than mirrored.
+
+  This list used to be a copy of `VIDEO_EMBED_HOSTS` in `video-embed.ts`, with a comment
+  admitting it. A copy is a second place to add a provider and the wrong one to forget: the
+  sanitiser would drop an iframe the editor had just built, and the failure would look like
+  the player being broken rather than like a list being out of step.
+*/
 
 /** Absolute URL for a site-relative path; http(s) and non-navigable schemes pass. */
 function absolutize(url: string, base: string): string {
@@ -254,7 +250,7 @@ function applyArticlePolicy(node: unknown) {
     let allowed = false;
     try {
       const parsed = new URL(src.trim());
-      allowed = parsed.protocol === "https:" && VIDEO_EMBED_HOSTS.includes(parsed.hostname);
+      allowed = parsed.protocol === "https:" && (VIDEO_EMBED_HOSTS as readonly string[]).includes(parsed.hostname);
     } catch {
       allowed = false;
     }
