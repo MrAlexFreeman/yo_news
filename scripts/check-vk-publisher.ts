@@ -6,7 +6,10 @@ import {
   buildAttachments,
   buildPostText,
   deleteWallPost,
+  editWallPostAttachments,
+  extractArticleSlug,
   leadSummary,
+  listWallPosts,
   parseVkUploadResult,
   publishArticleToVk,
   readWallPostAttachments,
@@ -174,6 +177,19 @@ function stubVk(options: {
             id: 555,
             attachments: attachmentOnPost ? [{ type: "photo" }] : [],
           },
+        ],
+      });
+    }
+    if (method === "wall.get") {
+      return respond({
+        count: 2,
+        items: [
+          {
+            id: 900,
+            text: "Заголовок\n\n👉 Читать полностью: https://eartnews.ru/news/one",
+            attachments: [],
+          },
+          { id: 901, text: "Уже с картинкой", attachments: [{ type: "photo" }] },
         ],
       });
     }
@@ -758,6 +774,21 @@ async function main() {
     `edit=${calls.filter((c) => c.method === "wall.edit").length}, постов=${calls.filter((c) => c.method === "wall.post").length}, warning=${repaired.warning ?? "нет"}`,
   );
 
+  /*
+    The trap in the repair, and the reason it carries `message`.
+
+    Measured: `wall.edit` given only `attachments` answers 200 and **empties the post's text** —
+    a three-line post read back as `text: ""`. VK replaces the fields it is handed, so an
+    absent message means an empty one. An earlier version of this repair omitted it and would
+    have wiped the body of every post it fixed, silently, with no error anywhere.
+  */
+  check(
+    "Обложка: правка вложения передаёт текст поста, а не стирает его",
+    calls.find((c) => c.method === "wall.edit")?.params.message ===
+      buildPostText({ title: "Отброшенное вложение", slug: "dropped-attachment" }),
+    JSON.stringify(calls.find((c) => c.method === "wall.edit")?.params.message ?? null),
+  );
+
   ({ calls, uploads } = stubVk({ dropAttachmentOnce: true, editFails: true }));
   const editFailFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -880,6 +911,44 @@ async function main() {
     removed === true &&
       calls.find((c) => c.method === "wall.delete")?.params.owner_id === "-123456",
     `removed=${removed}`,
+  );
+
+  /*
+    What the backfill is built on: reading the wall, finding the article in a post, and putting
+    a picture on a post that already exists.
+  */
+  ({ calls, uploads } = stubVk({}));
+  const wall = await listWallPosts(100);
+  check(
+    "Стена: посты читаются вместе с текстом и вложениями",
+    wall.length === 2 &&
+      wall[0]?.id === "900" &&
+      wall[0]?.attachments.length === 0 &&
+      wall[1]?.attachments[0] === "photo" &&
+      calls.find((c) => c.method === "wall.get")?.params.count === "100",
+    JSON.stringify(wall.map((p) => [p.id, p.attachments])),
+  );
+
+  check(
+    "Стена: ссылка на материал вынимается из текста поста",
+    extractArticleSlug("Текст\n\n👉 Читать полностью: https://eartnews.ru/news/medved-naskochil") ===
+      "medved-naskochil" &&
+      // The host changed during this project's life; the slug is what identifies the story.
+      extractArticleSlug("👉 https://old-host.example/news/ai-95-po-144-rublya") ===
+        "ai-95-po-144-rublya" &&
+      extractArticleSlug("Текст без ссылки") === null &&
+      extractArticleSlug("") === null,
+    JSON.stringify(extractArticleSlug("https://eartnews.ru/news/one")),
+  );
+
+  ({ calls } = stubVk({}));
+  const edited = await editWallPostAttachments("555", "Текст поста", "photo1_2");
+  check(
+    "Стена: вложение дописывается с передачей текста",
+    edited?.includes("photo") === true &&
+      calls.find((c) => c.method === "wall.edit")?.params.message === "Текст поста" &&
+      calls.find((c) => c.method === "wall.edit")?.params.attachments === "photo1_2",
+    JSON.stringify(calls.find((c) => c.method === "wall.edit")?.params ?? null),
   );
 
   /*

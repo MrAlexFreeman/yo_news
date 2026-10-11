@@ -470,8 +470,12 @@ async function communityGroupIdForPhotos(): Promise<string> {
   return String(id);
 }
 
-/** Uploads the cover to VK and returns the saved wall photo attachment id. */
-async function uploadCoverImage(imageUrl: string): Promise<string> {
+/**
+ * Uploads the cover to VK and returns the saved wall photo attachment id.
+ *
+ * Exported for the cover backfill, which needs the same photo without a wall.post around it.
+ */
+export async function uploadCoverAttachment(imageUrl: string): Promise<string> {
   const groupId = await communityGroupIdForPhotos();
   const { bytes, contentType } = await readCoverImage(imageUrl);
   const extension = extensionFor(contentType) ?? ".jpg";
@@ -712,7 +716,7 @@ export async function publishArticleToVk(
 
   if (article.coverImage) {
     try {
-      photoId = await uploadCoverImage(article.coverImage);
+      photoId = await uploadCoverAttachment(article.coverImage);
     } catch (error) {
       // The post itself is still worth publishing without the image.
       warning = `Не удалось загрузить обложку: ${
@@ -754,9 +758,19 @@ export async function publishArticleToVk(
       if (landed && landed.length === 0) {
         logError(`пост ${postId} создан без вложения — дописываю обложку через wall.edit`);
         try {
+          /*
+            `message` is passed again, and that is not redundancy.
+
+            Measured: `wall.edit` given only `attachments` **empties the post's text** — a post
+            written with three lines came back with `text: ""`. VK treats the edit as a full
+            replacement of the fields it is given, and an absent message means an empty one,
+            not "leave it alone". An earlier version of this repair omitted it and would have
+            wiped the body of every post it fixed.
+          */
           await callVk("wall.edit", {
             owner_id: communityId,
             post_id: postId,
+            message,
             attachments: photoId,
           });
 
@@ -842,4 +856,71 @@ export async function deleteWallPost(postId: string): Promise<boolean> {
     );
     return false;
   }
+}
+
+/** One post on the community wall, reduced to what a backfill needs. */
+export type WallPost = {
+  id: string;
+  text: string;
+  /** Attachment types, e.g. `["photo"]`; empty means the post carries nothing. */
+  attachments: string[];
+};
+
+/** The community's wall, newest first. */
+export async function listWallPosts(limit = 100): Promise<WallPost[]> {
+  const response = await callVk<
+    { items?: { id?: unknown; text?: unknown; attachments?: { type?: string }[] }[] }
+  >("wall.get", { owner_id: vkOwnerId(), count: limit });
+
+  const items = Array.isArray(response) ? response : (response?.items ?? []);
+  return items.flatMap((raw) => {
+    const post = raw as { id?: unknown; text?: unknown; attachments?: { type?: string }[] };
+    if (post.id === undefined || post.id === null) return [];
+    return [
+      {
+        id: String(post.id),
+        text: typeof post.text === "string" ? post.text : "",
+        attachments: (post.attachments ?? []).map((attachment) => attachment.type ?? "unknown"),
+      },
+    ];
+  });
+}
+
+/**
+ * The article slug a wall post links to, or null.
+ *
+ * Wall posts are built by `buildPostText`, which ends with `<site>/news/<slug>`. The loose
+ * match on `/news/<slug>` rather than on a full site URL is deliberate: the address has
+ * changed host during this project's life, and a post written under the old one still points
+ * at the same article.
+ */
+export function extractArticleSlug(text: string): string | null {
+  const match = text.match(/\/news\/([A-Za-z0-9_-]+)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Puts an attachment on an existing post and returns what is on it afterwards.
+ *
+ * **`message` is not optional, and not a convenience.** Measured against the live API:
+ * `wall.edit` given only `attachments` comes back 200 and *empties the post's text* — a post
+ * written as three lines read back with `text: ""`. VK replaces the fields it is handed, so an
+ * absent message means an empty one rather than "leave it alone". The same call with the text
+ * passed through keeps it exactly, newlines included.
+ *
+ * Returns the attachment types as VK reports them, or null when the read-back failed.
+ */
+export async function editWallPostAttachments(
+  postId: string,
+  message: string,
+  attachment: string,
+): Promise<string[] | null> {
+  await callVk("wall.edit", {
+    owner_id: vkOwnerId(),
+    post_id: postId,
+    message,
+    attachments: attachment,
+  });
+
+  return readWallPostAttachments(postId);
 }
