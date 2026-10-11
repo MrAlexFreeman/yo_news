@@ -2,6 +2,8 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import {
+  ENTITY_LEGACY_URL_PREFIX,
+  ENTITY_URL_PREFIX,
   parseEntityImages,
   type EntityCardInput,
   type EntityCardView,
@@ -136,5 +138,58 @@ export async function deleteEntityCard(slug: string): Promise<EntityCardView | n
 
 /** How many articles link to a card, by counting its address in the stored bodies. */
 export async function countEntityCardUsages(slug: string): Promise<number> {
-  return prisma.article.count({ where: { contentHtml: { contains: `/entities/${slug}` } } });
+  return prisma.article.count({ where: mentioningEntityWhere(slug) });
+}
+
+/**
+ * The filter that finds articles linking a card.
+ *
+ * Both prefixes, because a card's address moved and the bodies were deliberately not
+ * rewritten: a story published last month says `/entities/<slug>`, one published today says
+ * `/wiki/<slug>`, and both are links to the same card. Counting only the current prefix
+ * would under-report the references — and this number is what the delete confirmation shows
+ * an editor before they remove a card that twelve published stories point at.
+ *
+ * `contains` on the prefix rather than the whole href, so a link carrying a fragment or a
+ * query still counts. It is not exact: a body mentioning the address in prose would match
+ * too. The alternative is parsing every body's HTML, and the cost of the false positive is
+ * one extra line in a confirmation dialog.
+ */
+function mentioningEntityWhere(slug: string) {
+  return {
+    deletedAt: null,
+    OR: [
+      { contentHtml: { contains: `${ENTITY_URL_PREFIX}${slug}` } },
+      { contentHtml: { contains: `${ENTITY_LEGACY_URL_PREFIX}${slug}` } },
+    ],
+  };
+}
+
+/**
+ * The published stories that link to a card — «Материалы по теме».
+ *
+ * The other half of what a card is for. The card explains a place; these are the stories
+ * that mention it, and a reader who arrived at the card from one of them can see the rest.
+ * Listed newest first and capped, because a well-known landmark can appear in dozens of
+ * stories and the block is a way onward rather than a second archive.
+ */
+export async function getArticlesMentioningEntity(
+  slug: string,
+  take = 12,
+): Promise<
+  { id: string; slug: string; title: string; lead: string | null; publishedAt: Date | null }[]
+> {
+  return prisma.article.findMany({
+    where: { ...mentioningEntityWhere(slug), status: "published" },
+    orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+    take,
+    select: { id: true, slug: true, title: true, lead: true, publishedAt: true },
+  });
+}
+
+/** How many published stories link to a card; the count shown on its page. */
+export async function countPublishedMentions(slug: string): Promise<number> {
+  return prisma.article.count({
+    where: { ...mentioningEntityWhere(slug), status: "published" },
+  });
 }

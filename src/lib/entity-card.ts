@@ -6,22 +6,79 @@
  * which are the two places this feature can do damage.
  */
 
-/** Where an entity card lives, and therefore where a link to one must point. */
-export const ENTITY_URL_PREFIX = "/entities/";
+/**
+ * Where an entity card lives, and therefore where a link to one must point.
+ *
+ * `/wiki/`, and the address is the whole feature: a card is a real page inside a published
+ * article's text, so a reader without JavaScript, a crawler and every syndicated copy of the
+ * story all follow an ordinary link rather than a dead anchor.
+ */
+export const ENTITY_URL_PREFIX = "/wiki/";
+
+/**
+ * The prefix this feature used before it was called a wiki.
+ *
+ * Articles published under the old address are still out there with `/entities/<slug>` in
+ * their bodies, and they are not rewritten: the stored HTML is what the editor wrote, and
+ * silently editing published prose to keep a route rename tidy is the wrong trade. So the
+ * old prefix is still *recognised* — a link to either address is a card link, and the page
+ * at the old address answers with a permanent redirect to the new one.
+ */
+export const ENTITY_LEGACY_URL_PREFIX = "/entities/";
+
+/** Every prefix an entity link may carry. Ordered: the current one first. */
+export const ENTITY_HREF_PREFIXES = [ENTITY_URL_PREFIX, ENTITY_LEGACY_URL_PREFIX] as const;
+
+/**
+ * The attribute a rendered card link carries its slug in.
+ *
+ * The client uses it to find links to upgrade, which is cheaper and clearer than parsing
+ * hrefs in the browser — and it is the markup the brief asks for. It is *stamped by the
+ * sanitiser hook* rather than written by the editor, for the same reason the class is: the
+ * hook already parses the slug out of the href, so a hand-written body and one the toolbar
+ * produced cannot come to disagree about which card a link points at.
+ *
+ * `ALLOW_DATA_ATTR` is off site-wide, and this attribute does **not** need to be added to
+ * the allowlist for it to appear. That was measured rather than assumed: an earlier version
+ * named it in `ALLOWED_ATTR` and a mutation removing the entry still passed every check,
+ * because DOMPurify's attribute filtering runs before `afterSanitizeAttributes` and the hook
+ * writes the attribute afterwards. The entry was removed — configuration that looks
+ * load-bearing and is not is worse than none, because the next person keeps it working for
+ * a reason that does not exist. What actually matters is asserted: an author-supplied
+ * `data-entity-slug` is stripped, then replaced with the one derived from the href.
+ */
+export const ENTITY_SLUG_ATTRIBUTE = "data-entity-slug";
+
+/**
+ * The class a rendered card link carries.
+ *
+ * Lives here rather than beside the sanitiser hook that forces it, because two callers need
+ * it and only one of them may import DOMPurify: the hook writes it at render time, and the
+ * editor's own mark writes it so a card looks like a card while it is being written.
+ * Importing the hook's module into a client component would pull the sanitiser into the
+ * browser bundle for the sake of a string.
+ *
+ * The hook remains the authority — it *replaces* the class on every anchor, so whatever the
+ * editor wrote cannot survive a render if the two ever disagree.
+ */
+export const ENTITY_LINK_CLASS = "entity-wiki-link";
 
 /**
  * The editor's picker searches by this.
  *
- * `ENTITY_MAX_SUMMARY` was 600, which turned out to be shorter than a card worth writing:
- * a park, a museum or a person needs a paragraph or two of context, and an editor pasting
- * a prepared description hit the ceiling and lost the tail of it. 3000 is a deliberate
- * ceiling rather than no ceiling — the column has no length limit of its own (SQLite
- * `TEXT`), but a card is read in a popover beside an article and one that fills the screen
- * is not a card. The limit is high enough to be a guard against a pasted document and
- * never a constraint on writing.
+ * `ENTITY_MAX_SUMMARY` has moved twice, both times because it was shorter than the writing
+ * it was supposed to permit. 600 was a paragraph, and an editor pasting a prepared
+ * description lost the tail of it. 3000 was still a *card*; a wiki entry is not — a
+ * reference article about a geopark or a person is allowed to be a page long, and the
+ * popover that usually shows it prints two or three sentences while the page itself prints
+ * everything.
+ *
+ * 10000 rather than no limit at all: the column has no ceiling of its own (SQLite `TEXT`),
+ * so this is a guard against a pasted document, not a constraint on writing. It is high
+ * enough that nobody composing an entry in the form will meet it by accident.
  */
 export const ENTITY_MAX_TITLE = 120;
-export const ENTITY_MAX_SUMMARY = 3000;
+export const ENTITY_MAX_SUMMARY = 10000;
 export const ENTITY_MAX_CATEGORY = 60;
 export const ENTITY_MAX_LOCATION = 160;
 export const ENTITY_MAX_FOUNDED = 80;
@@ -150,7 +207,7 @@ export function isValidEntitySlug(value: string): boolean {
  *    what it means.
  *
  * A real path is also the only choice that survives the popover script not running, which
- * is why `/entities/<slug>` has a page of its own rather than being a shortcut to nowhere.
+ * is why `/wiki/<slug>` has a page of its own rather than being a shortcut to nowhere.
  */
 export function entityHref(slug: string): string {
   return `${ENTITY_URL_PREFIX}${slug.trim()}`;
@@ -163,6 +220,10 @@ export function entityHref(slug: string): string {
  * slug, and it is decoded once so an encoded `/` cannot smuggle a second segment in. The
  * client uses this to decide which links to upgrade into cards, and treating
  * `/entities/../admin` as a card would put a popover on a link that goes somewhere else.
+ *
+ * Both prefixes are accepted. A card published before the route was renamed carries
+ * `/entities/<slug>` in its stored body and that body is not rewritten — see
+ * `ENTITY_LEGACY_URL_PREFIX`. The slug, not the prefix, is what a card is.
  */
 export function slugFromEntityHref(href: string | null | undefined): string | null {
   if (!href) return null;
@@ -175,9 +236,10 @@ export function slugFromEntityHref(href: string | null | undefined): string | nu
     return null;
   }
 
-  if (!value.startsWith(ENTITY_URL_PREFIX)) return null;
+  const prefix = ENTITY_HREF_PREFIXES.find((candidate) => value.startsWith(candidate));
+  if (!prefix) return null;
 
-  const slug = value.slice(ENTITY_URL_PREFIX.length);
+  const slug = value.slice(prefix.length);
   if (!slug || slug.includes("/")) return null;
 
   return isValidEntitySlug(slug) ? slug : null;

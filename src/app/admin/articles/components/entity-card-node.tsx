@@ -2,7 +2,7 @@
 
 import { Mark, mergeAttributes } from "@tiptap/core";
 
-import { ENTITY_URL_PREFIX, entityHref, slugFromEntityHref } from "@/lib/entity-card";
+import { ENTITY_LINK_CLASS, ENTITY_HREF_PREFIXES, entityHref, slugFromEntityHref } from "@/lib/entity-card";
 
 /**
  * A card reference, as a mark over the words that name the thing.
@@ -14,7 +14,7 @@ import { ENTITY_URL_PREFIX, entityHref, slugFromEntityHref } from "@/lib/entity-
  *
  * It is a **mark**, not a node, because it wraps the words the editor had selected rather
  * than replacing them: the reader must still see the name as it was written. Stored as
- * the ordinary `<a href="/entities/…">` the mark emits, so there is exactly one
+ * the ordinary `<a href="/wiki/…">` the mark emits, so there is exactly one
  * representation of a card in the database and on the site.
  *
  * No node view. Marks in TipTap are rendered through `renderHTML`, and a node view would
@@ -56,8 +56,18 @@ export const EntityCardLink = Mark.create({
   parseHTML() {
     return [
       {
-        tag: `a[href^="${ENTITY_URL_PREFIX}"]`,
-        getAttrs: (element) => {
+        /*
+          Both prefixes, as a selector list.
+
+          A body written before the address moved carries `/entities/<slug>`, and opening
+          such an article in the editor has to recognise those links as cards — otherwise
+          they would come back as ordinary links, and the mark that makes the card a card
+          would be lost on the next save. The selector is only the cheap first pass;
+          `slugFromEntityHref` below is the real test, and it is the same function the
+          sanitiser and the popover use, so the three cannot disagree.
+        */
+        tag: ENTITY_HREF_PREFIXES.map((prefix) => `a[href^="${prefix}"]`).join(", "),
+        getAttrs: (element: Element | string) => {
           const anchor = element as HTMLElement;
           const slug = slugFromEntityHref(anchor.getAttribute("href"));
           if (!slug) return false;
@@ -69,8 +79,12 @@ export const EntityCardLink = Mark.create({
 
   /*
     `href` is re-derived from the slug rather than trusted from the attribute, so a body
-    carrying a hand-written `/entities/<something else>` cannot end up with the label of
-    one card and the destination of another.
+    carrying a hand-written `/wiki/<something else>` cannot end up with the label of one
+    card and the destination of another.
+
+    The class is written here only so the editor draws the dashed underline while the
+    editor is typing; the sanitiser replaces it on every render, and is the authority on
+    what a card link looks like.
   */
   renderHTML({ HTMLAttributes }) {
     const slug = String(HTMLAttributes.slug ?? "");
@@ -80,7 +94,7 @@ export const EntityCardLink = Mark.create({
       "a",
       mergeAttributes(HTMLAttributes, {
         href: entityHref(slug),
-        class: "entity-link",
+        class: ENTITY_LINK_CLASS,
         title: `Карточка объекта: ${title}`,
       }),
       0,

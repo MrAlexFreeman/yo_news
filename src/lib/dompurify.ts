@@ -1,7 +1,7 @@
 import DOMPurify from "isomorphic-dompurify";
 
 import { ensureNoVkAutoplay } from "@/lib/video-embed";
-import { slugFromEntityHref } from "@/lib/entity-card";
+import { ENTITY_LINK_CLASS, ENTITY_SLUG_ATTRIBUTE, slugFromEntityHref } from "@/lib/entity-card";
 import { siteUrl } from "@/lib/site";
 
 /**
@@ -92,16 +92,22 @@ export const ARTICLE_LINK_CLASS = "text-amber-600 hover:text-amber-700 underline
 /**
  * The styling a link to an entity card carries, in a body.
  *
- * Forced here for the same reason `ARTICLE_LINK_CLASS` is, and by the same mechanism:
- * this hook *replaces* the class on every anchor, so whatever distinguishes a card from a
- * normal link has to come from this file. Deciding it in CSS instead would mean trusting a
- * `class` that has already been overwritten.
+ * Re-exported from `lib/entity-card.ts`, which is where it lives: the editor's own mark
+ * needs the same string and must not import this module — it reaches DOMPurify, and a
+ * client component importing it would drag the sanitiser into the browser bundle.
+ *
+ * Forced by the hook for the same reason `ARTICLE_LINK_CLASS` is, and by the same
+ * mechanism: this hook *replaces* the class on every anchor, so whatever distinguishes a
+ * card from a normal link has to come from here. Deciding it in CSS instead would mean
+ * trusting a `class` that has already been overwritten — which is exactly what was measured
+ * on a `/wiki/` link before the hook knew the address was a card: the class the markup asked
+ * for came out as the plain-link one.
  *
  * The dashed underline is the tell. A reader who has learned it in one story recognises a
  * card in the next without being told again, and it survives print and high-contrast mode,
  * where an accent colour alone does not.
  */
-export const ENTITY_LINK_CLASS = "entity-link";
+export { ENTITY_LINK_CLASS };
 
 /** The hostname `NEXT_PUBLIC_SITE_URL` names, or null when it is not a URL. */
 export function hostOf(url: string): string | null {
@@ -171,9 +177,23 @@ function applyArticlePolicy(node: unknown) {
     // than becoming its own colour: the reader is still following a link, and the popover
     // is an addition to it. A different hue would read as a different kind of destination
     // — a category, say — which is not what it is.
-    const isEntity = slugFromEntityHref(href) !== null;
+    const slug = slugFromEntityHref(href);
+    const isEntity = slug !== null;
 
     element.setAttribute?.("class", isEntity ? ENTITY_LINK_CLASS : ARTICLE_LINK_CLASS);
+
+    if (isEntity) {
+      /*
+        The slug, stamped from the address rather than trusted from the markup.
+
+        `data-entity-slug` is what the client reads to decide which links to upgrade, so it
+        has to be right for every card link — including the ones written by hand in the body
+        and the ones stored under the old prefix. Deriving it here from the href the link
+        actually carries means the attribute cannot disagree with the destination, and it is
+        the same function the page uses to decide a link is a card at all.
+      */
+      element.setAttribute?.(ENTITY_SLUG_ATTRIBUTE, slug);
+    }
 
     if (isEntity) {
       /*

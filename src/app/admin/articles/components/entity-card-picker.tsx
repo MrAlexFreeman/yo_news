@@ -149,7 +149,7 @@ export function EntityCardPicker({
                       </span>
                       <span className="block truncate text-xs text-neutral-400">
                         {card.category ? `${card.category} · ` : ""}
-                        /entities/{card.slug}
+                        /wiki/{card.slug}
                       </span>
                     </span>
                   </button>

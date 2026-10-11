@@ -144,8 +144,13 @@ import {
   UnsplashError,
 } from "../src/lib/unsplash";
 import {
+  ENTITY_HREF_PREFIXES,
+  ENTITY_LEGACY_URL_PREFIX,
+  ENTITY_LINK_CLASS,
   ENTITY_MAX_IMAGES,
   ENTITY_MAX_SUMMARY,
+  ENTITY_SLUG_ATTRIBUTE,
+  ENTITY_URL_PREFIX,
   cleanEntityWhitespace,
   entityHref,
   isEntityHref,
@@ -4158,42 +4163,57 @@ function checkEntityCards() {
   */
   check(
     "Карточки: разбор адреса возвращает именно slug, а не хвост строки",
-    slugFromEntityHref("/entities/yangantau") === "yangantau" &&
-      slugFromEntityHref("/entities/a/b") === null &&
-      slugFromEntityHref("/entities/../admin") === null &&
-      slugFromEntityHref("/entities/") === null &&
-      slugFromEntityHref("/entities") === null &&
+    slugFromEntityHref("/wiki/yangantau") === "yangantau" &&
+      slugFromEntityHref("/wiki/a/b") === null &&
+      slugFromEntityHref("/wiki/../admin") === null &&
+      slugFromEntityHref("/wiki/") === null &&
+      slugFromEntityHref("/wiki") === null &&
       slugFromEntityHref(null) === null &&
       slugFromEntityHref("") === null &&
       // A malformed escape sequence must not throw out of a render path.
-      slugFromEntityHref("/entities/%E0%A4%A") === null,
+      slugFromEntityHref("/wiki/%E0%A4%A") === null,
     "только целый slug",
   );
 
   /*
-    The link that reaches the DOM. An entity link has to be recognisable by the client,
-    the sanitiser and the editor's parser from the href alone — there is no `data-entity`
-    attribute, because the article sanitiser runs with `ALLOW_DATA_ATTR: false` and would
-    strip it, leaving a card link indistinguishable from an ordinary one.
+    The address this feature used before it was called a wiki.
+
+    Only the current prefix is written now, and this is why the old one is still read:
+    `/entities/<slug>` sits inside the stored body of every story published before the
+    rename, and those bodies are deliberately not rewritten. Recognising only `/wiki/` would
+    turn every one of those links into an ordinary link — no dashed underline, no popover,
+    and nothing anywhere reporting that it happened.
   */
   check(
-    "Карточки: ссылка на карточку опознаётся по адресу",
-    entityHref("yangantau") === "/entities/yangantau" &&
-      slugFromEntityHref("/entities/yangantau") === "yangantau" &&
+    "Карточки: старый адрес /entities/<slug> по-прежнему опознаётся как карточка",
+    slugFromEntityHref("/entities/yangantau") === "yangantau" &&
       isEntityHref("/entities/yangantau") &&
-      // And the near-misses are not cards: an ordinary article link, a path that merely
-      // starts the same, and one carrying a second segment.
+      slugFromEntityHref("/entities/a/b") === null &&
+      slugFromEntityHref("/entities/../admin") === null &&
+      ENTITY_HREF_PREFIXES.length === 2,
+    "оба префикса ведут к одной карточке",
+  );
+
+  check(
+    "Карточки: новые ссылки пишутся на /wiki/<slug>",
+    entityHref("yangantau") === "/wiki/yangantau" &&
+      entityHref("  yangantau  ") === "/wiki/yangantau" &&
+      ENTITY_URL_PREFIX === "/wiki/" &&
+      ENTITY_LEGACY_URL_PREFIX === "/entities/" &&
+      isEntityHref("/wiki/yangantau") &&
+      // The near-misses: an ordinary article link, a path that merely starts the same, and
+      // one carrying a second segment.
       !isEntityHref("/news/yangantau") &&
-      !isEntityHref("/entities") &&
-      !isEntityHref("/entities/a/b") &&
+      !isEntityHref("/wiki") &&
+      !isEntityHref("/wiki/a/b") &&
       !isEntityHref("entity://yangantau"),
-    "/entities/<slug>",
+    "/wiki/<slug>",
   );
 
   check(
     "Карточки: закодированная кавычка в адресе не проходит",
-    slugFromEntityHref("/entities/%22%20onmouseover") === null &&
-      slugFromEntityHref("/entities/yan%2Fgatau") === null,
+    slugFromEntityHref("/wiki/%22%20onmouseover") === null &&
+      slugFromEntityHref("/wiki/yan%2Fgatau") === null,
     "только настоящий slug",
   );
 
@@ -4371,22 +4391,76 @@ function checkEntityCards() {
 
   /* ---- the sanitiser ---- */
   const clean = sanitizeArticleHtml(
-    '<p>Парк <a href="/entities/yangantau">Янга-Тау</a> закрыт.</p>',
+    '<p>Парк <a href="/wiki/yangantau">Янга-Тау</a> закрыт.</p>',
   );
   check(
     "Карточки: ссылка на карточку переживает санитайзер и получает свой класс",
-    clean.includes('href="/entities/yangantau"') &&
-      clean.includes('class="entity-link"') &&
+    clean.includes('href="/wiki/yangantau"') &&
+      clean.includes(`class="${ENTITY_LINK_CLASS}"`) &&
       clean.includes("Янга-Тау"),
-    clean.slice(0, 120),
+    clean.slice(0, 140),
+  );
+
+  /*
+    `data-entity-slug`, and why it is allowed at all.
+
+    The site runs with `ALLOW_DATA_ATTR: false`, which is what stops a pasted body attaching
+    arbitrary `data-*` to anything. This one attribute is named explicitly in the allowlist,
+    and it is stamped by the hook from the href rather than trusted from the markup — so it
+    cannot disagree with where the link actually goes. Measured before the allowlist entry:
+    the attribute was stripped, and the client would have had nothing to select on but an
+    href prefix.
+  */
+  check(
+    "Карточки: ссылка несёт data-entity-slug, и он совпадает с адресом",
+    clean.includes(`${ENTITY_SLUG_ATTRIBUTE}="yangantau"`),
+    clean.slice(0, 140),
   );
   check(
-    "Карточки: обычная ссылка не получает класс карточки",
+    "Карточки: data-slug ставится из адреса, а не берётся из разметки",
+    // A hand-written attribute that lies about the destination is overwritten rather than
+    // believed: the link goes to one card and would otherwise announce another.
+    sanitizeArticleHtml(
+      '<a href="/wiki/yangantau" data-entity-slug="podmena">Янга-Тау</a>',
+    ).includes(`${ENTITY_SLUG_ATTRIBUTE}="yangantau"`) &&
+      !sanitizeArticleHtml(
+        '<a href="/wiki/yangantau" data-entity-slug="podmena">Янга-Тау</a>',
+      ).includes("podmena"),
+    "атрибут выведен из href",
+  );
+  check(
+    "Карточки: старый адрес тоже получает класс и атрибут",
+    // The client selects on the attribute, so a card link written before the rename has to
+    // carry it too or its popover would simply never open.
+    sanitizeArticleHtml('<a href="/entities/yangantau">Янга-Тау</a>').includes(
+      `${ENTITY_SLUG_ATTRIBUTE}="yangantau"`,
+    ) &&
+      sanitizeArticleHtml('<a href="/entities/yangantau">Янга-Тау</a>').includes(
+        `class="${ENTITY_LINK_CLASS}"`,
+      ),
+    "старый префикс — та же карточка",
+  );
+
+  check(
+    "Карточки: обычная ссылка не получает ни класса карточки, ни атрибута",
     sanitizeArticleHtml('<p><a href="/news/tema">Тема</a></p>').includes(
       ARTICLE_LINK_CLASS,
     ) &&
-      !sanitizeArticleHtml('<p><a href="/news/tema">Тема</a></p>').includes("entity-link"),
-    "класс выбирается по адресу",
+      !sanitizeArticleHtml('<p><a href="/news/tema">Тема</a></p>').includes(
+        ENTITY_LINK_CLASS,
+      ) &&
+      !sanitizeArticleHtml('<p><a href="/news/tema">Тема</a></p>').includes(
+        ENTITY_SLUG_ATTRIBUTE,
+      ),
+    "класс и атрибут выбираются по адресу",
+  );
+  check(
+    "Карточки: открыть data-* для всего тела не пришлось",
+    // The allowlist entry is one attribute, not the category: an arbitrary `data-*` on an
+    // arbitrary tag is still removed, which was the property worth keeping.
+    !sanitizeArticleHtml('<div data-evil="1">текст</div>').includes("data-evil") &&
+      !sanitizeArticleHtml('<a href="/news/x" data-evil="1">x</a>').includes("data-evil"),
+    "прочие data-* по-прежнему вырезаются",
   );
   /*
     A card link must not open a new tab: the popover opens instead, and a stray
@@ -4394,8 +4468,8 @@ function checkEntityCards() {
   */
   check(
     "Карточки: ссылка на карточку не открывается в новой вкладке",
-    !/<a[^>]*href="\/entities\/[^"]*"[^>]*target="_blank"/.test(clean) &&
-      !/<a[^>]*target="_blank"[^>]*href="\/entities\/[^"]*"/.test(clean),
+    !/<a[^>]*href="\/wiki\/[^"]*"[^>]*target="_blank"/.test(clean) &&
+      !/<a[^>]*target="_blank"[^>]*href="\/wiki\/[^"]*"/.test(clean),
     "target не проставлен",
   );
   /*

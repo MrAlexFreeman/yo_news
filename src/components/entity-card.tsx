@@ -1,9 +1,9 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, ExternalLink, Loader2 } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { entityHref, type EntityCardView } from "@/lib/entity-card";
+import { ENTITY_SLUG_ATTRIBUTE, entityHref, slugFromEntityHref, type EntityCardView } from "@/lib/entity-card";
 import { cn } from "@/lib/utils";
 
 /**
@@ -105,8 +105,8 @@ export function EntityOutboundLink({ card }: { card: EntityCardView }) {
       href={entityHref(card.slug)}
       className="mt-2.5 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
     >
-      Открыть карточку
-      <ExternalLink className="size-3" aria-hidden />
+      Подробнее об объекте
+      <ArrowRight className="size-3" aria-hidden />
     </a>
   );
 }
@@ -287,26 +287,43 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
 
     const open = (event: Event) => {
       const target = (event.currentTarget as HTMLElement | null)?.closest?.("a");
-      const href = target?.getAttribute("href");
-      if (!href || !href.startsWith("/entities/")) return;
+      /*
+        The slug, read through the same function the page and the sanitiser use.
+
+        Not `href.startsWith("/entities/")` as it was: a card's address moved to `/wiki/`,
+        bodies written before the move still carry the old prefix, and both are cards. One
+        rule in one place is what keeps the three callers from disagreeing about which link
+        opens a popover.
+      */
+      const slug = slugFromEntityHref(target?.getAttribute("href") ?? null);
+      if (!slug || !target) return;
 
       // A touch device has no hover. This is the tap path, and it opens immediately: the
       // 150 ms dwell that makes a desktop popover feel deliberate would make a tap feel
       // broken. It is also the only path a reader without a pointer can reach.
       if (event.type === "click") {
         event.preventDefault();
-        show(href.slice("/entities/".length), target!.getBoundingClientRect());
+        show(slug, target.getBoundingClientRect());
         return;
       }
 
       openTimer.current = setTimeout(() => {
-        show(href.slice("/entities/".length), target!.getBoundingClientRect());
+        show(slug, target.getBoundingClientRect());
       }, OPEN_DELAY_MS);
     };
 
     const close = () => hide();
 
-    const links = Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/entities/"]'));
+    /*
+      Selected by the attribute the hook stamps, not by an href prefix.
+
+      It is the one thing every card link carries whatever address it was written with, and
+      it is set by the sanitiser from the href — so the selector cannot miss a card because
+      the body was written before a rename.
+    */
+    const links = Array.from(
+      root.querySelectorAll<HTMLAnchorElement>(`[${ENTITY_SLUG_ATTRIBUTE}]`),
+    );
 
     for (const link of links) {
       link.addEventListener("mouseenter", open);

@@ -368,7 +368,7 @@ body {
    the third story they read today without being told again, and unlike a colour it
    survives greyscale printing and forced-colours mode. `text-decoration-skip-ink` keeps
    the dashes from disappearing into the descenders of the linked word. */
-.article-body a.entity-link {
+.article-body a.entity-wiki-link {
   color: var(--color-accent, #b45309);
   text-decoration-line: underline;
   text-decoration-style: dashed;
@@ -378,7 +378,7 @@ body {
   cursor: help;
 }
 
-.article-body a.entity-link:hover {
+.article-body a.entity-wiki-link:hover {
   text-decoration-style: solid;
 }
 

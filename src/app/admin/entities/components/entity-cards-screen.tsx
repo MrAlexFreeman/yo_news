@@ -243,7 +243,7 @@ export function EntityCardsScreen() {
                   {card.title}
                 </span>
                 <span className="block truncate text-xs text-neutral-400">
-                  {card.category ? `${card.category} · ` : ""}/entities/{card.slug}
+                  {card.category ? `${card.category} · ` : ""}/wiki/{card.slug}
                   {card.images.length > 0 ? ` · фото: ${card.images.length}` : ""}
                 </span>
               </button>

@@ -216,7 +216,7 @@ const toolbarGroups = (autoRelated: boolean): ToolbarAction[][] => [
       opens: "link",
     },
     { label: "Видео", icon: Video, opens: "video" },
-    { label: "Карточка объекта", icon: Building2, opens: "entityCard" },
+    { label: "🏛️ Вставить карточку объекта", icon: Building2, opens: "entityCard" },
     { label: "Вставить фото в текст", icon: ImageIcon, opens: "figure" },
     {
       /*
