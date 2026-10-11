@@ -6,7 +6,7 @@ import {
   extractVideoIds,
   publicVideoUrl,
 } from "@/lib/vk-video-format";
-import { fileUploadStream } from "@/lib/multipart-stream";
+import { videoUploadBody } from "@/lib/multipart-stream";
 import { vkCommunityId, vkOwnerId } from "@/lib/vk-publisher";
 
 /**
@@ -17,8 +17,10 @@ import { vkCommunityId, vkOwnerId } from "@/lib/vk-publisher";
  * upload address VK returns is arbitrary and must be checked before a stream is piped at it
  * — would otherwise exist twice and be fixed once.
  *
- * The file is not read into memory here either. `fileUploadStream` is a read stream and
- * `duplex: "half"` is what lets undici accept a stream as a request body.
+ * The file is not read into memory here either: `videoUploadBody` streams it off disk inside
+ * a hand-built multipart body. The multipart wrapper is not decoration — see the measured
+ * 412 in that function's comment; this call sent the raw bytes for a long time and VK
+ * refused every one of them.
  */
 
 const VK_API_VERSION = "5.199";
@@ -79,11 +81,20 @@ export async function uploadVideoFileToVk(input: {
 
   const uploadUrl = assertVkUploadUrl(extractUploadUrl(saved));
 
-  // Step 2: the bytes, streamed from disk.
+  /*
+    Step 2: the bytes, streamed from disk inside the multipart envelope VK requires.
+
+    The measured fact behind this: identical bytes as `application/octet-stream` answer
+    HTTP 412, and the same bytes under a `video_file` part answer HTTP 200. `contentLength`
+    is exact, so the request is not chunked — which also removes a class of proxy surprises.
+  */
+  const filename = input.filePath.split(/[\\/]/).pop() || "video.mp4";
+  const { body, contentType, contentLength } = await videoUploadBody(input.filePath, filename);
+
   const uploadResponse = await fetch(uploadUrl, {
     method: "POST",
-    body: fileUploadStream(input.filePath) as unknown as BodyInit,
-    headers: { "Content-Type": "application/octet-stream" },
+    body: body as unknown as BodyInit,
+    headers: { "Content-Type": contentType, "Content-Length": String(contentLength) },
     duplex: "half",
     signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   } as RequestInit);

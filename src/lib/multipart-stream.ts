@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createWriteStream } from "node:fs";
 import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 /**
  * Streams a single file out of a multipart request onto disk.
@@ -230,11 +232,61 @@ export async function discardTempFile(filePath: string): Promise<void> {
 }
 
 /**
- * A read stream for handing the temporary file to VK.
+ * The multipart body VK's video upload expects, built around the file on disk.
  *
- * `highWaterMark` is raised from the default 64 KB: a 300 MB video over a 64 KB
- * window turns into thousands of small TLS writes and an upload that crawls.
+ * **Measured, and the reason this exists.** VK's upload endpoint answers **HTTP 412** to a
+ * request whose body is the raw file with `Content-Type: application/octet-stream` — which
+ * is what this project sent — and **HTTP 200** to the same bytes wrapped in
+ * `multipart/form-data` under a field named `video_file`. Both were tried against the live
+ * service with the same file. So the browser upload route had never worked either: it hit
+ * the same 412 for as long as it existed, and nothing noticed because no check uploaded a
+ * real file.
+ *
+ * Built by hand rather than with `FormData`, for the reason this module exists at all: a
+ * `FormData` holding a `Blob` is the whole file in memory, and the box has 709 MB. The body
+ * is a header, the file streamed straight off disk, and a footer — nothing is copied, and
+ * `contentLength` is exact, so the request is sent with a length rather than chunked.
  */
-export function fileUploadStream(filePath: string) {
-  return createReadStream(filePath, { highWaterMark: 1024 * 1024 });
+export async function videoUploadBody(
+  filePath: string,
+  filename: string,
+): Promise<{ body: Readable; contentType: string; contentLength: number }> {
+  const { size } = await stat(filePath);
+
+  // A per-request boundary. Random rather than fixed because a fixed one could appear in
+  // the file's own bytes, and the upload would be truncated at that point.
+  const boundary = `----ynewnsvk${randomUUID().replace(/-/g, "")}`;
+
+  /*
+    The filename is quoted and stripped of quotes, newlines and backslashes. It is VK's to
+    ignore, but an unescaped quote here would end the parameter and turn the rest of the
+    name into another header — the standard way a hand-built multipart body is broken.
+  */
+  const safeName = filename.replace(/["\\\r\n]/g, "_").slice(0, 180) || "video.mp4";
+
+  const head = Buffer.from(
+    `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="video_file"; filename="${safeName}"\r\n` +
+      `Content-Type: application/octet-stream\r\n\r\n`,
+    "utf8",
+  );
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+
+  const body = Readable.from(
+    (async function* stream() {
+      yield head;
+      // `for await` rather than a pipe into a PassThrough: it propagates backpressure from
+      // the socket to the file handle without a second buffer in between.
+      for await (const chunk of createReadStream(filePath, { highWaterMark: 1024 * 1024 })) {
+        yield chunk as Buffer;
+      }
+      yield tail;
+    })(),
+  );
+
+  return {
+    body,
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    contentLength: head.length + size + tail.length,
+  };
 }

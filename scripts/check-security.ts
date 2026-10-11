@@ -6,7 +6,8 @@
  * key is behind ALLOW_SETTINGS_WRITE=1 and refuses to run without it.
  */
 import { readFileSync } from "node:fs";
-import { readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { normalizeArticleHtml, plainTextPreview } from "../src/lib/article-html";
@@ -179,7 +180,8 @@ import {
   downloadToTempFile,
 } from "../src/lib/stream-download";
 import { UPLOAD_DIR } from "../src/lib/upload-dir";
-import { discardTempFile } from "../src/lib/multipart-stream";import { SITE_NAME, SITE_TAGLINE_LONG } from "../src/lib/site";
+import { discardTempFile, videoUploadBody } from "../src/lib/multipart-stream";
+import { SITE_NAME, SITE_TAGLINE_LONG } from "../src/lib/site";
 import {
   DEFAULT_UPSCALE_OPTIONS,
   UPSCALE_MODEL,
@@ -3393,7 +3395,7 @@ function checkVideoDropGuard() {
  * editor's file somewhere it must not, plus the name and description applied at
  * publish time.
  */
-function checkVkVideo() {
+async function checkVkVideo() {
   // The upload address comes back from the API and is where the bytes go. It is
   // the SSRF boundary: without this check anyone able to influence the response
   // could make the server stream an uploaded video to an arbitrary address.
@@ -3560,6 +3562,69 @@ function checkVkVideo() {
       parseVideoIdsFromUrl(String(url ?? "")) === null,
       "null",
     );
+  }
+
+  /* ---- the body VK accepts ---- */
+  /*
+    Measured against the live service, with the same file both ways:
+
+      POST --data-binary @v.mp4 -H 'Content-Type: application/octet-stream'  → HTTP 412
+      POST -F 'video_file=@v.mp4'                                             → HTTP 200
+
+    The raw-bytes form is what the project sent for as long as this route existed, so every
+    browser upload failed. These checks assert the shape that works, byte for byte, because
+    the failure mode — a 412 with an HTML body — says nothing about what was wrong with the
+    request.
+  */
+  {
+    const dir = await mkdtemp(path.join(tmpdir(), "yn-upload-"));
+    const filePath = path.join(dir, "clip.mp4");
+    const fileBytes = 1024;
+    // Not a real video: only its length and bytes matter to the envelope.
+    await writeFile(filePath, Buffer.alloc(fileBytes, 7));
+
+    const { body, contentType, contentLength } = await videoUploadBody(filePath, 'my "clip".mp4');
+    const boundary = contentType.split("boundary=")[1] ?? "";
+    const headText = `--${boundary}\r\nContent-Disposition: form-data; name="video_file"; `;
+    const tailText = `\r\n--${boundary}--\r\n`;
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) chunks.push(chunk as Buffer);
+    const sent = Buffer.concat(chunks);
+    const text = sent.toString("latin1");
+
+    check(
+      "ВК: тело — multipart с полем video_file, а не сырые байты",
+      contentType.startsWith("multipart/form-data; boundary=") &&
+        text.startsWith(headText) &&
+        /name="video_file"; filename="[^"]*"\r\nContent-Type: application\/octet-stream\r\n\r\n/.test(
+          text,
+        ),
+      `content-type: ${contentType}`,
+    );
+    check(
+      "ВК: длина тела точная — заголовок + файл + хвост",
+      // Exact rather than chunked: the upload is sent with a length, and a wrong one would
+      // truncate the file or hang the request.
+      contentLength === sent.length &&
+        sent.length === fileBytes + text.indexOf("\r\n\r\n") + 4 + tailText.length,
+      `${contentLength} против ${sent.length}`,
+    );
+    check(
+      "ВК: тело закрывается своим же boundary",
+      text.startsWith(`--${boundary}\r\n`) && text.endsWith(tailText),
+      "boundary открыт и закрыт",
+    );
+    check(
+      "ВК: кавычка в имени файла не разрывает заголовок",
+      // `my "clip".mp4` would otherwise end the parameter and turn the rest into a header.
+      (text.match(/filename="/g) ?? []).length === 1 &&
+        text.includes('filename="my _clip_.mp4"'),
+      text.split("\r\n")[1] ?? "",
+    );
+
+    await discardTempFile(filePath);
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -4944,7 +5009,7 @@ checkSettingsPrimitives();
   checkVideoEmbedParams();
   checkVkNoNext();
   checkVideoDropGuard();
-  checkVkVideo();
+  await checkVkVideo();
   /**
  * AI upscaling of a cover: the fal.ai model, the queue protocol, and the boundary.
  *
