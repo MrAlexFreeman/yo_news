@@ -366,10 +366,11 @@ async function main() {
     `owner_id=${post?.params.owner_id}`,
   );
   /*
-    The brief asked for the link here too. VK refuses a link attachment on this community —
-    error 100 on every API version from 5.92 to 5.199 and every link_photo_sizing_rule
-    value, all measured on production — so passing one would stop the post going out at
-    all. The link stays in the message, where VK renders its own preview for a bare URL.
+    The brief asked for the link here too. Measured on the live API: a link-only attachment is
+    refused with error 100 ("Violated: link_photo_sizing_rule. No photo given"), while a
+    photo-plus-link attachment is accepted and the link is then dropped — the post comes back
+    with `attachments: ["photo"]` and nothing else. So the link adds no card, and passing it
+    would turn a failed cover upload into a post that never goes out at all.
   */
   check(
     "wall.post: без обложки вложений нет вовсе",

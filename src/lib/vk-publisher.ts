@@ -301,23 +301,28 @@ export function leadSummary(lead: string | null | undefined): string {
  * The `attachments` value: the wall photo, or nothing.
  *
  * **The brief asked for the link here as well** — `photo{owner_id}_{id},https://…/news/{slug}`.
- * That cannot be done on this community, and it is worth recording why rather than quietly
- * dropping the second half. Measured against the live API on production, every form of a
- * link attachment is refused with error 100:
+ * It is deliberately not passed, and the reason is a set of measurements taken against the
+ * live API on production rather than a preference:
  *
- *   attachments=https://eartnews.ru/news/probe                                  → 100
- *   … + link_photo_sizing_rule=1080x720                                          → 100
- *   … + link_photo_sizing_rule=1312x807                                          → 100
- *   … + link_photo_sizing_rule=2048x1366                                         → 100
- *   photo + link, with and without every sizing rule                             → 100
+ *   attachments=https://eartnews.ru/news/…            → error 100, "Violated:
+ *                                                       link_photo_sizing_rule. No photo given"
+ *   attachments=photo276313599_457240136,https://…    → post created, and the post comes back
+ *                                                       with `attachments: ["photo"]` — the
+ *                                                       link is accepted and then dropped
  *
- * all on API versions 5.92, 5.131, 5.197 and 5.199, so it is not a version that gained or
- * lost the feature. The error reads "Violated: link_photo_sizing_rule. No photo given",
- * which sends you looking for a missing photo that was in fact supplied.
+ * So the link buys nothing: VK does not keep it as an attachment, and it renders its own
+ * preview for the bare URL in the message, which is where the link already is.
  *
- * The link therefore stays in the message, where VK renders its own preview for a bare URL
- * — verified on the wall after a real post, see the check below. Passing it as an attachment
- * would not add a card; it would stop the post going out at all.
+ * It also costs something. The link-only form is *refused*, so the combined form would turn a
+ * cover failure into a total failure: with no photo id there is nothing to attach but the
+ * link, and `wall.post` answers error 100 and publishes nothing at all. A post without a
+ * picture is a small loss; no post is a large one.
+ *
+ * An earlier version of this comment claimed the combined form was itself refused with error
+ * 100. That measurement was taken while the cover upload was broken — the photo id came back
+ * empty, so what was actually sent *was* the link-only form, and the error was read as being
+ * about the combination. The conclusion happened to be right and the reason was wrong, which
+ * is the more dangerous half to leave in a comment.
  */
 export function buildAttachments(photoId: string | null, slug: string): string {
   // `slug` is unused on purpose — see above. Kept in the signature so the caller keeps
