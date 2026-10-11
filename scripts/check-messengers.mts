@@ -19,12 +19,11 @@ import {
   MESSENGER_QUOTE_PREFIX,
   TELEGRAM_CAPTION_LIMIT,
   TELEGRAM_CAPTION_MORE,
+  TELEGRAM_CAPTION_SAFE_LIMIT,
   TELEGRAM_CAPTION_TARGET,
-  TELEGRAM_MAX_MESSAGES,
   TELEGRAM_MESSAGE_LIMIT,
   buildMessengerPost,
   buildPhotoCaption,
-  chunkForTelegram,
   cutForReading,
   escapeHtml,
   htmlToPlainText,
@@ -33,6 +32,7 @@ import {
   readingNotice,
   stripKickerLines,
   toHashtag,
+  type MessengerPost,
 } from "../src/lib/messenger-post";
 import {
   DEFAULT_SYNDICATION_ENABLED,
@@ -79,6 +79,18 @@ const SITE = "https://eartnews.ru";
 /** A paragraph of roughly `size` characters, so length boundaries can be hit exactly. */
 function paragraph(size: number, marker = "а"): string {
   return marker.repeat(Math.max(0, size));
+}
+
+/**
+ * A post assembled by hand, as the planner checks below use.
+ *
+ * No headline block, no rubric: the whole text is the body. The publisher never builds one of
+ * these — `buildMessengerPost` is the only producer — but the planner's own contract is about
+ * lengths and steps, and stating the parts explicitly here is what keeps those checks from
+ * depending on how the builder happens to join its blocks.
+ */
+function barePost(text: string, url = "u"): MessengerPost {
+  return { text, url, headline: "", body: text, hashtag: "" };
 }
 
 /** A body long enough to push the post past any given threshold. */
@@ -413,12 +425,24 @@ const shortPost = buildMessengerPost({
 
 const shortPlan = planTelegramPost(shortPost, { hasCover: true });
 
+/*
+  The caption's shape, which is the brief's: bold headline, the lead, the link line, the rubric
+  tag. Asserted part by part rather than against `post.text`, because the whole point of the
+  caption is that it is not simply the post — it drops the "Ё-новости: <url>" credit in favour of
+  the "Читать полностью" line, and carries the rubric underneath.
+*/
+const shortCaptionOfPhoto =
+  shortPlan.steps[0]?.kind === "photo" ? (shortPlan.steps[0].caption ?? "") : "";
+
 check(
   "Telegram: до 1024 — одно сообщение с подписью к фото",
   shortPlan.mode === "caption" &&
     shortPlan.steps.length === 1 &&
     shortPlan.steps[0]?.kind === "photo" &&
-    shortPlan.steps[0]?.caption === shortPost.text,
+    shortCaptionOfPhoto.startsWith("<b>Короткая новость</b>") &&
+    shortCaptionOfPhoto.includes(TELEGRAM_CAPTION_MORE) &&
+    shortCaptionOfPhoto.includes(`${SITE}/news/korotkaya`) &&
+    shortCaptionOfPhoto.trimEnd().endsWith("#Технологии"),
   `${shortPlan.mode}, ${shortPlan.length} символов, шагов: ${shortPlan.steps.length}`,
 );
 
@@ -439,7 +463,7 @@ check(
 check(
   "Telegram: ровно 1024 — ещё подпись",
   planTelegramPost(
-    { text: paragraph(TELEGRAM_CAPTION_LIMIT), url: `${SITE}/news/s` },
+    barePost(paragraph(TELEGRAM_CAPTION_LIMIT), `${SITE}/news/s`),
     { hasCover: true },
   ).mode === "caption",
   "граница включительно",
@@ -457,7 +481,7 @@ check(
 check(
   "Telegram: 1025 — уже обрез, а не второе сообщение",
   planTelegramPost(
-    { text: paragraph(TELEGRAM_CAPTION_LIMIT + 1), url: `${SITE}/news/s` },
+    barePost(paragraph(TELEGRAM_CAPTION_LIMIT + 1), `${SITE}/news/s`),
     { hasCover: true },
   ).mode === "caption-cut",
   "один символ через границу",
@@ -501,11 +525,88 @@ check(
 );
 
 check(
-  "Telegram: обрез заканчивается многоточием и ссылкой на полный текст",
+  "Telegram: обрез заканчивается многоточием, ссылкой и рубрикой",
   mediumCaption.includes("…") &&
     mediumCaption.includes(TELEGRAM_CAPTION_MORE) &&
-    mediumCaption.trimEnd().endsWith(`${SITE}/news/srednyaya`),
+    mediumCaption.includes(`${SITE}/news/srednyaya`) &&
+    mediumCaption.trimEnd().endsWith("#Общество"),
   JSON.stringify(mediumCaption.slice(-70)),
+);
+
+check(
+  "Telegram: подпись укладывается в 900 символов вместе с заголовком и ссылкой",
+  // The brief's target. Counted on the whole caption, because that is what the reader sees and
+  // what Telegram measures.
+  mediumCaption.length <= TELEGRAM_CAPTION_TARGET + 40,
+  `${mediumCaption.length} при цели ${TELEGRAM_CAPTION_TARGET}`,
+);
+
+/*
+  The promise that matters more than the target: never past the ceiling.
+
+  Measured over the shapes that can push it there — a wall of text with no spaces, one
+  paragraph longer than any budget, a headline longer than the whole caption, and a body that
+  is nothing but a rubric tag's worth of lead.
+*/
+const captionCeilings = [
+  buildMessengerPost({
+    title: "Средняя новость",
+    contentHtml: `<p>${paragraph(2500)}</p>`,
+    slug: "srednyaya",
+    categoryName: "Общество",
+    siteUrl: SITE,
+  }),
+  buildMessengerPost({
+    title: "Проза",
+    contentHtml: Array.from({ length: 40 }, (_, i) => `<p>Предложение ${i + 1} дня.</p>`).join(""),
+    slug: "proza",
+    categoryName: "Происшествия",
+    siteUrl: SITE,
+  }),
+  buildMessengerPost({
+    title: "З".repeat(1200),
+    contentHtml: `<p>${paragraph(300)}</p>`,
+    slug: "dlинный",
+    categoryName: "Общество",
+    siteUrl: SITE,
+  }),
+  buildMessengerPost({
+    title: "Коротко",
+    contentHtml: "",
+    slug: "pustoy",
+    categoryName: null,
+    siteUrl: SITE,
+  }),
+  buildMessengerPost({
+    title: "Т",
+    contentHtml: `<p>${paragraph(50000)}</p>`,
+    slug: "gigant",
+    categoryName: "Общество",
+    siteUrl: SITE,
+  }),
+];
+
+check(
+  "Telegram: подпись НИКОГДА не превышает 1000 символов",
+  captionCeilings.every((post) => buildPhotoCaption(post).length <= TELEGRAM_CAPTION_SAFE_LIMIT) &&
+    captionCeilings.every((post) => buildPhotoCaption(post).length <= TELEGRAM_CAPTION_LIMIT),
+  captionCeilings
+    .map((post) => buildPhotoCaption(post).length)
+    .join(", ") + ` <= ${TELEGRAM_CAPTION_SAFE_LIMIT}`,
+);
+
+check(
+  "Telegram: подпись всегда несёт ссылку и рубрику, если они есть",
+  captionCeilings.slice(0, 3).every((post) => {
+    const caption = buildPhotoCaption(post);
+    return (
+      caption.includes(`${SITE}/news/${post.url.split("/").pop()}`) && caption.includes("#")
+    );
+  }) &&
+    // A post with no rubric has no tag to print, and must not grow a stray empty line for one.
+    !buildPhotoCaption(captionCeilings[3]!).includes("#") &&
+    !buildPhotoCaption(captionCeilings[3]!).endsWith("\n"),
+  buildPhotoCaption(captionCeilings[3]!).slice(-60),
 );
 
 check(
@@ -555,7 +656,7 @@ check(
 check(
   "Telegram: у поста без тела ссылка всё равно в подписи",
   (() => {
-    const step = planTelegramPost({ text: paragraph(3000), url: `${SITE}/news/s` }, { hasCover: true })
+    const step = planTelegramPost(barePost(paragraph(3000), `${SITE}/news/s`), { hasCover: true })
       .steps[0];
     const caption = step?.kind === "photo" ? (step.caption ?? "") : "";
     return caption.length > 0 && caption.endsWith(`${SITE}/news/s`) && caption.length <= TELEGRAM_CAPTION_LIMIT;
@@ -583,12 +684,14 @@ check(
   `${longPlan.mode}, шагов ${longPlan.steps.length}, исходных ${longPlan.length}`,
 );
 
-const noCoverHuge = planTelegramPost({ text: paragraph(17000), url: `${SITE}/news/s` }, { hasCover: false });
+const noCoverHuge = planTelegramPost(barePost(paragraph(17000), `${SITE}/news/s`), { hasCover: false });
 
 check(
-  "Telegram: за пределом четырёх сообщений текст обрезается",
-  noCoverHuge.mode === "truncated" && noCoverHuge.truncated,
-  `${noCoverHuge.mode}, исходных ${noCoverHuge.length}, порог ${TELEGRAM_MAX_MESSAGES} сообщения`,
+  "Telegram: очень длинный текст без обложки обрезается",
+  noCoverHuge.mode === "truncated" &&
+    noCoverHuge.truncated &&
+    noCoverHuge.steps.length === 1,
+  `${noCoverHuge.mode}, исходных ${noCoverHuge.length}, шагов ${noCoverHuge.steps.length}`,
 );
 
 const cutText = noCoverHuge.steps[0]?.kind === "text" ? noCoverHuge.steps[0].text : "";
@@ -613,37 +716,8 @@ check(
 
 check(
   "Telegram: обрез одного гигантского абзаца не даёт пустой пост",
-  cutForReading({ text: paragraph(9000), url: `${SITE}/news/s` }).length > 3000,
+  cutForReading(barePost(paragraph(9000), `${SITE}/news/s`)).length > 3000,
   "обрезан по символам, но не в ноль",
-);
-
-// --- chunking itself ----------------------------------------------------------
-
-check(
-  "Чанки: короткий текст не режется",
-  chunkForTelegram("а".repeat(100), 1000).length === 1,
-  "один чанк",
-);
-
-check(
-  "Чанки: граница по абзацам, а не по символам",
-  chunkForTelegram("а".repeat(30) + "\n\n" + "б".repeat(30), 40).join("|") ===
-    `${"а".repeat(30)}|${"б".repeat(30)}`,
-  "два абзаца — два чанка",
-);
-
-check(
-  "Чанки: абзац длиннее сообщения режется, но не теряется",
-  chunkForTelegram("в".repeat(100), 30).join("").length === 100,
-  "100 символов на выходе",
-);
-
-check(
-  "Чанки: обрез не оставляет половину сущности",
-  chunkForTelegram(`ааааа&amp;ббб`, 6).every((chunk) => !/&[a-z]*$/.test(chunk)),
-  chunkForTelegram(`ааааа&amp;ббб`, 6)
-    .map((chunk) => JSON.stringify(chunk))
-    .join(" "),
 );
 
 // --- no cover -----------------------------------------------------------------
@@ -656,10 +730,33 @@ check(
   "нет шага с фото",
 );
 
+/*
+  No picture, no caption to hang the words on — and still exactly one message.
+
+  The channel's post for a story is one post: a story too long for a single message is cut to
+  the teaser and the link, the same shape the caption takes, rather than continued as a run of
+  messages under the first one. That is the whole point of the change this file is asserting.
+*/
+const noCoverShort = planTelegramPost(barePost(paragraph(2500), "u"), { hasCover: false });
+const noCoverLong = planTelegramPost(barePost(paragraph(9000), `${SITE}/news/s`), { hasCover: false });
+
 check(
-  "Telegram: без обложки длинный пост — один шаг текстом",
-  planTelegramPost({ text: paragraph(2500), url: "u" }, { hasCover: false }).steps.length === 1,
-  "фото не отправляется пустым",
+  "Telegram: без обложки всё равно одно сообщение",
+  noCoverShort.steps.length === 1 &&
+    noCoverShort.mode === "text-only" &&
+    noCoverLong.steps.length === 1 &&
+    noCoverLong.mode === "truncated",
+  `${noCoverShort.mode}/${noCoverShort.steps.length}, ${noCoverLong.mode}/${noCoverLong.steps.length}`,
+);
+
+check(
+  "Telegram: без обложки длинный текст режется по лимиту сообщения",
+  noCoverLong.steps[0]?.kind === "text" &&
+    noCoverLong.steps[0].text.length <= TELEGRAM_MESSAGE_LIMIT &&
+    noCoverLong.truncated,
+  `${
+    noCoverLong.steps[0]?.kind === "text" ? noCoverLong.steps[0].text.length : "?"
+  } <= ${TELEGRAM_MESSAGE_LIMIT}`,
 );
 
 /*
@@ -667,24 +764,6 @@ check(
   the ceiling that matters there is the message one, not the caption one. Asserted because the
   two limits differ by a factor of four and using the wrong one is the mistake this path invites.
 */
-const noCoverChunks = planTelegramPost(
-  { text: paragraph(9000), url: `${SITE}/news/s` },
-  { hasCover: false },
-).steps.flatMap((step) => (step.kind === "text" ? [step.text] : []));
-
-check(
-  "Telegram: без обложки текст режется по лимиту сообщения",
-  noCoverChunks.length > 1 &&
-    noCoverChunks.every((chunk) => chunk.length <= TELEGRAM_MESSAGE_LIMIT),
-  `${noCoverChunks.length} сообщений, максимум ${Math.max(...noCoverChunks.map((c) => c.length))} <= ${TELEGRAM_MESSAGE_LIMIT}`,
-);
-
-check(
-  "Telegram: без обложки куски складываются в исходный текст без потерь",
-  noCoverChunks.join("\n\n").length >= paragraph(9000).length,
-  `${noCoverChunks.join("\n\n").length} против ${paragraph(9000).length}`,
-);
-
 // --- MAX ----------------------------------------------------------------------
 
 const maxShort = planMaxPost(simplePost, { hasCover: true });
@@ -702,11 +781,11 @@ check(
 
 check(
   "MAX: ровно 4000 — ещё целиком",
-  !planMaxPost({ text: paragraph(MAX_MESSAGE_LIMIT), url: "u" }).truncated,
+  !planMaxPost(barePost(paragraph(MAX_MESSAGE_LIMIT), "u")).truncated,
   "граница включительно",
 );
 
-const maxCut = planMaxPost({ text: paragraph(MAX_MESSAGE_LIMIT + 1), url: `${SITE}/news/s` });
+const maxCut = planMaxPost(barePost(paragraph(MAX_MESSAGE_LIMIT + 1), `${SITE}/news/s`));
 check(
   "MAX: 4001 — обрезка со ссылкой на полный текст",
   maxCut.truncated && maxCut.text.endsWith(readingNotice(`${SITE}/news/s`)) && maxCut.text.length < MAX_MESSAGE_LIMIT,
@@ -720,7 +799,7 @@ check(
 */
 check(
   "MAX: не разделён на два сообщения, в отличие от Telegram",
-  planMaxPost({ text: paragraph(2500), url: "u" }).text.length === 2500,
+  planMaxPost(barePost(paragraph(2500), "u")).text.length === 2500,
   "одним сообщением до 4000",
 );
 
@@ -839,11 +918,9 @@ check(
 
 check(
   "Пост: обрезка длинного текста с цитатой остаётся под лимитом",
-  planMaxPost({
-    text: postWithQuoteAndFigure.text.repeat(20),
-    url: `${SITE}/news/s`,
-  }).text.length < MAX_MESSAGE_LIMIT,
-  `${planMaxPost({ text: postWithQuoteAndFigure.text.repeat(20), url: "u" }).text.length} < ${MAX_MESSAGE_LIMIT}`,
+  planMaxPost(barePost(postWithQuoteAndFigure.text.repeat(20), `${SITE}/news/s`)).text.length <
+    MAX_MESSAGE_LIMIT,
+  `${planMaxPost(barePost(postWithQuoteAndFigure.text.repeat(20), "u")).text.length} < ${MAX_MESSAGE_LIMIT}`,
 );
 
 // --- the actual Bot API calls, with `fetch` stubbed ---------------------------
@@ -947,7 +1024,8 @@ try {
     shortResult.ok &&
       calls.length === 1 &&
       calls[0]?.method === "sendPhoto" &&
-      (calls[0]?.form?.get("caption") as string | null) === expectedPost(shortArticle).text,
+      (calls[0]?.form?.get("caption") as string | null) ===
+        buildPhotoCaption(expectedPost(shortArticle)),
     `${calls.length} запрос(ов): ${calls.map((call) => call.method).join(", ")}`,
   );
 
@@ -983,11 +1061,11 @@ try {
   );
 
   check(
-    "Мок: подпись длинного поста обрезана и кончается ссылкой",
+    "Мок: подпись длинного поста обрезана, влезает в лимит и несёт ссылку",
     longCaption.length > 0 &&
-      longCaption.length <= TELEGRAM_CAPTION_LIMIT &&
+      longCaption.length <= TELEGRAM_CAPTION_SAFE_LIMIT &&
       longCaption.includes(TELEGRAM_CAPTION_MORE) &&
-      longCaption.trimEnd().endsWith(`${SITE}/news/dlinnaia`),
+      longCaption.includes(`${SITE}/news/dlinnaia`),
     `${longCaption.length} символов, хвост: ${JSON.stringify(longCaption.slice(-60))}`,
   );
 
