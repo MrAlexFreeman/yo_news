@@ -4464,13 +4464,50 @@ function checkEntityCards() {
   );
   /*
     A card link must not open a new tab: the popover opens instead, and a stray
-    `target="_blank"` would fight it. Forced through the same hook that sets the class.
+    `target="_blank"` would fight it.
   */
   check(
     "Карточки: ссылка на карточку не открывается в новой вкладке",
     !/<a[^>]*href="\/wiki\/[^"]*"[^>]*target="_blank"/.test(clean) &&
-      !/<a[^>]*target="_blank"[^>]*href="\/wiki\/[^"]*"/.test(clean),
+      !/<a[^>]*target="_blank"[^>]*href="\/wiki\/[^"]*"/.test(clean) &&
+      !/rel="noopener/.test(clean),
     "target не проставлен",
+  );
+  /*
+    And a stated one is removed, which is the case that actually reached production.
+
+    Measured on the live site: articles published before the address moved carry
+    `target="_blank"` written into their stored body by the sanitiser of the day, and the
+    hook's "a stated target wins" rule — correct for every other link — kept it. The links
+    opened a new tab while the popover tried to open in place. Asserted on a *stored* target,
+    not merely on the hook's silence, because the hook's silence was already true when the
+    live links were wrong.
+  */
+  check(
+    "Карточки: сохранённый target=_blank у ссылки-карточки снимается",
+    (() => {
+      const stored = sanitizeArticleHtml(
+        '<a href="/entities/yangantau" target="_blank" rel="noopener noreferrer">Янга-Тау</a>',
+      );
+      return !stored.includes('target="_blank"') && !stored.includes("noopener");
+    })(),
+    sanitizeArticleHtml(
+      '<a href="/entities/yangantau" target="_blank" rel="noopener noreferrer">Янга-Тау</a>',
+    ),
+  );
+  /*
+    The rule stays an exception for cards, and does not leak to ordinary links: an editor
+    who asked for a new tab on a news link keeps it.
+  */
+  check(
+    "Карточки: снятие target не распространяется на обычные ссылки",
+    sanitizeArticleHtml(
+      '<a href="https://other.example/x" target="_self">внешняя</a>',
+    ).includes('target="_self"') &&
+      sanitizeArticleHtml(
+        '<a href="https://other.example/x">внешняя</a>',
+      ).includes('target="_blank"'),
+    "у обычных ссылок правило прежнее",
   );
   /*
     The custom scheme the brief suggested would be stripped, which is why the address is a

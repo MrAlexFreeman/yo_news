@@ -193,6 +193,25 @@ function applyArticlePolicy(node: unknown) {
         the same function the page uses to decide a link is a card at all.
       */
       element.setAttribute?.(ENTITY_SLUG_ATTRIBUTE, slug);
+
+      /*
+        And the new tab is *removed* here, which is the one place this hook overrides what the
+        markup says.
+
+        Everywhere else a stated `target` wins, because the link dialog offers "open in a new
+        tab" and an editor who chose it should keep it. A card link is the exception, and it
+        was measured on production: stories published before this was a wiki carry
+        `target="_blank"` written into their stored body by the sanitiser of the day, so the
+        links on the live site opened a new tab while the popover — which opens *instead* of
+        navigating — was fighting it. A reader who clicked a card got a tab they did not ask
+        for; a reader without JavaScript got the card in a new tab rather than in place.
+
+        No target rather than `target="_self"`: they are the same thing to a browser, and
+        omitting it is the honest description — the link does not ask for a new context, it
+        simply does not ask for anything.
+      */
+      element.removeAttribute?.("target");
+      element.removeAttribute?.("rel");
     }
 
     if (isEntity) {
