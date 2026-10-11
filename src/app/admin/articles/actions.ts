@@ -484,6 +484,7 @@ export async function createArticleAction(
 
   if (enteringPublished && (article.isTelegram || article.isMax)) {
     const shared = {
+      id: article.id,
       title: article.title,
       contentHtml: article.contentHtml,
       slug: article.slug,

@@ -31,15 +31,6 @@ export const TELEGRAM_MESSAGE_LIMIT = 4096;
  */
 export const TELEGRAM_MAX_MESSAGES = 4;
 
-/**
- * Past this length the post is no longer a post and becomes a teaser.
- *
- * Deliberately below `TELEGRAM_MESSAGE_LIMIT`: the cut path appends its own
- * "read the rest on the site" line, so the limit the cut has to respect is the
- * longer one and the shorter one is the trigger.
- */
-export const LONG_READING_THRESHOLD = 4000;
-
 /** How much of the post survives a cut. The notice adds roughly 90 more. */
 export const LONG_READING_BODY_LIMIT = 3500;
 
@@ -193,6 +184,67 @@ function quoteAsText(inner: string): string {
 }
 
 /**
+ * Phrases that introduce more reading somewhere else.
+ *
+ * A body may carry a paragraph that does nothing but point at another story — and in a
+ * messenger it stops being a pointer, because the link does not survive the conversion to
+ * text. What is left is a line promising a story with nothing to click.
+ */
+const KICKER_PHRASES: readonly string[] = [
+  "читайте также",
+  "читать также",
+  "читайте так же",
+  "почитайте также",
+  "прочитайте также",
+  "читать далее",
+  "смотрите также",
+  "читайте еще",
+  "читайте ещё",
+];
+
+/**
+ * Whether a paragraph is nothing but a promise to read something elsewhere.
+ *
+ * Two shapes qualify, and they are the two the brief names:
+ *
+ *   «Читайте также:»                     → the colon is followed by the linked headline,
+ *                                          which the conversion has left as bare words
+ *   «Читайте также» / «Читать далее»     → nothing after it at all, the dangling case
+ *
+ * What does **not** qualify is a paragraph where the phrase introduces prose of its own:
+ * «Прочитайте также, как медведь наведался в посёлок Кедровка» is a sentence in this article,
+ * not a pointer out of it, and deleting it would delete content. The colon is what tells the
+ * two apart — a pointer uses one, a sentence continues after a comma.
+ */
+function isKickerParagraph(paragraph: string): boolean {
+  const plain = paragraph.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!plain) return false;
+
+  const bare = plain.replace(/[:;,.!?…—–-]+$/u, "").trim();
+  if (KICKER_PHRASES.includes(bare)) return true;
+
+  return KICKER_PHRASES.some(
+    (phrase) => plain.startsWith(phrase) && plain.slice(phrase.length).startsWith(":"),
+  );
+}
+
+/**
+ * Drops those paragraphs from a post's text.
+ *
+ * Paragraph-level rather than line-level, and before the text is escaped, so the comparison
+ * sees real characters rather than `&amp;`-style entities.
+ */
+export function stripKickerLines(text: string): string {
+  if (!text) return "";
+  return text
+    .split("\n\n")
+    .filter((paragraph) => !isKickerParagraph(paragraph))
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
  * Editor HTML to plain text, with paragraphs and line breaks kept.
  *
  * `plainTextPreview` in `article-html.ts` collapses every run of whitespace, which is
@@ -304,7 +356,7 @@ export function buildMessengerPost(input: MessengerPostInput): MessengerPost {
     The same escape closes an injection: text typed as `&lt;b&gt;нет&lt;/b&gt;` came back
     as a live `<b>` and bolded itself in the channel.
   */
-  const body = escapeHtml(htmlToPlainText(input.contentHtml));
+  const body = escapeHtml(stripKickerLines(htmlToPlainText(input.contentHtml)));
   // `toHashtag` already strips everything but letters, digits and underscores, so this
   // is belt-and-braces: an entity can never appear here, and the escape says so.
   const hashtag = escapeHtml(toHashtag(input.categoryName));
@@ -441,8 +493,14 @@ export type TelegramStep =
   | { kind: "text"; text: string };
 
 export type TelegramPlan = {
-  /** Why the plan has the shape it has. Read in logs and asserted in tests. */
-  mode: "caption" | "split" | "chunks" | "truncated" | "text-only";
+  /**
+   * Why the plan has the shape it has. Read in logs and asserted in tests.
+   *
+   * `caption` and `caption-cut` are the two shapes a post with a cover takes: one message,
+   * carrying the text or a teaser. `text-only`, `chunks` and `truncated` are the shapes a post
+   * with no cover takes, where there is no picture to hang the words on.
+   */
+  mode: "caption" | "caption-cut" | "chunks" | "truncated" | "text-only";
   steps: TelegramStep[];
   /** Length of the assembled post, before any decision was taken. */
   length: number;
@@ -455,49 +513,108 @@ export type PlanOptions = {
 };
 
 /**
- * The short caption a cover carries when the whole post does not fit under it: the bold
- * headline and the source link, and nothing else.
+ * The line a cut caption ends with, so the reader knows where the rest of the story is.
  *
- * The brief names this as the first of the two allowed shapes for a long post, and it is
- * the one that keeps the picture from being bare — the fault an editor actually reported.
- * The full text still follows as its own message or messages; the caption is there so the
- * photo stands on its own if that second send is ever the thing that fails.
- *
- * The headline is `text`'s first block because that is how `buildMessengerPost` assembles
- * it. The source line is found by its prefix rather than taken as the last block, so a
- * post with no body still works. Returns null when either is missing — a hand-built
- * `MessengerPost`, as some tests use — or when the result would itself exceed the caption
- * ceiling, in which case the cover goes out uncaptioned rather than rejected.
+ * The brief names this wording, and it is also the shape the site's own posts use, so a
+ * caption reads the same whether the reader is looking at the channel or the page.
  */
-export function shortPhotoCaption(post: MessengerPost): string | null {
-  const blocks = post.text.split("\n\n");
-  const headline = blocks[0] ?? "";
-  const source = blocks.find((block) => block.startsWith(`${SOURCE_PREFIX}:`)) ?? "";
-  if (!headline || !source) return null;
+export const TELEGRAM_CAPTION_MORE = "👉 Читать полностью";
 
-  const caption = `${headline}\n\n${source.split("\n")[0]}`;
-  return caption.length <= TELEGRAM_CAPTION_LIMIT ? caption : null;
+/**
+ * Where a cut caption aims to stop, before the ellipsis and the link are added.
+ *
+ * Below the ceiling with room to spare: the link, the ellipsis and the line break together
+ * take about a hundred characters, and a cut that lands exactly on 1024 would be the one
+ * caption Telegram refuses.
+ */
+export const TELEGRAM_CAPTION_TARGET = 900;
+
+/** Sentence-ending punctuation, which is where a cut prefers to land. */
+const SENTENCE_END = /[.!?…]/;
+
+/**
+ * Cuts `text` to at most `limit`, preferring the end of a sentence.
+ *
+ * A caption that stops mid-word reads as a broken page; one that stops at a full stop reads
+ * as an editor's decision. Three fallbacks, in that order, and each one is reached only when
+ * the one before it has nothing to offer:
+ *
+ *   1. the last sentence end — but only past `minimum`, because a boundary in the first part
+ *      of the slice would leave a caption of one clause;
+ *   2. the last space, under the same condition;
+ *   3. the limit itself.
+ *
+ * The third is what an article with no spaces at all gives — measured, and the reason the
+ * condition exists: an earlier version took the last space it could find wherever that was, and
+ * a 2500-character body with no spaces after the headline produced a 68-character caption that
+ * was the headline and half a word.
+ */
+function cutAtSentence(text: string, limit: number): string {
+  const slice = text.slice(0, limit);
+  const minimum = limit * 0.6;
+
+  let at = -1;
+  for (let index = slice.length - 1; index >= 0; index -= 1) {
+    if (!SENTENCE_END.test(slice[index] ?? "")) continue;
+    const next = slice[index + 1];
+    if (next === undefined || next === " " || next === "\n") {
+      at = index + 1;
+      break;
+    }
+  }
+
+  if (at < minimum) {
+    const space = slice.lastIndexOf(" ");
+    at = space >= minimum ? space : slice.length;
+  }
+
+  const cut = cutWithoutSplittingEntity(slice.slice(0, at), at).trimEnd();
+  return cut.length > 0 ? cut : cutWithoutSplittingEntity(slice, limit).trimEnd();
+}
+
+/**
+ * The caption a photo post carries: the whole text when it fits, a teaser when it does not.
+ *
+ * **Why a caption and not a second message.** `sendPhoto` takes at most
+ * `TELEGRAM_CAPTION_LIMIT` characters, so a longer post used to be sent as the picture with a
+ * short caption *and then the text as its own message* — two posts in the channel. Measured on
+ * the live channel, that is what an editor sees: the article appears as a wall of text with the
+ * picture above it as a separate post, which reads as a post without a cover. One message with
+ * the picture attached is what the reader is being promised, so a long post is cut to a teaser
+ * ending in the link rather than split across two messages.
+ *
+ * The cut is measured against the room left after the ellipsis and the link, so the result can
+ * never exceed the ceiling Telegram enforces.
+ */
+export function buildPhotoCaption(post: MessengerPost): string {
+  if (post.text.length <= TELEGRAM_CAPTION_LIMIT) return post.text;
+
+  const suffix = `…\n\n${TELEGRAM_CAPTION_MORE}: ${escapeHtml(post.url)}`;
+  const budget = TELEGRAM_CAPTION_LIMIT - suffix.length;
+  const head = cutAtSentence(post.text, Math.max(120, Math.min(TELEGRAM_CAPTION_TARGET, budget)));
+
+  return `${head}${suffix}`;
+}
+
+/** How many chunks a long text is split into, for a post with no picture to caption. */
+function textSteps(text: string): TelegramStep[] {
+  return chunkForTelegram(text, TELEGRAM_MESSAGE_LIMIT).map((chunk) => ({
+    kind: "text" as const,
+    text: chunk,
+  }));
 }
 
 /**
  * Decides how a post reaches Telegram.
  *
- * Four shapes, from Telegram's own limits:
+ * Two shapes now, where there used to be four:
  *
- *  - up to `TELEGRAM_CAPTION_LIMIT`: one `sendPhoto` with the text as the caption.
- *    A single message is what a reader wants and what the channel's preview shows.
- *  - above that, up to `LONG_READING_THRESHOLD`: the cover with the short caption
- *    (headline and link), then the text as a separate `sendMessage`. Telegram rejects a
- *    photo whose caption exceeds 1024 characters, so the whole text cannot go under it.
- *  - above that, while the text still fits in `TELEGRAM_MAX_MESSAGES` chunks of
- *    `TELEGRAM_MESSAGE_LIMIT`: the same cover and short caption, then the whole text as
- *    those chunks, split on paragraph boundaries. This is what "the full text" means for
- *    a long story.
- *  - past that: the cover and short caption, then the cut teaser pointing at the site,
- *    because a post that has become five messages is no longer a post.
- *
- * Without a cover there is no `sendPhoto` to carry a caption, so a short post still
- * goes out as a plain message rather than as an empty photo.
+ *  - with a cover: **one** `sendPhoto`, carrying the text as its caption — the whole post
+ *    when it fits in `TELEGRAM_CAPTION_LIMIT`, otherwise a teaser cut at a sentence boundary
+ *    with the link under it. One message, picture attached.
+ *  - without one: the text as `sendMessage`, chunked on paragraph boundaries while it fits in
+ *    `TELEGRAM_MAX_MESSAGES` messages, and cut to the site link past that. There is no caption
+ *    to carry it, and a story with no picture still has to reach the channel.
  */
 export function planTelegramPost(
   post: MessengerPost,
@@ -505,33 +622,30 @@ export function planTelegramPost(
 ): TelegramPlan {
   const length = post.text.length;
 
-  if (length <= TELEGRAM_CAPTION_LIMIT) {
+  if (hasCover) {
     return {
-      mode: hasCover ? "caption" : "text-only",
+      mode: length <= TELEGRAM_CAPTION_LIMIT ? "caption" : "caption-cut",
       length,
-      truncated: false,
-      steps: hasCover
-        ? [{ kind: "photo", caption: post.text }]
-        : [{ kind: "text", text: post.text }],
+      truncated: length > TELEGRAM_CAPTION_LIMIT,
+      steps: [{ kind: "photo", caption: buildPhotoCaption(post) }],
     };
   }
 
-  const steps: TelegramStep[] = [];
-  if (hasCover) steps.push({ kind: "photo", caption: shortPhotoCaption(post) });
-
-  if (length <= LONG_READING_THRESHOLD) {
-    steps.push({ kind: "text", text: post.text });
-    return { mode: "split", length, truncated: false, steps };
+  if (length <= TELEGRAM_CAPTION_LIMIT) {
+    return { mode: "text-only", length, truncated: false, steps: [{ kind: "text", text: post.text }] };
   }
 
-  const chunks = chunkForTelegram(post.text, TELEGRAM_MESSAGE_LIMIT);
-  if (chunks.length <= TELEGRAM_MAX_MESSAGES) {
-    for (const chunk of chunks) steps.push({ kind: "text", text: chunk });
+  const steps = textSteps(post.text);
+  if (steps.length <= TELEGRAM_MAX_MESSAGES) {
     return { mode: "chunks", length, truncated: false, steps };
   }
 
-  steps.push({ kind: "text", text: cutForReading(post) });
-  return { mode: "truncated", length, truncated: true, steps };
+  return {
+    mode: "truncated",
+    length,
+    truncated: true,
+    steps: [{ kind: "text", text: cutForReading(post) }],
+  };
 }
 
 export type MaxPlan = {

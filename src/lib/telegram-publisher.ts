@@ -28,6 +28,8 @@ import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
 export const DEFAULT_TELEGRAM_API_ROOT = "https://api.telegram.org";
 
 export type TelegramArticle = {
+  /** Database id, for the log line only — a repost that misbehaves has to be findable. */
+  id?: string;
   title: string;
   /** The article body as stored, editor markup and all. */
   contentHtml: string;
@@ -402,6 +404,19 @@ export async function publishArticleToTelegram(
     });
 
     const plan = planTelegramPost(post, { hasCover: Boolean(article.coverImage) });
+
+    /*
+      The line an operator reads when a channel post is wrong: which story, whether it had a
+      picture to send, how long the text was and which shape the planner chose. Without it a
+      successful publish leaves no trace at all — the module logs only its failures — and
+      "why did the channel show a wall of text" becomes unanswerable after the fact.
+    */
+    console.log(
+      `[telegram] публикация: статья ${article.id ?? "без id"} «${article.slug}», обложка: ${
+        article.coverImage ?? "нет"
+      }, текста ${plan.length} символов, режим ${plan.mode}, шагов ${plan.steps.length}`,
+    );
+
     let warning: string | undefined;
     let firstMessageId: string | null = null;
     let sent = 0;
@@ -426,6 +441,9 @@ export async function publishArticleToTelegram(
           const id = await sendPhoto(config, cover, step.caption);
           firstMessageId ??= id;
           sent += 1;
+          console.log(
+            `[telegram] sendPhoto → сообщение ${id ?? "?"}, подпись ${step.caption?.length ?? 0} символов`,
+          );
         } catch (error) {
           warning = `Обложка не отправлена: ${
             error instanceof Error ? error.message : "неизвестная ошибка"
@@ -438,6 +456,9 @@ export async function publishArticleToTelegram(
       const id = await sendMessage(config, step.text);
       firstMessageId ??= id;
       sent += 1;
+      console.log(
+        `[telegram] sendMessage → сообщение ${id ?? "?"}, ${step.text.length} символов`,
+      );
     }
 
     /*
@@ -461,17 +482,20 @@ export async function publishArticleToTelegram(
       }
     }
 
-    const textMessageCount = plan.steps.filter((step) => step.kind === "text").length;
     const summary =
       plan.mode === "caption"
         ? "Telegram: одно сообщение с обложкой."
-        : plan.mode === "truncated"
-          ? "Telegram: обложка и анонс со ссылкой на полный текст."
-          : plan.mode === "split"
-            ? "Telegram: обложка и текст двумя сообщениями."
-            : plan.mode === "chunks"
-              ? `Telegram: обложка и текст ${textMessageCount} сообщениями.`
+        : plan.mode === "caption-cut"
+          ? "Telegram: обложка с анонсом и ссылкой на полный текст."
+          : plan.mode === "chunks"
+            ? `Telegram: текст ${plan.steps.length} сообщениями.`
+            : plan.mode === "truncated"
+              ? "Telegram: текст со ссылкой на полный материал."
               : "Telegram: текст без обложки.";
+
+    console.log(
+      `[telegram] готово: ${summary}${warning ? ` Предупреждение: ${warning}` : ""}`,
+    );
 
     return {
       ok: true,
