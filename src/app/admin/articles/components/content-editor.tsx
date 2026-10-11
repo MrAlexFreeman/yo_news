@@ -87,6 +87,13 @@ const ALIGNMENTS: { label: string; icon: typeof AlignLeft; value: string }[] = [
  * A function rather than a constant because one button is conditional on that flag, and
  * a module-level array has nowhere to read a prop from. Everything else about it is the
  * same strip it always was.
+ *
+ * The parameter is the flag itself, not its inverse, and the button's own condition is
+ * `!autoRelated`. That reads as one negation and is what the call site passes. It used to
+ * be passed the inverse — `toolbarGroups(!autoRelatedArticle)` — while the button still
+ * wrote `!autoRelated` inside, so the two cancelled and the button appeared exactly when it
+ * was supposed to be hidden. Measured on the rendered toolbar before fixing: with the flag
+ * on the button was present, with it off it was absent.
  */
 const toolbarGroups = (autoRelated: boolean): ToolbarAction[][] => [
   [
@@ -380,7 +387,7 @@ export function ContentEditor({
     inside the map: the map also numbers the groups to place the dividers, and a group
     filtered out after the fact would still be counted.
   */
-  const visibleGroups = toolbarGroups(!autoRelatedArticle)
+  const visibleGroups = toolbarGroups(autoRelatedArticle)
     .map((group) => group.filter((action) => action.whenEnabled !== false))
     .filter((group) => group.length > 0);
 

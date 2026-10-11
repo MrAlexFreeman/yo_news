@@ -2516,23 +2516,21 @@ async function runMountedEditor() {
   document.body.appendChild(host);
   const root = createRoot(host);
 
-  const render = async (value: string) => {
+  const render = async (value: string, autoRelatedArticle = true) => {
+    const props = { value, onChange: () => {}, autoRelatedArticle };
     if (act) {
       await act(async () => {
-        root.render(
-          createElement(ContentEditor as never, {
-            value,
-            onChange: () => {},
-          }),
-        );
+        root.render(createElement(ContentEditor as never, props));
       });
       return;
     }
-    root.render(
-      createElement(ContentEditor as never, { value, onChange: () => {} }),
-    );
+    root.render(createElement(ContentEditor as never, props));
     await settle();
   };
+
+  /** The toolbar's "read also" button, by the label it carries for screen readers. */
+  const readAlsoButton = () =>
+    host.querySelector('[aria-label*="Читайте также"]');
 
   await render("<h2>Заголовок</h2><p>Текст материала</p>");
 
@@ -2582,6 +2580,40 @@ async function runMountedEditor() {
         !surface.textContent?.includes("Текст из снимка"),
     ),
     (surface?.innerHTML ?? "").slice(0, 180),
+  );
+
+  /*
+    The toolbar button, switched in a mounted component rather than in two fresh renders.
+
+    This is the assertion for the reported defect, and it has to be made *this* way: two
+    separate `renderToStaticMarkup` calls would prove the button reads the prop, while what
+    the editor actually does is re-render in place when a checkbox in the sidebar changes a
+    `useState`. Same root, same component type, so React updates rather than remounts — if
+    the button were captured once at mount, this is where it would show.
+
+    The condition was inverted before this existed, and nothing caught it: with the flag on
+    the button was drawn, with it off it was not. Both states were wrong and the toolbar was
+    never the subject of a check at all.
+  */
+  await render("<p>Текст материала</p>", true);
+  check(
+    "Тулбар: при включённой автоматике кнопки «Читайте также» нет",
+    readAlsoButton() === null,
+    readAlsoButton() ? "кнопка есть" : "кнопки нет",
+  );
+
+  await render("<p>Текст материала</p>", false);
+  check(
+    "Тулбар: при снятой галочке кнопка появляется без перезагрузки",
+    readAlsoButton() !== null,
+    readAlsoButton() ? "кнопка появилась" : "кнопки нет",
+  );
+
+  await render("<p>Текст материала</p>", true);
+  check(
+    "Тулбар: и снова исчезает, когда галочку возвращают",
+    readAlsoButton() === null,
+    readAlsoButton() ? "кнопка осталась" : "кнопки нет",
   );
 
   root.unmount();
