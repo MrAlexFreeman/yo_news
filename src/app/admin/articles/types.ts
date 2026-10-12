@@ -103,6 +103,12 @@ export type ArticleFormValues = {
    * always had.
    */
   autoRelatedArticle: boolean;
+  /**
+   * Опрос, прикреплённый к материалу, в виде, который ждёт редактор.
+   *
+   * Только текст: голоса — не то, что редактор правит руками, и форма их не показывает.
+   */
+  poll?: { question: string; options: string[] };
   /** Repost into Telegram on first publication. */
   isTelegram: boolean;
   /** Repost into MAX on first publication. */

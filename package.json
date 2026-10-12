@@ -41,7 +41,8 @@
                     "loop:check":  "tsx scripts/check-content-loop.mts",
                     "mascot:check":  "tsx scripts/check-mascot.mts",
                     "sticky:check":  "tsx scripts/check-sticky-header-logic.mts",
-                    "wiki:check":  "tsx --env-file=.env scripts/check-wiki.mts"
+                    "wiki:check":  "tsx --env-file=.env scripts/check-wiki.mts",
+                    "polls:check":  "tsx scripts/check-polls.mts"
                 },
     "dependencies":  {
                          "@mozilla/readability":  "^0.6.0",

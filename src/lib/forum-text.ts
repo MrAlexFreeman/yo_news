@@ -125,3 +125,22 @@ export function clampForumText(value: string, limit: number): string {
   // Only honour the word boundary if it is not cutting away most of the text.
   return (lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut).trim();
 }
+
+/**
+ * The headline of a story a reader sent in, taken from the story itself.
+ *
+ * The form under an article asks for one thing — the text — because a reader who has something
+ * to tell is not going to condense it into a headline first, and a required title field is a
+ * reason to close the page. The first sentence is what they would have written anyway; when
+ * there is no sentence break the whole thing is clamped to the forum's own title limit.
+ *
+ * Pure, so the shapes are checked rather than assumed: an empty submission, a one-word story,
+ * a text with no full stop anywhere, and a text whose first sentence is longer than the limit.
+ */
+export function proposalTitle(text: string, limit = FORUM_TITLE_MAX_LENGTH): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return "История читателя";
+
+  const firstSentence = flat.split(/(?<=[.!?…])\s+/u)[0] ?? flat;
+  return clampForumText(firstSentence, limit);
+}

@@ -138,7 +138,7 @@ model Article {
   /// the deliberate act.
   ///
   /// Appended at the end for the same SQLite reason as `vkPostId` above.
-  autoRelatedArticle Boolean   @default(true)
+  autoRelatedArticle Boolean   @default(false)
   /// The id MAX returned for this story's last post, if any.
   ///
   /// Present for the same reason as `vkPostId`: a repost that happened once must not happen
@@ -150,6 +150,9 @@ model Article {
   /// The last of a multi-message post is what is kept: it is the one whose chunk carries the
   /// source line and the rubric, so it identifies the post a reader would find.
   maxPostId   String?
+  /// The poll attached to this story, if any. The foreign key lives on `ArticlePoll`, so this
+  /// side adds no column and no table rebuild — see the note on where new columns may go.
+  poll        ArticlePoll?
   tags        ArticleTag[]
 
   @@index([status, publishedAt])
@@ -342,4 +345,26 @@ model ForumPost {
 
   @@index([topicId, createdAt])
   @@map("forum_posts")
+}
+
+/// A poll under an article: one question and two to five answers.
+///
+/// **A separate table rather than a JSON column on `Article`.** A column would mean rebuilding
+/// the article table to add it, and the rules put new columns at the end for exactly that
+/// reason — a new table costs nothing and touches nothing. The foreign key lives here, so the
+/// relation field added to `Article` is virtual and adds no column either.
+///
+/// `options` is JSON: `[{ "id": "o1", "text": "…", "votes": 12 }]`. The ids are minted on the
+/// client and stored with the votes, because a vote has to name the answer it counts for and
+/// the array's order is something an editor changes by dragging a row.
+model ArticlePoll {
+  id        String   @id @default(cuid())
+  articleId String   @unique @map("article_id")
+  question  String
+  options   Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@map("article_polls")
 }

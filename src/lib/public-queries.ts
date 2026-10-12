@@ -3,6 +3,7 @@ import "server-only";
 import type { Prisma } from "@/generated/prisma/client";
 
 import { categoryRank, LOOP_HIGHLIGHT_RUBRICS } from "@/lib/categories";
+import { isPollUsable, parsePollOptions, type PollOption } from "@/lib/polls";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -449,6 +450,30 @@ export async function getLoopHighlights(
     take,
     select: LOOP_FIELDS,
   });
+}
+
+/**
+ * Опрос под материалом, готовый к отрисовке, или null.
+ *
+ * `null` по двум причинам сразу: опроса нет, или в колонке лежит то, что опросом не является
+ * (пустой вопрос, один вариант). Разбирать это в виджете значило бы повторять решение в
+ * разметке; здесь оно принято один раз.
+ */
+export async function getArticlePoll(articleId: string): Promise<{
+  id: string;
+  question: string;
+  options: PollOption[];
+} | null> {
+  const poll = await prisma.articlePoll.findUnique({
+    where: { articleId },
+    select: { id: true, question: true, options: true },
+  });
+  if (!poll) return null;
+
+  const options = parsePollOptions(poll.options);
+  return isPollUsable(poll.question, options)
+    ? { id: poll.id, question: poll.question, options }
+    : null;
 }
 
 /**

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { ArticleForm } from "@/app/admin/articles/components/article-form";
+import { parsePollOptions } from "@/lib/polls";
 import { FALLBACK_CATEGORIES } from "@/app/admin/articles/types";
 import { isArticleStatus } from "@/lib/article-status";
 import { parseMedia } from "@/lib/article-media";
@@ -94,6 +95,10 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         isExclusive: true,
         is18plus: true,
         tags: { select: { tag: { select: { name: true } } } },
+        // The poll is edited as text only: the votes are not something the form shows or
+        // changes, and `parsePollOptions` is what decides whether the stored column is a poll
+        // at all — the same judgement the public page makes.
+        poll: { select: { question: true, options: true } },
       },
     }),
     prisma.category.findMany({
@@ -142,6 +147,10 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         isDzen: article.isDzen,
         isVk: article.isVk,
         autoRelatedArticle: article.autoRelatedArticle,
+        poll: {
+          question: article.poll?.question ?? "",
+          options: parsePollOptions(article.poll?.options).map((option) => option.text),
+        },
         /*
           Both messenger boxes start empty for a story that is already live.
 

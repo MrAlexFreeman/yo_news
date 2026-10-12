@@ -30,6 +30,7 @@ import { CharCounter } from "@/app/admin/articles/components/char-counter";
 import { ContentEditor } from "@/app/admin/articles/components/content-editor";
 import type { ContentEditorHandle } from "@/app/admin/articles/components/content-editor";
 import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar";
+import { PollEditor } from "@/app/admin/articles/components/poll-editor";
 import { StickyActionBar } from "@/app/admin/articles/components/sticky-action-bar";
 import { TagInput } from "@/app/admin/articles/components/tag-input";
 import { TitleField } from "@/app/admin/articles/components/title-field";
@@ -270,7 +271,10 @@ export function ArticleForm({
   // saved should get the plate automatically, and a checkbox that starts empty would make
   // "publish a draft" mean something different from "publish it after an edit".
   const [autoRelatedArticle, setAutoRelatedArticle] = useState(
-    initial?.autoRelatedArticle ?? true,
+    // Off for a new article: the plate is placed by hand from the toolbar. See the schema
+    // comment — the automatic position was landing in the middle of quotations and
+    // corrections often enough that the desk stopped trusting it.
+    initial?.autoRelatedArticle ?? false,
   );
   /*
     The two messenger boxes default to whatever the settings say is active, not to
@@ -1466,6 +1470,10 @@ export function ArticleForm({
               onChange={setMedia}
               onInsert={insertMediaIntoText}
               insertHint={insertHint}
+            />
+
+            <PollEditor
+              initial={initial?.poll ?? { question: "", options: [] }}
             />
           </PublishSidebar>
 

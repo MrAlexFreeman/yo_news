@@ -17,6 +17,7 @@ import {
   clampForumText,
   forumTextToHtml,
   isHoneypotFilled,
+  proposalTitle,
 } from "@/lib/forum-text";
 import { clientIp, retryAfterSeconds, take } from "@/lib/forum-rate-limit";
 import { sanitizeForumHtml } from "@/lib/sanitize";
@@ -41,6 +42,16 @@ function str(formData: FormData, key: string): string {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
 }
+
+/**
+ * Where a reader's story goes.
+ *
+ * «Новости и события» — the section for "что происходит в городе", which is what a reader
+ * writing in has. Named once here rather than inlined at the call, because the checks assert it
+ * is a section the board actually has: a typo would otherwise mean every submission answering
+ * "раздел недоступен" with nothing to point at.
+ */
+const READER_STORIES_SECTION = "novosti-i-sobytiya";
 
 /** Rejection shared by both actions, including the wait the visitor actually has. */
 async function rateLimited(): Promise<ForumFormResult> {
@@ -173,4 +184,57 @@ export async function createForumPostAction(
   revalidatePath("/forum");
 
   redirect(`/forum/${categorySlug}/${topicSlug}`);
+}
+
+/**
+ * A story a reader sent from under an article.
+ *
+ * **The same gate and the same store as a forum topic**, and that is the design rather than a
+ * shortcut: `honeypot → rate limit → validate → store` is what keeps an anonymous form from
+ * being a spam hole, and the stories land in «Новости и события», where the desk already reads.
+ * A second inbox would be a second place to forget to look.
+ *
+ * The headline is derived from the story itself (see `proposalTitle`), so the form asks for the
+ * name and the text and nothing else.
+ */
+export async function proposeStoryAction(formData: FormData): Promise<ForumFormResult> {
+  if (isHoneypotFilled(formData)) {
+    return { ok: false, message: "Заявка отклонена." };
+  }
+
+  const limited = await rateLimited();
+  if (isRejection(limited)) return limited;
+
+  const authorName = clampForumText(str(formData, "authorName"), FORUM_NAME_MAX_LENGTH);
+  const content = str(formData, "content");
+
+  const fieldErrors: NonNullable<ForumFormResult["fieldErrors"]> = {};
+  if (!authorName) fieldErrors.authorName = "Укажите имя.";
+  if (!content) {
+    fieldErrors.content = "Напишите, о чём история.";
+  } else if (content.length > FORUM_POST_MAX_LENGTH) {
+    fieldErrors.content = `Не больше ${FORUM_POST_MAX_LENGTH} символов.`;
+  }
+
+  if (Object.keys(fieldErrors).length > 0) {
+    return { ok: false, message: "Проверьте выделенные поля.", fieldErrors };
+  }
+
+  const category = await getForumCategoryBySlug(READER_STORIES_SECTION);
+  if (!category) {
+    return { ok: false, message: "Раздел для историй читателей сейчас недоступен." };
+  }
+
+  const created = await createForumTopic({
+    categoryId: category.id,
+    title: proposalTitle(content),
+    authorName,
+    contentHtml: toStoredHtml(content),
+  });
+
+  revalidatePath("/forum");
+  revalidatePath(`/forum/${category.slug}`);
+  revalidatePath("/news");
+
+  redirect(`/forum/${category.slug}/${created.slug}`);
 }

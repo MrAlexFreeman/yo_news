@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronRight, MessageSquare } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
 import { ArticleGallery } from "@/components/article-gallery";
 import { ArticleSidebar } from "@/components/article-sidebar";
@@ -11,6 +11,8 @@ import { PhotoCredit } from "@/components/photo-credit";
 import { ArticleBodyWithCards } from "@/components/entity-card";
 import { PersonalizedContinueReading } from "@/components/personalized-continue-reading";
 import { ReadAlsoBlock } from "@/components/read-also-block";
+import { ReaderStoryForm } from "@/components/reader-story-form";
+import { ArticlePoll } from "@/components/article-poll";
 import { SubscribeBlock } from "@/components/subscribe-block";
 import { ViewCounter } from "@/components/view-counter";
 import type { LoopCardStory } from "@/components/loop-card";
@@ -27,6 +29,7 @@ import {
   getLoopFresh,
   getLoopHighlights,
   getLoopReadAlso,
+  getArticlePoll,
   getLoopRubricPopular,
   getLoopStoriesBySlugs,
   getPublishedArticleBySlug,
@@ -170,8 +173,9 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     it, and a second round trip to find that out would be a waterfall over a decision
     that costs a hash.
   */
-  const [readAlsoCandidates, popularCandidates, highlightCandidates, freshCandidates] =
+  const [articlePoll, readAlsoCandidates, popularCandidates, highlightCandidates, freshCandidates] =
     await Promise.all([
+      getArticlePoll(article.id),
       getLoopReadAlso(rubricSlug, article.id, LOOP_CANDIDATES),
       getLoopRubricPopular(rubricSlug, article.id, LOOP_POPULAR_CANDIDATES),
       getLoopHighlights([article.id], LOOP_HIGHLIGHT_CANDIDATES),
@@ -341,11 +345,6 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
 
     return renderBodyPart(body, "body");
   })();
-
-  const forumSection = forumSectionForArticle({
-    rubricSlug,
-    tags: article.tags.map((entry) => entry.tag.name),
-  });
 
   const timestamp = article.publishedAt ?? article.createdAt;
 
@@ -557,22 +556,14 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
       ) : null}
 
       {/*
-          The end-of-article block: a way into the forum discussion of this story, and
-          the story's neighbours. It sits directly after the body and before the tags,
-          while the reader still has the argument in mind.
+          The end-of-article block. It used to be a button into the forum plus the rubric name
+          beside it — «Раздел «Городские проблемы и ЖКХ»» printed under every story, whether or
+          not the story had anything to do with housing. The editor asked for the rubric to go
+          and for the block to ask the reader for something instead, so this is the form that
+          files a reader's story into «Новости и события». See `ReaderStoryForm`.
         */}
-        <div className="mt-10 flex flex-wrap items-center gap-3 border-t-2 border-ink pt-5">
-          <Link
-            href={`/forum/${forumSection.slug}`}
-            className="inline-flex min-h-10 items-center gap-2 rounded-sm bg-ink px-4 py-2 text-sm font-medium text-paper transition-opacity hover:opacity-90"
-          >
-            <MessageSquare className="size-4" aria-hidden />
-            Обсудить на форуме
-          </Link>
-          <span className="text-xs text-ink-soft">
-            Раздел «{forumSection.title}»
-          </span>
-        </div>
+        {articlePoll ? <ArticlePoll poll={articlePoll} /> : null}
+        <ReaderStoryForm />
 
         {/*
           The closing grid. It replaces the three-card "Читайте также" aside that used to

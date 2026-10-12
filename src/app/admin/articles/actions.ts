@@ -27,6 +27,7 @@ import { saveMessage } from "@/lib/save-message";
 import { slugify } from "@/lib/slugify";
 import { stockCreditColumns } from "@/lib/stock-credit";
 import { parseTagsField, syncArticleTags } from "@/lib/tags";
+import { normalisePollInput, parsePollOptions } from "@/lib/polls";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
 import { publishArticleToVk, setVkTokenSource } from "@/lib/vk-publisher";
 import { decideVkRepost } from "@/lib/vk-dedupe";
@@ -59,6 +60,45 @@ function optional(value: string): string | null {
 function checkbox(formData: FormData, key: string): boolean {
   const value = formData.get(key);
   return value === "on" || value === "true" || value === "1";
+}
+
+/**
+ * Attaches, replaces or removes the poll, keeping the votes already cast.
+ *
+ * **Votes are carried over by option id**, which `normalisePollInput` mints from the answer's
+ * position. An editor fixing a typo in an answer, or adding a fifth one, therefore does not wipe
+ * the votes already counted; swapping two answers does, because the id stays with the slot. That
+ * is the trade the ids buy, and it is the harmless way round: reordering a poll under a story is
+ * rare, retyping an answer is not.
+ *
+ * A story that stopped having a poll loses the row. Publishing without touching the fields — the
+ * checkbox path, a re-save from an old tab — sends no poll fields, which reads as "no poll" and
+ * deletes one that was there. The form always renders the question input, so a poll that exists
+ * is always re-submitted; an old tab that predates polls is the case that clears one, and the
+ * edit page reloads before that can happen.
+ */
+async function saveArticlePoll(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  articleId: string,
+  poll: ReturnType<typeof normalisePollInput>,
+): Promise<void> {
+  if (!poll) {
+    await tx.articlePoll.deleteMany({ where: { articleId } });
+    return;
+  }
+
+  const existing = await tx.articlePoll.findUnique({
+    where: { articleId },
+    select: { options: true },
+  });
+  const cast = new Map(parsePollOptions(existing?.options).map((option) => [option.id, option.votes]));
+  const options = poll.options.map((option) => ({ ...option, votes: cast.get(option.id) ?? 0 }));
+
+  await tx.articlePoll.upsert({
+    where: { articleId },
+    create: { articleId, question: poll.question, options },
+    update: { question: poll.question, options },
+  });
 }
 
 /**
@@ -317,6 +357,18 @@ export async function createArticleAction(
   // `status`, never by this column, so a scheduled draft stays off the site.
   const tagNames = parseTagsField(str(formData, "tags"));
 
+  /*
+    The poll, as one decision: an object, or nothing.
+
+    `normalisePollInput` answers null for anything that is not a poll — a cleared question, one
+    answer, no answers — so this line covers both "there is no poll" and "the editor removed the
+    poll", and the save below needs no second pass over the fields.
+  */
+  const pollInput = normalisePollInput(
+    str(formData, "pollQuestion"),
+    formData.getAll("pollOption").map((value) => (typeof value === "string" ? value : "")),
+  );
+
   // The row write and the tag sync share one transaction: a tag set half-written
   // against a saved article is exactly the state nobody wants to debug later.
   const article = await prisma.$transaction(async (tx) => {
@@ -336,6 +388,7 @@ export async function createArticleAction(
         });
 
     await syncArticleTags(tx, row.id, tagNames);
+    await saveArticlePoll(tx, row.id, pollInput);
     return row;
   });
 
