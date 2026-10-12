@@ -29,6 +29,14 @@ import { cn } from "@/lib/utils";
 export type FeedRow = {
   id: string;
   source: string;
+  /**
+   * Человеческая подпись источника для бейджа: «Топ Е1», «66.RU».
+   *
+   * Код в базе (`E1`, `GOROD66`) остаётся ключом и цветом, а на экран идёт имя: редактору
+   * читать `GOROD66` незачем, а старым строкам с удалённым `URA` подпись даёт сама функция —
+   * по коду, которого больше нет в списке источников.
+   */
+  sourceTitle: string;
   title: string;
   originalUrl: string;
   preview: string;
@@ -121,12 +129,18 @@ export function FeedList({ rows, view }: FeedListProps) {
                     <span
                       className={cn(
                         "rounded-sm px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase",
-                        row.source === "URA"
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-blue-100 text-blue-800",
+                        // Цвет по коду источника, не по подписи: подпись редактор может
+                        // переименовать в списке лент, и бейдж не должен менять цвет вместе
+                        // с ней. Удалённый `URA` остаётся на старых строках — он получает
+                        // нейтральный серый, а не падает.
+                        row.source === "E1"
+                          ? "bg-blue-100 text-blue-800"
+                          : row.source === "GOROD66"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-neutral-200 text-neutral-600",
                       )}
                     >
-                      {row.source}
+                      {row.sourceTitle}
                     </span>
                     <time
                       dateTime={row.dateIso}

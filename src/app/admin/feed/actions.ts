@@ -86,7 +86,9 @@ export async function syncFeedAction(): Promise<FeedActionResult> {
 
     const failed = summary.sources.filter((source) => source.error);
     const parts = summary.sources.map((source) =>
-      source.error ? `${source.source}: ошибка` : `${source.source}: +${source.inserted}`,
+      source.error
+        ? `${source.title}: ошибка`
+        : `${source.title}: +${source.inserted}${source.political > 0 ? `, политика: ${source.political}` : ""}`,
     );
 
     return {

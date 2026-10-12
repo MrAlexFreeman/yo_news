@@ -16,15 +16,20 @@ function check(name: string, ok: boolean, detail: string) {
 const SAMPLE_TITLE = "В Кургане начали обустраивать прогулочную зону у воды";
 
 /**
- * The URA page, mirroring the live markup measured on 2026-10-08: the body lives in
- * `text-element_news-publication-text-element` blocks of one paragraph each, the caption
- * and its credit share an `image-element_news-content-image-element` block of two, and
- * the gallery, the "материал по теме" inset and the ad dividers are separate containers.
+ * A dirty page: the markup measured live on 2026-10-08, kept because it is the richest
+ * cleaning case in the suite — the caption and its credit share one block, and the gallery,
+ * the "материал по теме" inset and the ad dividers are separate containers that must not
+ * reach the draft.
+ *
+ * The container carries E1's real class (`articleContent_0DdLJ`) rather than the removed
+ * outlet's, so the fixture exercises the path a configured feed actually takes: a selector
+ * match, then the cleaning rules. The inner element classes are left as measured — the
+ * exclusion rules key on those prefixes, and they are what makes the fixture dirty.
  */
-const URA_PAGE = `<!doctype html><html><head><title>${SAMPLE_TITLE}</title></head><body>
+const DIRTY_PAGE = `<!doctype html><html><head><title>${SAMPLE_TITLE}</title></head><body>
 <header><nav><a href="/">Главная</a><a href="/news">Новости</a></nav></header>
 <div class="page">
-  <div class="content_news-publication-content__v2iuZ">
+  <div class="articleContent_0DdLJ">
     <div class="content_news-publication-content__element__eg4mc image-element_news-content-image-element__Rgxkt">
       <p>В Кургане у ТЦ «Кубик» появится прогулочная зона с деревянным настилом</p>
       <p>Фото: Екатерина Сычкова © URA.RU</p>
@@ -183,10 +188,17 @@ check(
 // --- the selectors ------------------------------------------------------------
 
 check(
-  "Селекторы: в списке есть настоящие контейнеры обоих изданий",
-  BODY_SELECTORS.some((entry) => entry.selector.includes("news-publication-content")) &&
-    BODY_SELECTORS.some((entry) => entry.selector.includes("articleContent")),
+  "Селекторы: в списке есть настоящие контейнеры настроенных изданий",
+  BODY_SELECTORS.some((entry) => entry.selector.includes("articleContent")),
   BODY_SELECTORS.map((entry) => entry.note).join(", "),
+);
+
+check(
+  "Селекторы: удалённого издания в списке нет",
+  // Удаляя ленту, легко забыть её селектор. Мёртвый селектор читается как поддержка
+  // издания, которого в предложке больше нет.
+  BODY_SELECTORS.every((entry) => !entry.selector.includes("news-publication-content")),
+  BODY_SELECTORS.map((entry) => entry.selector).join(", "),
 );
 
 check(
@@ -195,68 +207,151 @@ check(
   "хеш CSS-модуля меняется при каждом деплое",
 );
 
+// --- текст из служебной разметки ----------------------------------------------
+
+/*
+  Ловушка, из-за которой этот путь и появился.
+
+  66.ru отдаёт статью, собранную скриптами: в HTML у неё два абзаца, а весь текст — в
+  `application/ld+json` полем `articleBody`. Селекторы на такой странице находят пустой
+  контейнер, и без разбора разметки «Взять в работу» принесло бы редактору один заголовок.
+
+  Фикстура воспроизводит ту же форму: пустой контейнер статьи плюс настоящий `<script>`.
+  Проверяется и текст, и абзацы, и имя пути — чтобы работал именно разбор разметки, а не
+  случайная удача Readability.
+*/
+const LD_BODY_1 =
+  "В Екатеринбурге открыли обновлённую набережную городского пруда после двух лет ремонта и реконструкции: работы шли участками, чтобы горожане не остались без привычного места прогулок.";
+const LD_BODY_2 =
+  "На участке уложили новый гранитный настил, поставили скамейки и смонтировали подсветку вдоль всей линии берега, а спуски к воде сделали пологими и с перилами.";
+const LD_BODY_3 =
+  "Работы обошлись в 240 миллионов рублей, сообщили в мэрии города: часть суммы — областная субсидия, остальное — средства бюджета Екатеринбурга.";
+const LD_PAGE = `<!doctype html><html><head><title>Набережную открыли</title>
+<script type="application/ld+json">${JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "NewsArticle",
+  headline: "Набережную открыли",
+  articleBody: `${LD_BODY_1}\n\n${LD_BODY_2}\n${LD_BODY_3}`,
+})}</script>
+</head><body>
+<div class="articleContent_0DdLJ"><div class="skeleton"></div></div>
+</body></html>`;
+
+const fromLd = extractArticleText(LD_PAGE, { title: "Набережную открыли" });
+check(
+  "Разметка: тело читается из application/ld+json",
+  fromLd.method === "ldjson" &&
+    fromLd.text.length >= MIN_BODY_CHARS &&
+    fromLd.text.includes(LD_BODY_1) &&
+    fromLd.text.includes(LD_BODY_3),
+  `${fromLd.method}, ${fromLd.text.length} символов, ${fromLd.paragraphs} абзацев`,
+);
+
+check(
+  "Разметка: пустой контейнер статьи не выдаётся за тело",
+  fromLd.paragraphs >= 3 && fromLd.text.split("\n\n").length === fromLd.paragraphs,
+  `${fromLd.text.split("\n\n").length} блоков на ${fromLd.paragraphs} абзацев`,
+);
+
+/*
+  И обратное: битая разметка не должна ломать извлечение.
+
+  Незакрытая кавычка в блоке — обычное дело на живых сайтах. Второй блок с телом здесь
+  целый, и он должен быть прочитан: один сломанный `<script>` не имеет права унести с собой
+  весь путь.
+*/
+const LD_BROKEN = `<!doctype html><html><head>
+<script type="application/ld+json">{"@type":"NewsArticle","articleBody":"{битый json</script>
+<script type="application/ld+json">${JSON.stringify({
+  "@type": "NewsArticle",
+  articleBody: `${LD_BODY_1}\n${LD_BODY_2}`,
+})}</script>
+</head><body><div class="articleContent_0DdLJ"></div></body></html>`;
+
+const fromBroken = extractArticleText(LD_BROKEN, { title: "Ничего" });
+check(
+  "Разметка: битый блок пропускается, целый читается",
+  fromBroken.text.includes(LD_BODY_1) && fromBroken.text.includes(LD_BODY_2),
+  `${fromBroken.method}, ${fromBroken.text.length} символов`,
+);
+
+check(
+  "Разметка: @graph обходится, а не пропускается",
+  extractArticleText(
+    `<!doctype html><html><head><script type="application/ld+json">${JSON.stringify({
+      "@context": "https://schema.org",
+      "@graph": [
+        { "@type": "BreadcrumbList" },
+        { "@type": "NewsArticle", articleBody: `${LD_BODY_1}\n${LD_BODY_3}` },
+      ],
+    })}</script></head><body><div class="articleContent_0DdLJ"></div></body></html>`,
+    { title: "Ничего" },
+  ).text.includes(LD_BODY_3),
+  "@graph вложен, но найден",
+);
+
 // --- extraction ---------------------------------------------------------------
 
-const ura = extractArticleText(URA_PAGE, { title: SAMPLE_TITLE });
+const dirty = extractArticleText(DIRTY_PAGE, { title: SAMPLE_TITLE });
 check(
-  "Извлечение URA: контейнер найден по селектору",
-  ura.method === "selector" && ura.text.length >= MIN_BODY_CHARS,
-  `${ura.method}, ${ura.text.length} символов, ${ura.paragraphs} абзацев`,
+  "Извлечение грязной страницы: контейнер найден по селектору",
+  dirty.method === "selector" && dirty.text.length >= MIN_BODY_CHARS,
+  `${dirty.method}, ${dirty.text.length} символов, ${dirty.paragraphs} абзацев`,
 );
 
 check(
-  "Извлечение URA: абзацев достаточно для рерайта",
-  ura.paragraphs >= 4,
-  `${ura.paragraphs} абзацев`,
+  "Извлечение грязной страницы: абзацев достаточно для рерайта",
+  dirty.paragraphs >= 4,
+  `${dirty.paragraphs} абзацев`,
 );
 
 check(
-  "Извлечение URA: подпись к фото убрана",
-  !ura.text.includes("появится прогулочная зона с деревянным настилом"),
+  "Извлечение грязной страницы: подпись к фото убрана",
+  !dirty.text.includes("появится прогулочная зона с деревянным настилом"),
   "подпись не попала в текст",
 );
 
 check(
-  "Извлечение URA: кредит фотографа убран",
-  !ura.text.includes("Фото:") && !ura.text.includes("©"),
+  "Извлечение грязной страницы: кредит фотографа убран",
+  !dirty.text.includes("Фото:") && !dirty.text.includes("©"),
   "«Фото: … © URA.RU» отброшено",
 );
 
 check(
-  "Извлечение URA: тело статьи на месте, с цитатой",
-  ura.text.includes("В Заозерном районе Кургана началось обустройство") &&
-    ura.text.includes("«В этом году здесь появится новая прогулочная зона") &&
-    ura.text.includes("Ранее URA.RU писало"),
-  ura.text.slice(0, 120),
+  "Извлечение грязной страницы: тело статьи на месте, с цитатой",
+  dirty.text.includes("В Заозерном районе Кургана началось обустройство") &&
+    dirty.text.includes("«В этом году здесь появится новая прогулочная зона") &&
+    dirty.text.includes("Ранее URA.RU писало"),
+  dirty.text.slice(0, 120),
 );
 
 check(
-  "Извлечение URA: абзацы разделены пустой строкой",
-  ura.text.split("\n\n").length === ura.paragraphs,
-  `${ura.text.split("\n\n").length} блоков`,
+  "Извлечение грязной страницы: абзацы разделены пустой строкой",
+  dirty.text.split("\n\n").length === dirty.paragraphs,
+  `${dirty.text.split("\n\n").length} блоков`,
 );
 
 check(
-  "Извлечение URA: подпись галереи не попала",
-  !ura.text.includes("В Заозерном создадут новую прогулочную зону"),
+  "Извлечение грязной страницы: подпись галереи не попала",
+  !dirty.text.includes("В Заозерном создадут новую прогулочную зону"),
   "галерея отброшена по контейнеру",
 );
 
 check(
-  "Извлечение URA: блок «материал по теме» не попал",
-  !/материал по теме/iu.test(ura.text),
+  "Извлечение грязной страницы: блок «материал по теме» не попал",
+  !/материал по теме/iu.test(dirty.text),
   "вставка отброшена",
 );
 
 check(
-  "Извлечение URA: реклама не попала",
-  !/продолжение после рекламы/iu.test(ura.text),
+  "Извлечение грязной страницы: реклама не попала",
+  !/продолжение после рекламы/iu.test(dirty.text),
   "рекламный разделитель отброшен",
 );
 
 check(
-  "Извлечение URA: подвал «Подписывайтесь» не попал",
-  !/подписывайт/iu.test(ura.text),
+  "Извлечение грязной страницы: подвал «Подписывайтесь» не попал",
+  !/подписывайт/iu.test(dirty.text),
   "подвал отброшен",
 );
 

@@ -33,6 +33,13 @@ export type SourceSyncResult = {
   inserted: number;
   /** Elements the feed carried that could not be used. */
   skipped: number;
+  /**
+   * Из отказавшихся — те, что отсеяны как политика.
+   *
+   * Отдельным числом, потому что это не сбой и не мусор в ленте, а работа фильтра: редактору
+   * важно видеть, что отбор идёт («политика: 4»), иначе он решит, что лента обеднела сама.
+   */
+  political: number;
   /** Set when the source could not be read at all. */
   error?: string;
 };
@@ -68,6 +75,7 @@ export async function syncFeeds(): Promise<SyncSummary> {
         title: feed.title,
         inserted: written,
         skipped: parsed.skipped.length,
+        political: parsed.skipped.filter((item) => item.reason === "politics").length,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "неизвестная ошибка";
@@ -77,6 +85,7 @@ export async function syncFeeds(): Promise<SyncSummary> {
         title: feed.title,
         inserted: 0,
         skipped: 0,
+        political: 0,
         error: message,
       });
     }

@@ -1,6 +1,11 @@
 import "server-only";
 
-import { extractArticleText, looksTruncated, preferExtracted } from "@/lib/article-extract";
+import {
+  type ExtractMethod,
+  extractArticleText,
+  looksTruncated,
+  preferExtracted,
+} from "@/lib/article-extract";
 import { prisma } from "@/lib/prisma";
 import { fetchWireText } from "@/lib/wire-fetch";
 
@@ -54,7 +59,7 @@ export type FullTextOutcome = {
   /** True when the stored row was rewritten with the full text. */
   enriched: boolean;
   /** Which path produced `text`. `cached` means the stored text was already a story. */
-  method: "cached" | "selector" | "readability" | "none";
+  method: "cached" | ExtractMethod;
   /** Set when the page could not be read; the teaser is what remains. */
   error?: string;
 };

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { FeedList, type FeedRow } from "@/app/admin/feed/components/feed-list";
+import { FEED_SOURCES, feedSourceTitle } from "@/lib/feed-parse";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 
@@ -62,6 +63,7 @@ export default async function FeedPage({ searchParams }: PageParams) {
   const rows: FeedRow[] = items.map((item) => ({
     id: item.id,
     source: item.source,
+    sourceTitle: feedSourceTitle(item.source),
     title: item.title,
     originalUrl: item.originalUrl,
     preview:
@@ -89,8 +91,10 @@ export default async function FeedPage({ searchParams }: PageParams) {
         <header className="border border-neutral-300 bg-white px-5 py-4">
           <h1 className="text-base font-semibold text-neutral-900">Предложка</h1>
           <p className="mt-1 text-sm text-neutral-600">
-            Инфоповоды из лент URA.RU и E1.RU. Из любого можно собрать черновик: форма
-            откроется с текстом источника, а переписать его можно кнопкой рерайта.
+            Инфоповоды из лент {FEED_SOURCES.map((feed) => feed.title).join(" и ")}. Из любого
+            можно собрать черновик: форма откроется с текстом источника, а переписать его
+            можно кнопкой рерайта. Материалы про политику отсеиваются при импорте и в список
+            не попадают.
           </p>
         </header>
 

@@ -30,17 +30,22 @@ export type BodySelector = { selector: string; note: string };
  * is a CSS-module class whose hash changes on every deploy, so the selector matches the
  * stable prefix (`[class*=…]`) rather than the whole name:
  *
- *   URA  div.content_news-publication-content__v2iuZ
- *   E1   div.articleContent_0DdLJ
+ *   E1    div.articleContent_0DdLJ
+ *   66.ru div.news-text
  *
- * The generic entries below them are the shapes other outlets use and the ones the brief
- * named; they cost nothing and are what a third feed would need.
+ * URA's entry was removed with the outlet itself. Its class
+ * (`content_news-publication-content_…`) is not kept "just in case": a selector that no
+ * configured feed can produce is dead weight that reads as support.
+ *
+ * 66.ru is here for completeness and is not the path that carries that outlet: its pages
+ * are assembled by script, and a selector over them finds an empty container. Its text is
+ * read from the structured data instead — see `readFromJsonLd`. Measured on a live page:
+ * 892 KB of HTML, two `<p>`, one `application/ld+json` block holding the whole body.
  */
 export const BODY_SELECTORS: readonly BodySelector[] = [
-  { selector: '[class*="news-publication-content"]', note: "URA.RU" },
   { selector: '[class*="articleContent"]', note: "E1.RU" },
+  { selector: '.news-text, .story-text, .article__text, .text-block', note: "66.ru и общие имена" },
   { selector: '[itemprop="articleBody"]', note: "schema.org, общий" },
-  { selector: '.news-text, .story-text, .article__text, .text-block', note: "общие имена" },
   { selector: '[data-testid="article-body"]', note: "общий data-testid" },
 ] as const;
 
@@ -225,29 +230,106 @@ export function cleanParagraphs(paragraphs: string[], title = ""): string[] {
  * silently switching from selectors to Readability is worth noticing in a log line, and
  * invisible otherwise.
  */
+export type ExtractMethod = "ldjson" | "selector" | "readability" | "none";
+
 export function extractArticleText(
   html: string,
   options: { title?: string; url?: string } = {},
-): { text: string; method: "selector" | "readability" | "none"; paragraphs: number } {
+): { text: string; method: ExtractMethod; paragraphs: number } {
   if (!html.trim()) return { text: "", method: "none", paragraphs: 0 };
 
   const dom = new JSDOM(html, { url: options.url ?? "https://example.invalid/" });
 
   try {
+    const fromLd = readFromJsonLd(dom.window.document, options.title);
     const fromSelector = readFromSelectors(dom.window.document, options.title);
-    if (fromSelector.text.length >= MIN_BODY_CHARS) return fromSelector;
+
+    /*
+      Служебная разметка идёт первой, и это измерено, а не выбрано по вкусу.
+
+      66.ru отдаёт статью, собранную скриптами: в HTML у неё два абзаца, а весь текст лежит
+      в `application/ld+json` полем `articleBody` (проверено на живой странице — 892 КБ HTML,
+      два `<p>`, один блок разметки с полным телом). Читать такую страницу селекторами
+      значит получить пустоту и решить, что сайт «не поддерживается».
+
+      Но не безусловно: поля расходятся по длине, и побеждает тот путь, который нашёл больше
+      текста. Селектор иногда берёт больше — например, когда `articleBody` в разметке
+      обрезан до лида.
+    */
+    const longer = fromLd.text.length > fromSelector.text.length ? fromLd : fromSelector;
+    if (longer.text.length >= MIN_BODY_CHARS) return longer;
 
     const fromReadability = readWithReadability(dom.window.document, options.title);
-    if (fromReadability.text.length > fromSelector.text.length) return fromReadability;
+    if (fromReadability.text.length > longer.text.length) return fromReadability;
 
-    // Neither path produced much: return whatever the selectors found, which at least
+    // Neither path produced much: return whatever the cheap paths found, which at least
     // came from a container that looked like an article rather than from a score.
-    return fromSelector;
+    return longer;
   } finally {
     // jsdom keeps timers and a window alive; on a server that fetches a page per request
     // this is the difference between a leak and a bounded cost.
     dom.window.close();
   }
+}
+
+/**
+ * Тело статьи, объявленное самой страницей в структурированной разметке.
+ *
+ * `articleBody` из schema.org — это то, чем издатель называет текст статьи, и потому источник
+ * надёжнее любого угадывания по классам. Разметка бывает и массивом, и объектом с `@graph`,
+ * поэтому обход рекурсивный: у одного сайта статья в корне, у другого — вложена в список
+ * `@graph` вместе с хлебными крошками и организацией.
+ *
+ * Строка разбирается как JSON только в `try`: битый или неполный блок — обычное дело на живых
+ * сайтах, и он не должен ронять извлечение целиком. Второй блок с телом (бывает и такое)
+ * сравнивается по длине, как и всё остальное здесь.
+ */
+function readFromJsonLd(
+  document: Document,
+  title?: string,
+): { text: string; method: ExtractMethod; paragraphs: number } {
+  let best: string[] = [];
+
+  for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(script.textContent ?? "");
+    } catch {
+      continue;
+    }
+
+    for (const node of jsonLdNodes(parsed)) {
+      const body = (node as { articleBody?: unknown }).articleBody;
+      if (typeof body !== "string") continue;
+
+      const paragraphs = splitLdBody(body);
+      if (paragraphs.join(" ").length > best.join(" ").length) best = paragraphs;
+    }
+  }
+
+  const cleaned = cleanParagraphs(best, title);
+  return {
+    text: cleaned.join("\n\n"),
+    method: cleaned.length > 0 ? "ldjson" : "none",
+    paragraphs: cleaned.length,
+  };
+}
+
+/** Каждый объект внутри разметки: сам узел, элементы массива и всё из `@graph`. */
+function jsonLdNodes(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value.flatMap(jsonLdNodes);
+  if (typeof value !== "object" || value === null) return [];
+
+  const graph = (value as { "@graph"?: unknown })["@graph"];
+  return [value, ...(graph === undefined ? [] : jsonLdNodes(graph))];
+}
+
+/** Тело в разметке — одна строка; абзацами её делают переводы строк. */
+function splitLdBody(body: string): string[] {
+  return body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 /** The longest candidate container, by the text of its paragraphs. */

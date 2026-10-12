@@ -6,9 +6,13 @@ import { stubServerOnly } from "./server-only-shim";
 
 import {
   FEED_SOURCES,
+  POLITICS_STEMS,
+  POLITICS_WORDS,
   decodeEntities,
   externalIdFor,
   feedHtmlToText,
+  feedSourceTitle,
+  isPoliticalText,
   linkFor,
   parseFeed,
   parseFeedDate,
@@ -160,8 +164,8 @@ check(
 
 check(
   "Идентификатор: guid используется и привязан к источнику",
-  externalIdFor("URA", "1052900001", "https://ura.news/x", "Заголовок") === "URA:1052900001",
-  externalIdFor("URA", "1052900001", "https://ura.news/x", "Заголовок"),
+  externalIdFor("GOROD66", "1052900001", "https://66.ru/x", "Заголовок") === "GOROD66:1052900001",
+  externalIdFor("GOROD66", "1052900001", "https://66.ru/x", "Заголовок"),
 );
 
 /*
@@ -171,9 +175,9 @@ check(
 */
 check(
   "Идентификатор: одинаковый guid у двух источников не склеивается",
-  externalIdFor("URA", "1", "https://ura.news/1", "A") !==
+  externalIdFor("GOROD66", "1", "https://ura.news/1", "A") !==
     externalIdFor("E1", "1", "https://e1.ru/1", "A"),
-  `${externalIdFor("URA", "1", "", "A")} ≠ ${externalIdFor("E1", "1", "", "A")}`,
+  `${externalIdFor("GOROD66", "1", "", "A")} ≠ ${externalIdFor("E1", "1", "", "A")}`,
 );
 
 check(
@@ -256,7 +260,7 @@ check(
 
 // --- whole feeds --------------------------------------------------------------
 
-const rss = parseFeed(RSS, { source: "URA" });
+const rss = parseFeed(RSS, { source: "GOROD66" });
 
 check(
   "Лента RSS: все элементы разобраны",
@@ -285,7 +289,7 @@ check(
 
 check(
   "Лента RSS: источник и ссылка проставлены",
-  rss.items[0]?.source === "URA" &&
+  rss.items[0]?.source === "GOROD66" &&
     rss.items[0]?.originalUrl === "https://ura.news/news/1052900001",
   `${rss.items[0]?.source} ${rss.items[0]?.originalUrl}`,
 );
@@ -325,7 +329,7 @@ const broken = parseFeed(
     <item><title></title><link>https://ura.news/3</link><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate></item>
     <item><title>Годная</title><link>https://ura.news/4</link><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate></item>
   </channel></rss>`,
-  { source: "URA" },
+  { source: "GOROD66" },
 );
 
 check(
@@ -342,14 +346,14 @@ check(
 
 check(
   "Лимит: больше запрошенного не берётся",
-  parseFeed(RSS, { source: "URA", limit: 1 }).items.length === 1,
+  parseFeed(RSS, { source: "GOROD66", limit: 1 }).items.length === 1,
   "1 элемент",
 );
 
 check(
   "Пустая лента: ни элементов, ни падения",
-  parseFeed("", { source: "URA" }).items.length === 0 &&
-    parseFeed("<html>не лента</html>", { source: "URA" }).items.length === 0,
+  parseFeed("", { source: "GOROD66" }).items.length === 0 &&
+    parseFeed("<html>не лента</html>", { source: "GOROD66" }).items.length === 0,
   "без исключений",
 );
 
@@ -360,7 +364,7 @@ check(
   the database's unique index and `skipDuplicates` rely on. A reader that hashed a
   timestamp, or re-ordered anything, would re-insert the whole feed on every sync.
 */
-const again = parseFeed(RSS, { source: "URA" });
+const again = parseFeed(RSS, { source: "GOROD66" });
 check(
   "Дедупликация: повторный разбор даёт те же идентификаторы",
   again.items.map((i) => i.externalId).join(",") === rss.items.map((i) => i.externalId).join(","),
@@ -382,9 +386,100 @@ check(
 
 check(
   "Ленты: адреса не те, что в задании — они проверены запросом",
-  FEED_SOURCES.some((feed) => feed.url === "https://ura.news/rss") &&
-    FEED_SOURCES.some((feed) => feed.url === "https://www.e1.ru/rss-feeds/rss.xml"),
+  // Оба адреса взяты из объявлений самих сайтов и проверены: E1 отдаёт 100 элементов,
+  // 66.ru — 10. Дзена в списке нет намеренно, см. следующий тест.
+  FEED_SOURCES.some((feed) => feed.url === "https://www.e1.ru/rss-feeds/rss.xml") &&
+    FEED_SOURCES.some((feed) => feed.url === "https://66.ru/rss/"),
   FEED_SOURCES.map((f) => f.url).join(" "),
+);
+
+check(
+  "Ленты: URA удалён, Дзен не подставлен выдуманным адресом",
+  // Убирая URA, соблазнительно было прописать «настоящий» адрес Дзена из головы. Его нет:
+  // dzen.ru/rss/news отвечает 302 на sso.passport.yandex.ru. Тест держит оба факта — ни
+  // ura.news, ни dzen.ru в списке быть не должно.
+  FEED_SOURCES.every(
+    (feed) => !feed.url.includes("ura.news") && !feed.url.includes("dzen.ru"),
+  ),
+  FEED_SOURCES.map((f) => f.url).join(" "),
+);
+
+check(
+  "Ленты: у каждого источника есть человеческая подпись для бейджа",
+  FEED_SOURCES.every((feed) => feedSourceTitle(feed.source) === feed.title && feed.title.length > 0),
+  FEED_SOURCES.map((f) => `${f.source}→${feedSourceTitle(f.source)}`).join(", "),
+);
+
+// --- политика отсекается на импорте ------------------------------------------
+
+/*
+  Политика не должна доходить до базы вообще.
+
+  Тест ловит материал на входе — там, где решается, попадёт ли он в предложку. Проверка
+  «не показывать в интерфейсе» слабее: строка в таблице дождётся смены фильтра и всплывёт.
+*/
+const political = parseFeed(
+  `<rss><channel>
+    <item><title>Госдума приняла законопроект</title><link>https://66.ru/1</link><guid>p1</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate></item>
+    <item><title>Пожар на Уралмаше</title><link>https://66.ru/2</link><guid>p2</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate><description>Депутаты обсудили выборы в думу</description></item>
+    <item><title>Лыжню открыли после ремонта</title><link>https://66.ru/3</link><guid>p3</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate></item>
+  </channel></rss>`,
+  { source: "GOROD66" },
+);
+
+check(
+  "Политика: политическое в заголовке не проходит",
+  political.items.every((item) => !/госдума|законопроект/i.test(item.title)),
+  political.items.map((i) => i.title).join(" | "),
+);
+
+check(
+  "Политика: политическое в описании тоже отсекает материал",
+  political.items.length === 1 && political.items[0]?.title === "Лыжню открыли после ремонта",
+  `${political.items.length}: ${political.items.map((i) => i.title).join(", ")}`,
+);
+
+check(
+  "Политика: отказ назван причиной politics, а не молча потерян",
+  political.skipped.filter((s) => s.reason === "politics").length === 2,
+  political.skipped.map((s) => `${s.reason}:${s.title}`).join(", "),
+);
+
+/*
+  Ложные срабатывания, измеренные на живых заголовках.
+
+  «Дума» — подстрока «передумал», «сво» — «свой», «мид» — «миди». Фильтр по подстроке
+  выбросил бы городскую заметку, поэтому короткие основы ищутся по границам слов.
+*/
+check(
+  "Политика: «передумали», «свой», «миди» — не политика",
+  !isPoliticalText("Жители передумали ждать автобус") &&
+    !isPoliticalText("Свой урожай собрали в теплице") &&
+    !isPoliticalText("Платье миди стало хитом сезона"),
+  "границы слов работают",
+);
+
+/*
+  И обратное: криминальную хронику фильтр не трогает.
+
+  Это не украшение списка, а то, ради чего лента существует: «суд», «прокуратура»,
+  «уголовное дело» — происшествия, а не политика, и вычистить их значило бы потерять
+  половину городской ленты.
+*/
+check(
+  "Политика: суд, прокуратура и уголовное дело остаются в ленте",
+  !isPoliticalText("Суд вынес приговор") &&
+    !isPoliticalText("Прокуратура проверила УК") &&
+    !isPoliticalText("Возбуждено уголовное дело о краже"),
+  "криминальная хроника не отсекается",
+);
+
+check(
+  "Политика: основы и целые слова объявлены одним списком",
+  POLITICS_STEMS.includes("депутат") &&
+    POLITICS_WORDS.includes("сво") &&
+    POLITICS_STEMS.every((stem) => stem === stem.toLowerCase()),
+  `${POLITICS_STEMS.length} основ, ${POLITICS_WORDS.length} слов`,
 );
 
 /*
@@ -429,7 +524,7 @@ check(
 const message = buildRewriteUserMessage({
   title: "Заголовок источника",
   rawText: "Первый абзац.\n\nВторой абзац.",
-  source: "URA",
+  source: "GOROD66",
   originalUrl: "https://ura.news/1",
 });
 
@@ -558,7 +653,7 @@ let failures = 0;
 async function checkStore() {
   const created = await prisma.newsFeedItem.create({
     data: {
-      source: "URA",
+      source: "GOROD66",
       externalId: marker,
       originalUrl: `https://example.invalid/${marker}`,
       title: `Проверка ${marker}`,
@@ -710,7 +805,7 @@ async function checkFullTextByUrl() {
 
   const created = await prisma.newsFeedItem.create({
     data: {
-      source: "URA",
+      source: "GOROD66",
       externalId: `${marker}-fulltext`,
       originalUrl,
       title: ARTICLE_TITLE,

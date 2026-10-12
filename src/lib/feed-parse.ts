@@ -14,8 +14,8 @@
  * its date format, or starts sending an id that collides with another outlet's.
  */
 
-/** The two outlets the desk watches. */
-export type FeedSource = "E1" | "URA";
+/** The outlets the desk watches. */
+export type FeedSource = "E1" | "GOROD66";
 
 export type FeedDefinition = {
   source: FeedSource;
@@ -26,19 +26,27 @@ export type FeedDefinition = {
 /**
  * The feeds, in one place.
  *
- * Both URLs were taken from the sites' own `<link rel="alternate"
- * type="application/rss+xml">` rather than from the brief, because the brief's two
- * addresses are both dead — measured: `ura.news/rss/all.rss` and `e1.ru/news/rss/` each
- * answer 404. Asking a site where its feed is costs one request and cannot go stale
- * silently; a hard-coded guess 404s and the desk just looks empty.
+ * **«Топ Дзен» не подключён, и это измеренный факт, а не недосмотр.** `dzen.ru/rss/news`
+ * отвечает 302 на `sso.passport.yandex.ru/push` — публичного фида у Дзена нет, он требует
+ * авторизацию Яндекса. Проверено и `zen.yandex.ru/rss/news`, и `dzen.ru/rss`, и
+ * `/api/v3/rss/news`: первые два отдают ту же страницу входа (2899 байт HTML, ноль элементов),
+ * третий — 44 байта JSON-ошибки. Скрапить это headless-браузером значило бы поставить браузер
+ * на VPS с одним ядром, что правилами прямо запрещено.
  *
- * Neither is a city sub-feed: the desk wants everything the two publish, and narrowing
- * to Yekaterinburg happens in the list, by an editor reading it.
+ * Второй источник поэтому — реальный фид екатеринбургского городского издания, ближайший по
+ * характеру к тому, что просили: происшествия и общество без федеральной политики. Оба адреса
+ * взяты из объявлений самих сайтов (`<link rel="alternate" type="application/rss+xml">`) и
+ * проверены запросом: E1 отвечает 100 элементами, 66.ru — 10.
  */
 export const FEED_SOURCES: readonly FeedDefinition[] = [
-  { source: "URA", title: "URA.RU", url: "https://ura.news/rss" },
-  { source: "E1", title: "E1.RU", url: "https://www.e1.ru/rss-feeds/rss.xml" },
+  { source: "E1", title: "Топ Е1", url: "https://www.e1.ru/rss-feeds/rss.xml" },
+  { source: "GOROD66", title: "66.RU", url: "https://66.ru/rss/" },
 ] as const;
+
+/** Подпись источника для интерфейса: код в базе, человеческое имя на экране. */
+export function feedSourceTitle(source: string): string {
+  return FEED_SOURCES.find((feed) => feed.source === source)?.title ?? source;
+}
 
 export type ParsedFeedItem = {
   source: FeedSource;
@@ -51,7 +59,68 @@ export type ParsedFeedItem = {
 };
 
 /** Why an element of the feed could not become an item. */
-export type SkipReason = "no-title" | "no-url" | "no-date";
+export type SkipReason = "no-title" | "no-url" | "no-date" | "politics";
+
+/**
+ * Темы, которые редакция не берёт: политика, власть и всё, что вокруг них.
+ *
+ * Списки в двух видах намеренно, и это не украшение. Основы слова работают на русской
+ * морфологии («депутат» ловит «депутаты», «депутатский»), но некоторые основы слишком коротки
+ * и встречаются внутри обычных слов: «дума» сидит в «передумал», «сво» — в «свой», «мид» — в
+ * «миди». Такие слова ищутся как отдельные слова по границам, а не подстрокой, иначе фильтр
+ * выбросил бы городскую заметку за слово «передумали».
+ *
+ * Чего в списке нет — и это тоже решение: «суд», «прокуратура», «уголовное дело». Это
+ * происшествия, которые предложке как раз и нужны; выбрасывать их значило бы вычистить из
+ * ленты то, ради чего она существует. Политика для этой ленты — власть и её процедуры, а не
+ * криминальная хроника.
+ */
+export const POLITICS_STEMS: readonly string[] = [
+  "политик",
+  "депутат",
+  "выбор",
+  "кремл",
+  "законопроект",
+  "парти",
+  "президент",
+  "губернатор",
+  "правительств",
+  "министр",
+  "сенатор",
+  "госдум",
+  "совфед",
+  "оппозици",
+  "митинг",
+  "протест",
+  "санкци",
+  "мобилизаци",
+  "спецоперац",
+  "чиновник",
+  "коррупци",
+  "администраци президент",
+  "владимир путин",
+];
+
+/** Слова, которые ищутся целиком: короткая основа здесь — часть обычных слов. */
+export const POLITICS_WORDS: readonly string[] = ["сво", "мид", "дума", "думу", "думе", "думы", "думой"];
+
+/**
+ * Политическое ли это. Заголовок и описание вместе: тема обычно объявлена в одном из них.
+ *
+ * Чистая функция, и это важно: отбор происходит при импорте, до записи в базу, поэтому
+ * материал с признаками политики не попадает в предложку вообще — а не прячется в
+ * интерфейсе, где его однажды покажут снова.
+ */
+export function isPoliticalText(...parts: readonly string[]): boolean {
+  const haystack = parts.join(" ").toLowerCase();
+  if (!haystack.trim()) return false;
+
+  const word = (candidate: string) =>
+    new RegExp(`(^|[^а-яёa-z])${candidate}([^а-яёa-z]|$)`, "i").test(haystack);
+
+  if (POLITICS_WORDS.some(word)) return true;
+  return POLITICS_STEMS.some((stem) => haystack.includes(stem));
+}
 
 export type ParseResult = {
   items: ParsedFeedItem[];
@@ -290,6 +359,20 @@ export function parseFeed(
       continue;
     }
 
+    const rawText = feedHtmlToText(body);
+
+    /*
+      Политика отсекается здесь — до записи, а не при показе.
+
+      Материал, попавший в таблицу, однажды всплывёт: предложка фильтруется по статусу, а не
+      по теме, и «отложенный» политический сюжет вернётся в список при первом же изменении
+      фильтра. Не записывать его вовсе — единственная форма, которая не даёт ему вернуться.
+    */
+    if (isPoliticalText(title, rawText)) {
+      skipped.push({ reason: "politics", title });
+      continue;
+    }
+
     items.push({
       source: options.source,
       externalId: externalIdFor(
@@ -300,7 +383,7 @@ export function parseFeed(
       ),
       originalUrl: url,
       title,
-      rawText: feedHtmlToText(body),
+      rawText,
       publishedAt,
     });
 
