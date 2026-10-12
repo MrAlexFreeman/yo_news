@@ -69,33 +69,43 @@ export type SyncSummary = {
 };
 
 /**
- * Скрывает из предложки то, что теперь считается политикой.
+ * Скрывает из предложки то, что по нынешним правилам в неё не прошло бы.
  *
- * Материал, записанный до того, как правило стало строже, остаётся в списке навсегда: он уже
- * в базе, а фильтр работает только на входе. Проверка на проде это и показала — «У
- * Екатеринбурга появился новый глава» продолжало стоять в предложке после того, как лента
- * перестала его пропускать.
+ * Материал, записанный до того, как правило появилось или стало строже, остаётся в списке
+ * навсегда: он уже в базе, а фильтры работают только на входе. Проверка на проде это и
+ * показала — «У Екатеринбурга появился новый глава» продолжало стоять в предложке после того,
+ * как лента перестала его пропускать, а десять карточек Дзена вошли туда до появления окна
+ * свежести.
  *
- * Поэтому при каждой синхронизации уже сохранённые новые материалы перечитываются тем же
- * правилом. Отмеченные `IGNORED`, а не удалённые: скрытое лежит во вкладке «Скрытые», и если
- * слово из списка окажется лишним, редакция вернёт материал кнопкой, а не будет ждать, пока
- * он придёт из ленты заново.
+ * Правил два, и оба те же, что на входе: политика и срок годности источника. Отмеченные
+ * `IGNORED`, а не удалённые: скрытое лежит во вкладке «Скрытые», и если слово из списка или
+ * само окно окажется лишним, редакция вернёт материал кнопкой, а не будет ждать, пока он
+ * придёт из ленты заново.
  */
-async function hideStoredPolitics(): Promise<number> {
+async function hideStoredByRules(): Promise<number> {
   const stored = await prisma.newsFeedItem.findMany({
     where: { status: "NEW" },
-    select: { id: true, title: true, rawText: true },
+    select: { id: true, title: true, rawText: true, source: true, publishedAt: true },
   });
 
-  const political = stored.filter((item) => isPoliticalText(item.title, item.rawText));
-  if (political.length === 0) return 0;
+  const now = Date.now();
+  const stale = (source: string, publishedAt: Date): boolean => {
+    const feed = FEED_SOURCES.find((entry) => entry.source === source);
+    if (feed?.maxAgeDays === undefined) return false;
+    return publishedAt.getTime() < now - feed.maxAgeDays * 24 * 60 * 60 * 1000;
+  };
+
+  const drop = stored.filter(
+    (item) => isPoliticalText(item.title, item.rawText) || stale(item.source, item.publishedAt),
+  );
+  if (drop.length === 0) return 0;
 
   await prisma.newsFeedItem.updateMany({
-    where: { id: { in: political.map((item) => item.id) } },
+    where: { id: { in: drop.map((item) => item.id) } },
     data: { status: "IGNORED" },
   });
 
-  return political.length;
+  return drop.length;
 }
 
 /**
@@ -133,9 +143,9 @@ export async function syncFeeds(): Promise<SyncSummary> {
     sources.push(result.summary);
   }
 
-  const hidden = await hideStoredPolitics();
+  const hidden = await hideStoredByRules();
   if (hidden > 0) {
-    console.log(`[feed] политика: скрыто ранее сохранённых материалов — ${hidden}`);
+    console.log(`[feed] правила: скрыто ранее сохранённых материалов — ${hidden}`);
   }
 
   return {
@@ -164,7 +174,7 @@ async function syncOne(
       maxBytes: MAX_FEED_BYTES,
     });
     const parsed = isDzen
-      ? parseDzenFeed(body, { source: feed.source })
+      ? parseDzenFeed(body, { source: feed.source, maxAgeDays: feed.maxAgeDays })
       : parseFeed(body, { source: feed.source, assumeUndated: feed.undated });
 
     const written = await storeItems(parsed.items);

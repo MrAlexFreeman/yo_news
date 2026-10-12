@@ -744,6 +744,52 @@ check(
   "без исключений",
 );
 
+/*
+  Окно свежести, измеренное на живой выдаче.
+
+  В одном ответе рядом стояли карточка пяти часов и карточка пяти месяцев: рядом с новостью про
+  ИЛ-114 лежал пост «Подкормка огурцов». Источник называется «Топ Дзен», и редакция вправе
+  ждать от него повестки, а не архива. Окно объявлено у источника, поэтому проверяется и то,
+  что без него разбор не меняется, — иначе правило просочилось бы в общий код.
+*/
+const DZEN_STALE_ONLY = JSON.stringify({
+  items: [
+    {
+      card_type: "zen",
+      id: "stale-1",
+      title: "Подкормка огурцов: 4 народных средства",
+      text: "Одно из них дало результат.",
+      share_link: "https://dzen.ru/a/ogurcy",
+      // 2026-05-19 — пять месяцев до «сегодня» набора.
+      publication_date: "1779152460",
+    },
+  ],
+});
+
+check(
+  "Дзен: карточка старше окна отбрасывается причиной stale",
+  parseDzenFeed(DZEN_STALE_ONLY, { source: "DZEN", now: DZEN_NOW, maxAgeDays: 14 }).items
+    .length === 0 &&
+    parseDzenFeed(DZEN_STALE_ONLY, { source: "DZEN", now: DZEN_NOW, maxAgeDays: 14 }).skipped[0]
+      ?.reason === "stale",
+  parseDzenFeed(DZEN_STALE_ONLY, { source: "DZEN", now: DZEN_NOW, maxAgeDays: 14 }).skipped
+    .map((s) => s.reason)
+    .join(", "),
+);
+
+check(
+  "Дзен: без окна та же карточка проходит — правило не просочилось в общий разбор",
+  parseDzenFeed(DZEN_STALE_ONLY, { source: "DZEN", now: DZEN_NOW }).items.length === 1,
+  "окно только там, где объявлено",
+);
+
+check(
+  "Дзен: окно свежести объявлено у источника, а у RSS-лент его нет",
+  FEED_SOURCES.find((feed) => feed.source === "DZEN")?.maxAgeDays === 14 &&
+    FEED_SOURCES.filter((feed) => feed.maxAgeDays !== undefined).length === 1,
+  FEED_SOURCES.map((f) => `${f.source}${f.maxAgeDays ? ` ≤${f.maxAgeDays}д` : ""}`).join(", "),
+);
+
 check(
   "Дзен: источник объявлен как API, а не как мёртвый RSS",
   FEED_SOURCES.some(

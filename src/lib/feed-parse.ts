@@ -44,6 +44,17 @@ export type FeedDefinition = {
    * редакция видит, откуда материал, а не догадывается.
    */
   fallbackFor?: FeedSource;
+  /**
+   * Материалы старше этого срока не берутся.
+   *
+   * Для «Топа Дзен» — потому что выдача мешает в одну кучу материал сегодняшний и посты
+   * пятимесячной давности: на измеренной ленте рядом стояли карточка пяти часов и карточка
+   * пяти месяцев («Подкормка огурцов», «Вира и Майна»). Источник называется «Топ», и редакция
+   * вправе ждать от него повестки, а не архива; всё старше двух недель отбрасывается.
+   *
+   * Правило не про RSS: у Е1 и 66.ru свежесть держит сама лента, и там оно не нужно.
+   */
+  maxAgeDays?: number;
 };
 
 /**
@@ -74,6 +85,10 @@ export const FEED_SOURCES: readonly FeedDefinition[] = [
     title: "Топ Дзен",
     url: "https://dzen.ru/api/v3/launcher/more",
     kind: "dzen",
+    // Измерено на живой выдаче: свежих карточек (до двух недель) — четыре из десяти, оставшиеся
+    // шесть — посты от месяца до пяти. Без окна «Топ Дзен» приносил бы в предложку огурцы
+    // с подкормкой вместо повестки.
+    maxAgeDays: 14,
   },
   {
     source: "MAIL_URAL",
@@ -99,7 +114,7 @@ export type ParsedFeedItem = {
 };
 
 /** Why an element of the feed could not become an item. */
-export type SkipReason = "no-title" | "no-url" | "no-date" | "politics" | "promo";
+export type SkipReason = "no-title" | "no-url" | "no-date" | "politics" | "promo" | "stale";
 
 /**
  * Темы, которые редакция не берёт: политика, власть и всё, что вокруг них.
@@ -517,10 +532,12 @@ export function parseFeed(
  */
 export function parseDzenFeed(
   body: string,
-  options: { source: FeedSource; limit?: number; now?: Date },
+  options: { source: FeedSource; limit?: number; now?: Date; maxAgeDays?: number },
 ): ParseResult {
   const limit = options.limit ?? DEFAULT_FEED_LIMIT;
   const now = options.now ?? new Date();
+  const oldest =
+    options.maxAgeDays === undefined ? null : now.getTime() - options.maxAgeDays * 24 * 60 * 60 * 1000;
 
   const items: ParsedFeedItem[] = [];
   const skipped: ParseResult["skipped"] = [];
@@ -570,6 +587,11 @@ export function parseDzenFeed(
     const publishedAt = dzenDate(card.publication_date, now);
     if (!publishedAt) {
       skipped.push({ reason: "no-date", title });
+      continue;
+    }
+
+    if (oldest !== null && publishedAt.getTime() < oldest) {
+      skipped.push({ reason: "stale", title });
       continue;
     }
 
