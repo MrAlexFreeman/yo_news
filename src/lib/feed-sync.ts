@@ -74,15 +74,21 @@ export type SyncSummary = {
  * Материал, записанный до того, как правило появилось или стало строже, остаётся в списке
  * навсегда: он уже в базе, а фильтры работают только на входе. Проверка на проде это и
  * показала — «У Екатеринбурга появился новый глава» продолжало стоять в предложке после того,
- * как лента перестала его пропускать, а десять карточек Дзена вошли туда до появления окна
- * свежести.
+ * как лента перестала его пропускать, а карточки Дзена вошли туда, когда он ещё был постоянным
+ * источником.
  *
- * Правил два, и оба те же, что на входе: политика и срок годности источника. Отмеченные
- * `IGNORED`, а не удалённые: скрытое лежит во вкладке «Скрытые», и если слово из списка или
- * само окно окажется лишним, редакция вернёт материал кнопкой, а не будет ждать, пока он
- * придёт из ленты заново.
+ * Правил три.
+ *
+ *  - Политика — то же правило, что на входе.
+ *  - Срок годности, если он объявлен у источника.
+ *  - Резерв, который в этом прогоне не сработал: стол показывает то, что даёт нынешний состав
+ *    лент. Пока повестка Урала отвечает, карточки Дзена на столе не лежат — а когда он
+ *    включится, его материалы останутся.
+ *
+ * Отмеченные `IGNORED`, а не удалённые: скрытое лежит во вкладке «Скрытые», и если слово из
+ * списка, окно или сам состав лент окажется не тем, редакция вернёт материал кнопкой.
  */
-async function hideStoredByRules(): Promise<number> {
+async function hideStoredByRules(ranReserves: ReadonlySet<FeedSource>): Promise<number> {
   const stored = await prisma.newsFeedItem.findMany({
     where: { status: "NEW" },
     select: { id: true, title: true, rawText: true, source: true, publishedAt: true },
@@ -95,8 +101,16 @@ async function hideStoredByRules(): Promise<number> {
     return publishedAt.getTime() < now - feed.maxAgeDays * 24 * 60 * 60 * 1000;
   };
 
+  const isIdleReserve = (source: string): boolean => {
+    const feed = FEED_SOURCES.find((entry) => entry.source === source);
+    return Boolean(feed?.fallbackFor) && !ranReserves.has(source as FeedSource);
+  };
+
   const drop = stored.filter(
-    (item) => isPoliticalText(item.title, item.rawText) || stale(item.source, item.publishedAt),
+    (item) =>
+      isPoliticalText(item.title, item.rawText) ||
+      stale(item.source, item.publishedAt) ||
+      isIdleReserve(item.source),
   );
   if (drop.length === 0) return 0;
 
@@ -125,6 +139,8 @@ export async function syncFeeds(): Promise<SyncSummary> {
 
   /** Сколько годных карточек дал каждый источник в этом прогоне. */
   const accepted = new Map<FeedSource, number>();
+  /** Резервы, которые в этом прогоне действительно сработали. */
+  const ranReserves = new Set<FeedSource>();
 
   for (const feed of FEED_SOURCES.filter((entry) => !entry.fallbackFor)) {
     const result = await syncOne(feed);
@@ -140,10 +156,11 @@ export async function syncFeeds(): Promise<SyncSummary> {
     );
     const result = await syncOne(feed);
     accepted.set(feed.source, result.accepted);
+    ranReserves.add(feed.source);
     sources.push(result.summary);
   }
 
-  const hidden = await hideStoredByRules();
+  const hidden = await hideStoredByRules(ranReserves);
   if (hidden > 0) {
     console.log(`[feed] правила: скрыто ранее сохранённых материалов — ${hidden}`);
   }

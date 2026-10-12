@@ -810,15 +810,33 @@ check(
 );
 
 check(
-  "Дзен: резерв один, и он привязан к Дзену",
+  "Дзен: резерв один, и он привязан к повестке Урала",
+  // Дзен не даёт повестки (см. комментарий к FEED_SOURCES), поэтому он резерв, а не постоянный
+  // источник: включается, только если уральская лента промолчит.
   FEED_SOURCES.filter((feed) => feed.fallbackFor).length === 1 &&
-    FEED_SOURCES.find((feed) => feed.fallbackFor)?.fallbackFor === "DZEN",
+    FEED_SOURCES.find((feed) => feed.fallbackFor)?.source === "DZEN" &&
+    FEED_SOURCES.find((feed) => feed.fallbackFor)?.fallbackFor === "MAIL_URAL",
   FEED_SOURCES.filter((f) => f.fallbackFor).map((f) => `${f.source}→${f.fallbackFor}`).join(", "),
 );
 
 check(
+  "Источники: повестка — это постоянные ленты, а не резерв",
+  (() => {
+    const primary = FEED_SOURCES.filter((feed) => !feed.fallbackFor).map((feed) => feed.source);
+    return (
+      primary.includes("E1") &&
+      primary.includes("GOROD66") &&
+      primary.includes("MAIL_URAL") &&
+      primary.length === 3
+    );
+  })(),
+  FEED_SOURCES.filter((f) => !f.fallbackFor).map((f) => f.source).join(", "),
+);
+
+check(
   "Бейдж: «Топ Дзен» — человеческое имя источника",
-  feedSourceTitle("DZEN") === "Топ Дзен" && feedSourceTitle("MAIL_URAL") === "Топ Урал",
+  feedSourceTitle("DZEN") === "Топ Дзен" &&
+    feedSourceTitle("MAIL_URAL") === "Повестка Урала",
   `${feedSourceTitle("DZEN")} / ${feedSourceTitle("MAIL_URAL")}`,
 );
 

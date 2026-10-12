@@ -120,9 +120,14 @@ export default async function FeedPage({ searchParams }: PageParams) {
             можно кнопкой рерайта. Материалы про политику отсеиваются при импорте и в список
             не попадают.
             {standbySources.length > 0
-              ? ` Если «Топ Дзен» не отдаёт ничего, его место занимает резервная лента ${standbySources
-                  .map((feed) => feed.title)
-                  .join(", ")}.`
+              ? standbySources
+                  .map((feed) => {
+                    const backed = FEED_SOURCES.find(
+                      (entry) => entry.source === feed.fallbackFor,
+                    );
+                    return ` Если лента «${backed?.title ?? feed.fallbackFor}» не отдаёт ничего, её место занимает резервная лента «${feed.title}».`;
+                  })
+                  .join("")
               : ""}
           </p>
         </header>
