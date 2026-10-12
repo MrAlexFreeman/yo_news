@@ -1,6 +1,12 @@
 import "server-only";
 
-import { FEED_SOURCES, type FeedSource, type ParsedFeedItem, parseFeed } from "@/lib/feed-parse";
+import {
+  FEED_SOURCES,
+  type FeedSource,
+  type ParsedFeedItem,
+  isPoliticalText,
+  parseFeed,
+} from "@/lib/feed-parse";
 import { prisma } from "@/lib/prisma";
 import { fetchWireText } from "@/lib/wire-fetch";
 
@@ -48,7 +54,39 @@ export type SyncSummary = {
   at: string;
   sources: SourceSyncResult[];
   inserted: number;
+  /** Сколько ранее сохранённых материалов скрыто новым правилом о политике. */
+  hidden: number;
 };
+
+/**
+ * Скрывает из предложки то, что теперь считается политикой.
+ *
+ * Материал, записанный до того, как правило стало строже, остаётся в списке навсегда: он уже
+ * в базе, а фильтр работает только на входе. Проверка на проде это и показала — «У
+ * Екатеринбурга появился новый глава» продолжало стоять в предложке после того, как лента
+ * перестала его пропускать.
+ *
+ * Поэтому при каждой синхронизации уже сохранённые новые материалы перечитываются тем же
+ * правилом. Отмеченные `IGNORED`, а не удалённые: скрытое лежит во вкладке «Скрытые», и если
+ * слово из списка окажется лишним, редакция вернёт материал кнопкой, а не будет ждать, пока
+ * он придёт из ленты заново.
+ */
+async function hideStoredPolitics(): Promise<number> {
+  const stored = await prisma.newsFeedItem.findMany({
+    where: { status: "NEW" },
+    select: { id: true, title: true, rawText: true },
+  });
+
+  const political = stored.filter((item) => isPoliticalText(item.title, item.rawText));
+  if (political.length === 0) return 0;
+
+  await prisma.newsFeedItem.updateMany({
+    where: { id: { in: political.map((item) => item.id) } },
+    data: { status: "IGNORED" },
+  });
+
+  return political.length;
+}
 
 /**
  * Fetches and stores every configured feed.
@@ -91,10 +129,16 @@ export async function syncFeeds(): Promise<SyncSummary> {
     }
   }
 
+  const hidden = await hideStoredPolitics();
+  if (hidden > 0) {
+    console.log(`[feed] политика: скрыто ранее сохранённых материалов — ${hidden}`);
+  }
+
   return {
     at: new Date().toISOString(),
     sources,
     inserted: sources.reduce((total, source) => total + source.inserted, 0),
+    hidden,
   };
 }
 

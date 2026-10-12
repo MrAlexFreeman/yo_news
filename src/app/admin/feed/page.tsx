@@ -39,9 +39,19 @@ export default async function FeedPage({ searchParams }: PageParams) {
   const showIgnored = view === "ignored";
   const tab: "new" | "ignored" = showIgnored ? "ignored" : "new";
 
+  /** Коды подключённых сейчас лент. Строки выключенных изданий с экрана убираются. */
+  const activeSources = FEED_SOURCES.map((feed) => feed.source);
+
   const [items, newCount, ignoredCount] = await Promise.all([
     prisma.newsFeedItem.findMany({
-      where: { status: showIgnored ? "IGNORED" : "NEW" },
+      // Только то, что смотрит настроенная предложка.
+      //
+      // Удалённое издание оставляет после себя строки — они не мусор и не удаляются: 80
+      // материалов URA.RU лежат в базе с того времени, когда он был подключён. Показывать их
+      // редакции нельзя (издание отключено, и его сюжеты в списке читаются как живые), а терять
+      // данные незачем: фильтр по списку источников убирает их с экрана и возвращает, если
+      // издание когда-нибудь подключат снова.
+      where: { status: showIgnored ? "IGNORED" : "NEW", source: { in: activeSources } },
       orderBy: { publishedAt: "desc" },
       // A screenful. The desk is for a morning's wire, not for an archive — and the
       // rest is one click away in the tab's own URL if it is ever needed.
@@ -56,8 +66,12 @@ export default async function FeedPage({ searchParams }: PageParams) {
         status: true,
       },
     }),
-    prisma.newsFeedItem.count({ where: { status: "NEW" } }),
-    prisma.newsFeedItem.count({ where: { status: "IGNORED" } }),
+    prisma.newsFeedItem.count({
+      where: { status: "NEW", source: { in: activeSources } },
+    }),
+    prisma.newsFeedItem.count({
+      where: { status: "IGNORED", source: { in: activeSources } },
+    }),
   ]);
 
   const rows: FeedRow[] = items.map((item) => ({

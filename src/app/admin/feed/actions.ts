@@ -93,10 +93,11 @@ export async function syncFeedAction(): Promise<FeedActionResult> {
 
     return {
       ok: failed.length === 0,
-      message:
-        summary.inserted > 0
-          ? `Добавлено ${summary.inserted}. ${parts.join(", ")}.`
-          : `Новых материалов нет. ${parts.join(", ")}.`,
+      message: `${
+        summary.inserted > 0 ? `Добавлено ${summary.inserted}.` : "Новых материалов нет."
+      } ${parts.join(", ")}.${
+        summary.hidden > 0 ? ` Скрыто политики: ${summary.hidden}.` : ""
+      }`,
     };
   } catch (error) {
     console.error("[feed] синхронизация из админки не выполнена", error);
