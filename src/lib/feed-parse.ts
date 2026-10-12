@@ -118,7 +118,66 @@ export type ParsedFeedItem = {
 };
 
 /** Why an element of the feed could not become an item. */
-export type SkipReason = "no-title" | "no-url" | "no-date" | "politics" | "promo" | "stale";
+export type SkipReason =
+  | "no-title"
+  | "no-url"
+  | "no-date"
+  | "politics"
+  | "promo"
+  | "stale"
+  | "topic";
+
+/**
+ * Рубрики, которые не повестка.
+ *
+ * Не выдумка и не вкусовщина: рубрики лент измерены, и каждая запись здесь — про конкретные
+ * материалы. У E1 рубрика есть у всех ста материалов; у Mail.ru она двойная («Политика: За
+ * рубежом»), и политика там помечена самим изданием — это точнее любого списка слов.
+ *
+ *   Политика          — «В Екатеринбурге отправили в отставку мэра», «Трамп готов снимать санкции»
+ *   Развлечения       — «тест для самых умных», «мемы про свекровь», «7 лучших фильмов»
+ *   Еда               — «как приготовить икру из шампиньонов», «какие продукты купить к Новому году»
+ *   Он и она          — «Басков назвал самую большую любовь своей жизни»
+ *   Стиль и красота   — «50-летняя россиянка победила в конкурсе красоты „Миссис ООН“»
+ *
+ * **Чего здесь намеренно нет.** «Мой дом» и «Осень» выглядят бытовыми, но держат настоящие
+ * новости: «Остывает, пока дойдёт до крана. Почему в квартирах екатеринбуржцев вместо горячей
+ * воды…», «На Свердловскую область надвигаются дожди с мокрым снегом». «Животные» — «зоозащитник
+ * осудил отстрел собак». Выбросить эти рубрики значило бы вычистить из повестки коммуналку,
+ * погоду и городские происшествия — то есть ровно то, ради чего лента существует. Погода в
+ * региональной повестке — новость, а не рубрика «гороскопы».
+ */
+export const NON_NEWS_RUBRICS: readonly string[] = [
+  "политика",
+  "развлечения",
+  "еда",
+  "он и она",
+  "стиль и красота",
+];
+
+/**
+ * Рубрика не про повестку.
+ *
+ * Сравнение с приставкой, потому что у Mail.ru рубрика двойная: «Политика: За рубежом» — та же
+ * политика. Точного равенства здесь мало, а подстроки много: «Еда» не должна ловить «Едальню»,
+ * а «Политика» — «Политкорректность» (которой в рубриках и нет).
+ */
+export function isNonNewsRubric(rubric: string): boolean {
+  const value = rubric.trim().toLowerCase();
+  if (!value) return false;
+
+  return NON_NEWS_RUBRICS.some(
+    (entry) => value === entry || value.startsWith(`${entry}:`) || value.startsWith(`${entry} :`),
+  );
+}
+
+/** Рубрики одного элемента ленты: `<category>` бывает и несколько. */
+export function rubricsIn(block: string): string[] {
+  const pattern = /<category\b[^>]*>([\s\S]*?)<\/category\s*>/gi;
+  return [...block.matchAll(pattern)]
+    .map((match) => feedHtmlToText(unwrapCdata(match[1] ?? "")).trim())
+    .filter(Boolean);
+}
 
 /**
  * Темы, которые редакция не берёт: политика, власть и всё, что вокруг них.
@@ -270,7 +329,7 @@ export function isPoliticalText(...parts: readonly string[]): boolean {
 
 export type ParseResult = {
   items: ParsedFeedItem[];
-  skipped: { reason: SkipReason; title: string }[];
+  skipped: { reason: SkipReason; title: string; externalId?: string }[];
 };
 
 /** How many items are taken from one feed by default. */
@@ -490,6 +549,20 @@ export function parseFeed(
       continue;
     }
 
+    /*
+      Идентификатор считается здесь, а не при записи.
+
+      Он нужен и отказам: по нему синхронизация находит уже сохранённые строки, которые
+      нынешние правила больше не принимают (политика, не та рубрика), и убирает их со стола.
+      Без него скрывать пришлось бы по заголовку — то есть угадывая.
+    */
+    const externalId = externalIdFor(
+      options.source,
+      tagValue(block, "guid") ?? tagValue(block, "id") ?? "",
+      url,
+      title,
+    );
+
     // `content:encoded` is what feeds put the whole story in; `description` is often an
     // excerpt. Atom uses `content` and `summary`. First one present wins.
     const body =
@@ -521,7 +594,7 @@ export function parseFeed(
       ним навсегда и порядок не переставляется.
     */
     if (!publishedAt) {
-      skipped.push({ reason: "no-date", title });
+      skipped.push({ reason: "no-date", title, externalId });
       continue;
     }
 
@@ -535,18 +608,27 @@ export function parseFeed(
       фильтра. Не записывать его вовсе — единственная форма, которая не даёт ему вернуться.
     */
     if (isPoliticalText(title, rawText)) {
-      skipped.push({ reason: "politics", title });
+      skipped.push({ reason: "politics", title, externalId });
+      continue;
+    }
+
+    /*
+      И рубрика — по той же причине.
+
+      Издатель сам помечает материал, и это надёжнее списка слов: у Mail.ru «Политика: За
+      рубежом» — политика, и никакие слова для этого не нужны, а у E1 «Развлечения» отделены
+      от «Происшествий» рубрикой, хотя оба заголовка могут звучать одинаково новостно.
+      Лента без рубрик (66.ru) проходит целиком: отсутствие пометки — не повод отказать.
+    */
+    const rubrics = rubricsIn(block);
+    if (rubrics.some(isNonNewsRubric)) {
+      skipped.push({ reason: "topic", title, externalId });
       continue;
     }
 
     items.push({
       source: options.source,
-      externalId: externalIdFor(
-        options.source,
-        tagValue(block, "guid") ?? tagValue(block, "id") ?? "",
-        url,
-        title,
-      ),
+      externalId,
       originalUrl: url,
       title,
       rawText,

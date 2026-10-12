@@ -14,6 +14,8 @@ import {
   feedSourceTitle,
   isPoliticalText,
   linkFor,
+  isNonNewsRubric,
+  NON_NEWS_RUBRICS,
   parseDzenFeed,
   parseFeed,
   parseFeedDate,
@@ -622,7 +624,74 @@ check(
   FEED_SOURCES.map((f) => `${f.source}${f.undated ? " (без дат)" : ""}`).join(", "),
 );
 
-// --- выдача Дзена ---------------------------------------------------------------
+// --- рубрики: повестка или нет ------------------------------------------------
+
+/*
+  Издатель сам помечает материал, и это надёжнее списка слов.
+
+  Замерено: у E1 рубрика есть у всех ста материалов ленты, у Mail.ru она двойная
+  («Политика: За рубежом»), у 66.ru рубрик нет вовсе. Отсюда три правила, и каждое
+  проверяется здесь: политика по рубрике, бытовая рубрика мимо стола, и лента без рубрик
+  проходит целиком.
+*/
+const RUBRIC_FEED = `<rss><channel>
+  <item><title>Тест для самых умных: ответите на 10 из 10?</title><link>https://e1.ru/1</link><guid>r1</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate><category>Развлечения</category></item>
+  <item><title>Трамп готов снимать санкции</title><link>https://news.mail.ru/2</link><guid>r2</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate><category><![CDATA[Политика: За рубежом]]></category></item>
+  <item><title>Остывает, пока дойдет до крана</title><link>https://e1.ru/3</link><guid>r3</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate><category>Мой дом</category></item>
+  <item><title>Снег и дождь задержатся в Свердловской области</title><link>https://e1.ru/4</link><guid>r4</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate><category>Осень</category></item>
+  <item><title>В центре города завершили благоустройство сквера</title><link>https://66.ru/5</link><guid>r5</guid><pubDate>Tue, 07 Oct 2026 09:00:00 +0500</pubDate></item>
+</channel></rss>`;
+
+const rubricParsed = parseFeed(RUBRIC_FEED, { source: "E1" });
+
+check(
+  "Рубрики: политика и развлечения отсекаются рубрикой издателя",
+  // Политический материал ловится и словом («Трамп»), и рубрикой — слово проверяется первым,
+  // и это правильно: оно работает и там, где рубрики нет. Здесь важно, что оба отказались, а
+  // развлекательный — именно рубрикой.
+  rubricParsed.skipped.length === 2 &&
+    rubricParsed.skipped.some((s) => s.reason === "topic") &&
+    rubricParsed.skipped.some((s) => s.reason === "politics") &&
+    rubricParsed.skipped.every((s) => s.reason === "topic" || s.reason === "politics"),
+  rubricParsed.skipped.map((s) => `${s.reason}:${s.title.slice(0, 26)}`).join(", "),
+);
+
+check(
+  "Рубрики: «Мой дом» и «Осень» остаются — в них повестка",
+  // Коммуналка и погода — это новости, а не быт: «Остывает, пока дойдёт до крана. Почему в
+  // квартирах екатеринбуржцев вместо горячей воды…» и «На Свердловскую область надвигаются
+  // дожди с мокрым снегом» лежат именно в этих рубриках.
+  rubricParsed.items.some((item) => item.title.startsWith("Остывает")) &&
+    rubricParsed.items.some((item) => item.title.startsWith("Снег и дождь")),
+  rubricParsed.items.map((i) => i.title.slice(0, 30)).join(" | "),
+);
+
+check(
+  "Рубрики: лента без рубрик проходит целиком",
+  rubricParsed.items.some((item) => item.title.startsWith("В центре города")),
+  "66.ru рубрик не публикует — отсутствие пометки не повод отказать",
+);
+
+check(
+  "Рубрики: двойная рубрика Mail.ru сравнивается с приставкой, а не подстрокой",
+  // «Политика: За рубежом» — та же политика, а «Едальня» — не «Еда». Точного равенства мало,
+  // подстроки много: в ленте рубрики приходят и в форме «Рубрика: Подрубрика».
+  isNonNewsRubric("Политика: За рубежом") &&
+    isNonNewsRubric("Политика") &&
+    isNonNewsRubric("политика: в россии") &&
+    !isNonNewsRubric("Едальня") &&
+    !isNonNewsRubric("Дороги и транспорт") &&
+    !isNonNewsRubric(""),
+  NON_NEWS_RUBRICS.join(", "),
+);
+
+check(
+  "Рубрики: отказ по рубрике несёт идентификатор материала",
+  // По нему синхронизация убирает со стола то, что записано до появления правила: рубрика в
+  // строке не хранится, и перечитать её можно только из ленты.
+  rubricParsed.skipped.every((s) => (s.externalId ?? "").startsWith("E1:")),
+  rubricParsed.skipped.map((s) => s.externalId).join(", "),
+);
 
 /*
   Карточки API Дзена, собранные по измеренной форме.

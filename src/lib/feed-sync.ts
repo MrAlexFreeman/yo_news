@@ -77,21 +77,34 @@ export type SyncSummary = {
  * как лента перестала его пропускать, а карточки Дзена вошли туда, когда он ещё был постоянным
  * источником.
  *
- * Правил три.
+ * Правил четыре.
  *
  *  - Политика — то же правило, что на входе.
  *  - Срок годности, если он объявлен у источника.
  *  - Резерв, который в этом прогоне не сработал: стол показывает то, что даёт нынешний состав
  *    лент. Пока повестка Урала отвечает, карточки Дзена на столе не лежат — а когда он
  *    включится, его материалы останутся.
+ *  - Материал, который лента отдала снова, а нынешние правила его не берут: `refusedNow` из
+ *    синхронизации. Так уходит то, что записано до появления правила о рубриках, — рубрика в
+ *    строке не хранится, и перечитать её задним числом можно только из самой ленты.
  *
  * Отмеченные `IGNORED`, а не удалённые: скрытое лежит во вкладке «Скрытые», и если слово из
  * списка, окно или сам состав лент окажется не тем, редакция вернёт материал кнопкой.
  */
-async function hideStoredByRules(ranReserves: ReadonlySet<FeedSource>): Promise<number> {
+async function hideStoredByRules(
+  ranReserves: ReadonlySet<FeedSource>,
+  refusedNow: ReadonlySet<string>,
+): Promise<number> {
   const stored = await prisma.newsFeedItem.findMany({
     where: { status: "NEW" },
-    select: { id: true, title: true, rawText: true, source: true, publishedAt: true },
+    select: {
+      id: true,
+      title: true,
+      rawText: true,
+      source: true,
+      publishedAt: true,
+      externalId: true,
+    },
   });
 
   const now = Date.now();
@@ -110,7 +123,8 @@ async function hideStoredByRules(ranReserves: ReadonlySet<FeedSource>): Promise<
     (item) =>
       isPoliticalText(item.title, item.rawText) ||
       stale(item.source, item.publishedAt) ||
-      isIdleReserve(item.source),
+      isIdleReserve(item.source) ||
+      refusedNow.has(item.externalId),
   );
   if (drop.length === 0) return 0;
 
@@ -141,10 +155,17 @@ export async function syncFeeds(): Promise<SyncSummary> {
   const accepted = new Map<FeedSource, number>();
   /** Резервы, которые в этом прогоне действительно сработали. */
   const ranReserves = new Set<FeedSource>();
+  /**
+   * Идентификаторы материалов, которые лента отдала снова, а нынешние правила их не берут:
+   * политика и не та рубрика. По ним со стола уходят строки, записанные до того, как правило
+   * появилось.
+   */
+  const refusedNow = new Set<string>();
 
   for (const feed of FEED_SOURCES.filter((entry) => !entry.fallbackFor)) {
     const result = await syncOne(feed);
     accepted.set(feed.source, result.accepted);
+    for (const id of result.refused) refusedNow.add(id);
     sources.push(result.summary);
   }
 
@@ -157,10 +178,11 @@ export async function syncFeeds(): Promise<SyncSummary> {
     const result = await syncOne(feed);
     accepted.set(feed.source, result.accepted);
     ranReserves.add(feed.source);
+    for (const id of result.refused) refusedNow.add(id);
     sources.push(result.summary);
   }
 
-  const hidden = await hideStoredByRules(ranReserves);
+  const hidden = await hideStoredByRules(ranReserves, refusedNow);
   if (hidden > 0) {
     console.log(`[feed] правила: скрыто ранее сохранённых материалов — ${hidden}`);
   }
@@ -182,7 +204,7 @@ export async function syncFeeds(): Promise<SyncSummary> {
  */
 async function syncOne(
   feed: (typeof FEED_SOURCES)[number],
-): Promise<{ summary: SourceSyncResult; accepted: number }> {
+): Promise<{ summary: SourceSyncResult; accepted: number; refused: string[] }> {
   const isDzen = feed.kind === "dzen";
 
   try {
@@ -196,8 +218,20 @@ async function syncOne(
 
     const written = await storeItems(parsed.items);
 
+    /*
+      Отказы, по которым стоит убирать уже сохранённое.
+
+      Не «все отказы»: элемент без ссылки или без даты — это про запись, а не про тему, и он
+      ничего не говорит о том, что уже лежит в базе. Тема же — говорит.
+    */
+    const refused = parsed.skipped
+      .filter((item) => item.reason === "politics" || item.reason === "topic")
+      .map((item) => item.externalId)
+      .filter((id): id is string => Boolean(id));
+
     return {
       accepted: parsed.items.length,
+      refused,
       summary: {
         source: feed.source,
         title: feed.title,
@@ -211,6 +245,7 @@ async function syncOne(
     console.warn(`[feed] ${feed.source} не прочитан: ${message}`);
     return {
       accepted: 0,
+      refused: [],
       summary: {
         source: feed.source,
         title: feed.title,
