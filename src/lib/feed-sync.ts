@@ -66,7 +66,7 @@ export async function syncFeeds(): Promise<SyncSummary> {
         accept: FEED_ACCEPT,
         maxBytes: MAX_FEED_BYTES,
       });
-      const parsed = parseFeed(xml, { source: feed.source });
+      const parsed = parseFeed(xml, { source: feed.source, assumeUndated: feed.undated });
 
       const written = await storeItems(parsed.items);
 

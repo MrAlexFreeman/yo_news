@@ -21,6 +21,14 @@ export type FeedDefinition = {
   source: FeedSource;
   title: string;
   url: string;
+  /**
+   * Издание не публикует дат в ленте: материалы датируются временем первого опроса.
+   *
+   * Измерено, а не предположено: у 66.ru на десять элементов фида ни одного `<pubDate>`,
+   * ни одного `dc:date`, ни одного `<date>`. Без этого флага лента даёт ноль материалов —
+   * проверено на проде: «66.RU | +0 | отказов: 10 | из них политика: 0».
+   */
+  undated?: boolean;
 };
 
 /**
@@ -40,7 +48,12 @@ export type FeedDefinition = {
  */
 export const FEED_SOURCES: readonly FeedDefinition[] = [
   { source: "E1", title: "Топ Е1", url: "https://www.e1.ru/rss-feeds/rss.xml" },
-  { source: "GOROD66", title: "66.RU", url: "https://66.ru/rss/" },
+  {
+    source: "GOROD66",
+    title: "66.RU",
+    url: "https://66.ru/rss/",
+    undated: true,
+  },
 ] as const;
 
 /** Подпись источника для интерфейса: код в базе, человеческое имя на экране. */
@@ -97,12 +110,53 @@ export const POLITICS_STEMS: readonly string[] = [
   "спецоперац",
   "чиновник",
   "коррупци",
-  "администраци президент",
-  "владимир путин",
+  "отставк",
+  "администраци",
+  "заксобрани",
+  "законодательн",
+  "парламент",
+  "референдум",
+  "полпред",
+  "путин",
+  "единая россия",
 ];
 
-/** Слова, которые ищутся целиком: короткая основа здесь — часть обычных слов. */
-export const POLITICS_WORDS: readonly string[] = ["сво", "мид", "дума", "думу", "думе", "думы", "думой"];
+/**
+ * Слова, которые ищутся целиком: короткая основа здесь — часть обычных слов.
+ *
+ * Формы выписаны по отдельности, а не основой, и это то же измерение, что и выше: «глава»
+ * целиком — это назначение или отставка, а «главная»/«главный» — обычные слова, и основа
+ * «глав» выбросила бы половину ленты. Так же «мэр»: формы есть, а «мэрия» — нет, потому что
+ * «в мэрии сообщили» стоит в доброй половине городских заметок, которые этой ленте как раз и
+ * нужны. Политик — тот, кого назначили; пресс-служба, которую цитируют, — нет.
+ */
+export const POLITICS_WORDS: readonly string[] = [
+  "сво",
+  "мид",
+  "цик",
+  "дума",
+  "думу",
+  "думе",
+  "думы",
+  "думой",
+  "глава",
+  "главы",
+  "главе",
+  "главу",
+  "главой",
+  "мэр",
+  "мэра",
+  "мэру",
+  "мэром",
+  "мэре",
+  "мэры",
+  "мэров",
+  "мэрам",
+  "указ",
+  "указа",
+  "указом",
+  "указе",
+];
 
 /**
  * Политическое ли это. Заголовок и описание вместе: тема обычно объявлена в одном из них.
@@ -310,10 +364,14 @@ export function linkFor(block: string): string {
  * `limit` is a ceiling on what is taken, not on what is read: the desk shows the newest
  * items, and a feed that suddenly publishes a year of archive should not fill the table
  * on the first sync.
+ *
+ * `assumeUndated` — для издания, которое дат в ленте не публикует вовсе: материал получает
+ * время опроса вместо отказа. Ставится по источнику, а не глобально, потому что правило
+ * «без даты — отказ» верно для ленты, которая даты несёт и иногда теряет.
  */
 export function parseFeed(
   xml: string,
-  options: { source: FeedSource; limit?: number; now?: Date },
+  options: { source: FeedSource; limit?: number; now?: Date; assumeUndated?: boolean },
 ): ParseResult {
   const limit = options.limit ?? DEFAULT_FEED_LIMIT;
   const now = options.now ?? new Date();
@@ -349,11 +407,27 @@ export function parseFeed(
       tagValue(block, "summary") ??
       "";
 
-    const publishedAt = parseFeedDate(
-      tagValue(block, "pubDate") ?? tagValue(block, "published") ?? tagValue(block, "updated"),
-      now,
-    );
+    const publishedAt =
+      parseFeedDate(
+        tagValue(block, "pubDate") ?? tagValue(block, "published") ?? tagValue(block, "updated"),
+        now,
+      ) ?? (options.assumeUndated ? now : null);
 
+    /*
+      Лента без дат.
+
+      Обычно элемент без даты отбрасывается: рассказать, когда материал вышел, лента не
+      смогла, а поставить ему время опроса значило бы выдать догадку за факт — наверху списка
+      такой материал стоял бы вечно.
+
+      Но это правило про ленту, которая даты носит и иногда теряет. `assumeUndated` — про
+      издание, которое их не публикует вовсе (у 66.ru на десять элементов фида ни одного
+      `<pubDate>` и ни одного `dc:date`). Такому источнику выбора нет: либо дата опроса, либо
+      ни одного материала. Дата опроса при этом не «догадка о публикации» — это когда
+      предложка впервые увидела материал, и для стола новостей это ровно то, что нужно:
+      дедупликация по `externalId` не даёт элементу обновиться, поэтому время закрепляется за
+      ним навсегда и порядок не переставляется.
+    */
     if (!publishedAt) {
       skipped.push({ reason: "no-date", title });
       continue;

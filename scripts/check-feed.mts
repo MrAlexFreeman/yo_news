@@ -483,6 +483,89 @@ check(
 );
 
 /*
+  Заголовки, которые фильтр пропускал, — настоящие, снятые с ленты Е1.
+
+  Эти пять прошли первым списком и дошли до предложки: назначение главы, отставка мэра, её
+  обсуждение. Проверяются дословно, потому что общий тест «политическое отсекается» их не
+  ловил — он был написан по тем же словам, что и список.
+*/
+check(
+  "Политика: назначения и отставки отсекаются по реальным заголовкам Е1",
+  isPoliticalText("У Екатеринбурга появился новый глава. Подписан важный документ") &&
+    isPoliticalText("В Екатеринбурге отправили в отставку мэра") &&
+    isPoliticalText("Мэр, которого нам предложили. Кто такой Рустам Галямов, будущий глава города") &&
+    isPoliticalText("Бывший глава Екатеринбурга признался, за что ему было стыдно на посту") &&
+    isPoliticalText("Ушедший в отставку мэр на прощание пообещал вторую ветку метро"),
+  "пять заголовков из живой ленты",
+);
+
+/*
+  И обратное, тоже по живым заголовкам: что фильтр трогать не должен.
+
+  «Мэрия» — не «мэр». Пресс-служба, которую цитируют в городской заметке, не делает заметку
+  политической, а основа «мэр» выбросила бы её вместе с половиной ленты. «Главная» и
+  «главное» — не «глава» по той же причине.
+*/
+check(
+  "Политика: «мэрия» и «главное» обычные городские заметки не отсекают",
+  !isPoliticalText("В мэрии сообщили, когда откроют набережную") &&
+    !isPoliticalText("Главная ёлка города зажглась на площади 1905 года") &&
+    !isPoliticalText("Главное блюдо уральской кухни готовят так") &&
+    !isPoliticalText("Власти ответили, почему подорожала коммуналка"),
+  "мэрия и главное остаются в ленте",
+);
+
+// --- лента без дат --------------------------------------------------------------
+
+/*
+  Источник, который дат не публикует вовсе.
+
+  Измерено на 66.ru: на десять элементов фида ни одного `<pubDate>`, ни одного `dc:date`.
+  Первый прогон на проде дал по нему ноль материалов и десять отказов `no-date` — лента была
+  подключена и пуста. Флаг `assumeUndated` — выбор по источнику, и он же проверяется здесь:
+  без флага поведение обязано остаться прежним, иначе теряется смысл отказа.
+*/
+const UNDATED_FEED = `<rss><channel>
+  <item><title>В центре города завершили благоустройство сквера</title><link>https://66.ru/1</link><guid>u1</guid></item>
+  <item><title>Открыли новую развязку у аэропорта</title><link>https://66.ru/2</link><guid>u2</guid></item>
+</channel></rss>`;
+
+const syncAt = new Date("2026-10-12T09:00:00Z");
+const undated = parseFeed(UNDATED_FEED, {
+  source: "GOROD66",
+  now: syncAt,
+  assumeUndated: true,
+});
+
+check(
+  "Лента без дат: с флагом материалы берутся",
+  undated.items.length === 2 && undated.skipped.length === 0,
+  `${undated.items.length} элементов, отказов ${undated.skipped.length}`,
+);
+
+check(
+  "Лента без дат: датой становится время опроса",
+  undated.items.every((item) => item.publishedAt.getTime() === syncAt.getTime()),
+  undated.items.map((item) => item.publishedAt.toISOString()).join(", "),
+);
+
+check(
+  "Лента без дат: без флага поведение прежнее — отказ",
+  parseFeed(UNDATED_FEED, { source: "E1", now: syncAt }).skipped.every(
+    (item) => item.reason === "no-date",
+  ) &&
+    parseFeed(UNDATED_FEED, { source: "E1", now: syncAt }).items.length === 0,
+  "флаг только там, где объявлен",
+);
+
+check(
+  "Лента без дат: флаг объявлен ровно у одного источника",
+  FEED_SOURCES.filter((feed) => feed.undated).length === 1 &&
+    FEED_SOURCES.find((feed) => feed.undated)?.source === "GOROD66",
+  FEED_SOURCES.map((f) => `${f.source}${f.undated ? " (без дат)" : ""}`).join(", "),
+);
+
+/*
   HTTP header values are ByteStrings. A Cyrillic character anywhere in the user agent
   makes `fetch` throw "Cannot convert argument to a ByteString" before the request
   leaves, and the message names neither the feed nor the header — the first version of
