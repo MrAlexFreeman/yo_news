@@ -445,7 +445,7 @@ export type TelegramPlan = {
    * carrying the whole body or a lead cut to fit under the picture. `text-only` and `truncated`
    * are the shapes a post with no cover takes, where there is no picture to hang the words on.
    */
-  mode: "caption" | "caption-cut" | "truncated" | "text-only";
+  mode: "caption" | "split" | "chunks" | "truncated" | "text-only";
   steps: TelegramStep[];
   /** Length of the assembled post, before any decision was taken. */
   length: number;
@@ -594,17 +594,89 @@ export function buildPhotoCaption(post: MessengerPost): string {
 }
 
 /**
+ * How many messages one article may become before it is cut instead.
+ *
+ * A long story is sent whole — several `sendMessage` calls rather than one teaser — because
+ * "the full text" is the point. The cap is what keeps that from becoming a flood: past four
+ * messages the rest is dropped and the usual link to the site stands in.
+ */
+export const TELEGRAM_MAX_MESSAGES = 4;
+
+/**
+ * Splits a post into chunks no longer than Telegram's message ceiling, at paragraph boundaries.
+ *
+ * Only a paragraph longer than a whole message is cut by character, and that cut is
+ * entity-safe: the body is escaped by this point, and half an `&amp;` is not an entity
+ * Telegram accepts.
+ */
+export function chunkForTelegram(text: string, limit = TELEGRAM_MESSAGE_LIMIT): string[] {
+  if (text.length <= limit) return [text];
+
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const paragraph of text.split("\n\n")) {
+    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (candidate.length <= limit) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+
+    if (paragraph.length <= limit) {
+      current = paragraph;
+      continue;
+    }
+
+    let rest = paragraph;
+    while (rest.length > limit) {
+      const piece = cutWithoutSplittingEntity(rest, limit);
+      const safePiece = piece.length > 0 ? piece : rest.slice(0, limit);
+      chunks.push(safePiece);
+      rest = rest.slice(safePiece.length).replace(/^\s+/, "");
+    }
+    current = rest;
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+/**
+ * The caption a cover carries when the whole post will not fit under it: the headline and the
+ * link, and nothing else.
+ *
+ * The full text still follows as its own message or messages. The caption is there so the
+ * picture stands on its own — a reader scrolling past sees the headline and where to read the
+ * rest, even if the second send is the thing that fails.
+ */
+export function shortPhotoCaption(post: MessengerPost): string | null {
+  const link = `${TELEGRAM_CAPTION_MORE}: ${escapeHtml(post.url)}`;
+  // The headline when there is one, and the link alone otherwise: a picture with no caption at
+  // all would be a post the reader cannot act on, and `buildMessengerPost` always sets a
+  // headline — this branch is for a post assembled by hand.
+  const caption = post.headline ? `${post.headline}\n\n${link}` : link;
+  return caption.length <= TELEGRAM_CAPTION_LIMIT ? caption : null;
+}
+
+/**
  * Decides how a post reaches Telegram.
  *
- * Two shapes, and one post in either of them:
+ * Four shapes, and the first two are the answer to "the full text and the picture":
  *
- *  - with a cover: **one** `sendPhoto`, carrying the caption `buildPhotoCaption` composes —
- *    the whole body when it fits, a cut one otherwise, always with the headline, the link and
- *    the rubric around it. The picture is attached to the words, which is the thing that was
- *    missing.
- *  - without one: **one** `sendMessage`. There is no caption to carry the text and no picture
- *    to hang it on, so a story too long for a single message is cut to the teaser and the link
- *    rather than sent as a run of messages: the channel's post for a story is one post.
+ *  - **fits under the picture** (`TELEGRAM_CAPTION_LIMIT`): one `sendPhoto` with the whole post
+ *    as its caption. One message, which is what a reader and the channel's preview want.
+ *  - **longer than that**: the cover with a short caption — headline and link — and then the
+ *    **full text** as its own message, or as several split on paragraph boundaries while it
+ *    fits in `TELEGRAM_MAX_MESSAGES`. This is the shape the brief asks for: the whole story,
+ *    with the picture attached to the post.
+ *  - **a post that has become five messages**: the cover, then the teaser pointing at the site.
+ *    Past a certain length a channel post is a wall, and the link is the honest end to it.
+ *  - **no cover**: the text alone, in the same chunks.
  */
 export function planTelegramPost(
   post: MessengerPost,
@@ -612,25 +684,31 @@ export function planTelegramPost(
 ): TelegramPlan {
   const length = post.text.length;
 
-  if (hasCover) {
+  if (hasCover && length <= TELEGRAM_CAPTION_LIMIT) {
     return {
-      mode: length <= TELEGRAM_CAPTION_LIMIT ? "caption" : "caption-cut",
+      mode: "caption",
       length,
-      truncated: length > TELEGRAM_CAPTION_LIMIT,
-      steps: [{ kind: "photo", caption: buildPhotoCaption(post) }],
+      truncated: false,
+      steps: [{ kind: "photo", caption: post.text }],
     };
   }
 
+  const steps: TelegramStep[] = [];
+  if (hasCover) steps.push({ kind: "photo", caption: shortPhotoCaption(post) });
+
   if (length <= TELEGRAM_MESSAGE_LIMIT) {
-    return { mode: "text-only", length, truncated: false, steps: [{ kind: "text", text: post.text }] };
+    steps.push({ kind: "text", text: post.text });
+    return { mode: hasCover ? "split" : "text-only", length, truncated: false, steps };
   }
 
-  return {
-    mode: "truncated",
-    length,
-    truncated: true,
-    steps: [{ kind: "text", text: cutForReading(post) }],
-  };
+  const chunks = chunkForTelegram(post.text, TELEGRAM_MESSAGE_LIMIT);
+  if (chunks.length <= TELEGRAM_MAX_MESSAGES) {
+    for (const chunk of chunks) steps.push({ kind: "text", text: chunk });
+    return { mode: "chunks", length, truncated: false, steps };
+  }
+
+  steps.push({ kind: "text", text: cutForReading(post) });
+  return { mode: "truncated", length, truncated: true, steps };
 }
 
 export type MaxPlan = {

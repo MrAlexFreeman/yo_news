@@ -485,11 +485,13 @@ export async function publishArticleToTelegram(
     const summary =
       plan.mode === "caption"
         ? "Telegram: одно сообщение с обложкой."
-        : plan.mode === "caption-cut"
-          ? "Telegram: обложка с анонсом и ссылкой на полный текст."
-          : plan.mode === "truncated"
-            ? "Telegram: текст со ссылкой на полный материал."
-            : "Telegram: текст без обложки.";
+        : plan.mode === "split"
+          ? "Telegram: обложка и полный текст двумя сообщениями."
+          : plan.mode === "chunks"
+            ? "Telegram: обложка и полный текст несколькими сообщениями."
+            : plan.mode === "truncated"
+              ? "Telegram: текст со ссылкой на полный материал."
+              : "Telegram: текст без обложки.";
 
     console.log(
       `[telegram] готово: ${summary}${warning ? ` Предупреждение: ${warning}` : ""}`,
