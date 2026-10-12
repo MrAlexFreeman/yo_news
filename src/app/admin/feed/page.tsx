@@ -42,6 +42,16 @@ export default async function FeedPage({ searchParams }: PageParams) {
   /** Коды подключённых сейчас лент. Строки выключенных изданий с экрана убираются. */
   const activeSources = FEED_SOURCES.map((feed) => feed.source);
 
+  /*
+    Постоянные ленты и резерв — врозь.
+
+    Резерв («Топ Урал») стоит в том же списке, но работает только тогда, когда Дзен ничего не
+    дал. Перечислить его в шапке наравне с остальными значило бы обещать редакции ленту,
+    которой в списке нет.
+  */
+  const primarySources = FEED_SOURCES.filter((feed) => !feed.fallbackFor);
+  const standbySources = FEED_SOURCES.filter((feed) => feed.fallbackFor);
+
   const [items, newCount, ignoredCount] = await Promise.all([
     prisma.newsFeedItem.findMany({
       // Только то, что смотрит настроенная предложка.
@@ -105,10 +115,15 @@ export default async function FeedPage({ searchParams }: PageParams) {
         <header className="border border-neutral-300 bg-white px-5 py-4">
           <h1 className="text-base font-semibold text-neutral-900">Предложка</h1>
           <p className="mt-1 text-sm text-neutral-600">
-            Инфоповоды из лент {FEED_SOURCES.map((feed) => feed.title).join(" и ")}. Из любого
+            Инфоповоды из лент {primarySources.map((feed) => feed.title).join(", ")}. Из любого
             можно собрать черновик: форма откроется с текстом источника, а переписать его
             можно кнопкой рерайта. Материалы про политику отсеиваются при импорте и в список
             не попадают.
+            {standbySources.length > 0
+              ? ` Если «Топ Дзен» не отдаёт ничего, его место занимает резервная лента ${standbySources
+                  .map((feed) => feed.title)
+                  .join(", ")}.`
+              : ""}
           </p>
         </header>
 
