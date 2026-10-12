@@ -14,6 +14,7 @@ import {
   feedSourceTitle,
   isPoliticalText,
   linkFor,
+  parseDzenFeed,
   parseFeed,
   parseFeedDate,
   sliceElements,
@@ -378,8 +379,8 @@ check(
 );
 
 check(
-  "Ленты: оба источника объявлены с адресами",
-  FEED_SOURCES.length === 2 &&
+  "Ленты: каждый источник объявлен с адресом",
+  FEED_SOURCES.length >= 2 &&
     FEED_SOURCES.every((feed) => feed.url.startsWith("https://") && feed.source.length > 0),
   FEED_SOURCES.map((f) => `${f.source}=${f.url}`).join(" "),
 );
@@ -394,12 +395,11 @@ check(
 );
 
 check(
-  "Ленты: URA удалён, Дзен не подставлен выдуманным адресом",
-  // Убирая URA, соблазнительно было прописать «настоящий» адрес Дзена из головы. Его нет:
-  // dzen.ru/rss/news отвечает 302 на sso.passport.yandex.ru. Тест держит оба факта — ни
-  // ura.news, ни dzen.ru в списке быть не должно.
+  "Ленты: URA удалён, и мёртвого dzen.ru/rss в списке нет",
+  // Задание предлагало `dzen.ru/rss/news`, и его в списке быть не должно: адрес отвечает 302 на
+  // sso.passport.yandex.ru. Работающий адрес — API, и это проверяется отдельным тестом ниже.
   FEED_SOURCES.every(
-    (feed) => !feed.url.includes("ura.news") && !feed.url.includes("dzen.ru"),
+    (feed) => !feed.url.includes("ura.news") && !feed.url.includes("dzen.ru/rss"),
   ),
   FEED_SOURCES.map((f) => f.url).join(" "),
 );
@@ -587,6 +587,193 @@ check(
   FEED_SOURCES.filter((feed) => feed.undated).length === 1 &&
     FEED_SOURCES.find((feed) => feed.undated)?.source === "GOROD66",
   FEED_SOURCES.map((f) => `${f.source}${f.undated ? " (без дат)" : ""}`).join(", "),
+);
+
+// --- выдача Дзена ---------------------------------------------------------------
+
+/*
+  Карточки API Дзена, собранные по измеренной форме.
+
+  Тело — не выдумка: поля и их типы сняты с живого ответа `api/v3/launcher/more` (20 карточек,
+  10 с заголовком, `publication_date` — Unix-время строкой, половина массива — пустые слоты).
+  Проверяется разбор, а не сеть: сеть в наборе не участвует, иначе набор падал бы вместе с
+  чужим сервером.
+*/
+const DZEN_NOW = new Date("2026-10-12T09:00:00Z");
+/** 2026-10-05T12:00:00Z — время, к которому относится карточка ниже. */
+const DZEN_EPOCH = 1790856000;
+
+const DZEN_JSON = JSON.stringify({
+  rid: "0.1.2",
+  items: [
+    {
+      card_type: "zen",
+      type: "card",
+      item_type: "native",
+      id: "dzen-card-1",
+      title: "<b>Роскачество</b> выявило лучшие марки поваренной соли",
+      text: "Специалисты проверили двадцать образцов и рассказали, на что смотреть в магазине.",
+      share_link: "https://dzen.ru/a/asYsEq5MNHd0NiJM",
+      publication_date: String(DZEN_EPOCH),
+      creation_time: "5 дней назад",
+      domain: "RUNEWS24.RU",
+      source: { title: "RuNews24.ru" },
+      is_promo_publication: false,
+      is_promoted: false,
+    },
+    // Пустой слот выдачи: заголовка нет, card_type null. Не отказ, а незаполненное место.
+    { card_type: null, is_promo_publication: null, is_promoted: null },
+    {
+      card_type: "zen",
+      id: "dzen-card-politics",
+      title: "Госдума приняла законопроект о выборах",
+      text: "Депутаты обсудили поправки.",
+      share_link: "https://dzen.ru/a/politics",
+      publication_date: String(DZEN_EPOCH),
+    },
+    {
+      card_type: "zen",
+      id: "dzen-card-promo",
+      title: "Выгодный кредит без справок",
+      text: "Реклама.",
+      share_link: "https://dzen.ru/a/promo",
+      publication_date: String(DZEN_EPOCH),
+      is_promo_publication: true,
+    },
+    {
+      card_type: "zen",
+      id: "dzen-card-undated",
+      title: "Тест. Угадайте советские фильмы",
+      text: "Проверьте себя.",
+      share_link: "https://dzen.ru/a/undated",
+      creation_time: "2 месяца назад",
+    },
+    {
+      card_type: "zen",
+      id: "dzen-card-nolink",
+      title: "Карточка без ссылки",
+      text: "Текст есть, ссылки нет.",
+      publication_date: String(DZEN_EPOCH),
+    },
+    {
+      card_type: "zen",
+      id: "dzen-card-future",
+      title: "Материал из будущего",
+      text: "Дата на месяц вперёд.",
+      share_link: "https://dzen.ru/a/future",
+      publication_date: String(Math.floor(DZEN_NOW.getTime() / 1000) + 30 * 24 * 3600),
+    },
+    {
+      card_type: "zen",
+      id: "dzen-card-ancient",
+      title: "Материал 2009 года",
+      text: "Дата до начала эпохи.",
+      share_link: "https://dzen.ru/a/ancient",
+      publication_date: "1234567890",
+    },
+  ],
+});
+
+const dzen = parseDzenFeed(DZEN_JSON, { source: "DZEN", now: DZEN_NOW });
+
+check(
+  "Дзен: годные карточки берутся, пустые слоты выдачи молча пропускаются",
+  dzen.items.length === 1 && dzen.items[0]?.title.includes("Роскачество"),
+  `${dzen.items.length} материалов, отказов ${dzen.skipped.length}`,
+);
+
+check(
+  "Дзен: пустой слот не считается отказом",
+  // Иначе каждая синхронизация показывала бы десяток «no-title» там, где лента просто ещё не
+  // заполнила место, — и настоящий отказ утонул бы в этом шуме. Отказов ровно шесть: политика,
+  // реклама, без ссылки и три без даты, — и у всех шести есть заголовок.
+  dzen.skipped.every((item) => item.title !== "") && dzen.skipped.length === 6,
+  `${dzen.skipped.length}: ` + dzen.skipped.map((s) => `${s.reason}:${s.title.slice(0, 22)}`).join(", "),
+);
+
+check(
+  "Дзен: разметка в заголовке чистится, тело сохраняется",
+  dzen.items[0]?.title === "Роскачество выявило лучшие марки поваренной соли" &&
+    !dzen.items[0]?.title.includes("<b>") &&
+    (dzen.items[0]?.rawText.length ?? 0) > 50,
+  JSON.stringify(dzen.items[0]?.title ?? null),
+);
+
+check(
+  "Дзен: дата берётся из publication_date, то есть из Unix-времени строкой",
+  dzen.items[0]?.publishedAt.getTime() === DZEN_EPOCH * 1000,
+  dzen.items[0]?.publishedAt.toISOString() ?? "(нет)",
+);
+
+check(
+  "Дзен: politics, promo, no-url и no-date названы поимённо",
+  new Set(dzen.skipped.map((s) => s.reason)).size === 4 &&
+    dzen.skipped.some((s) => s.reason === "politics") &&
+    dzen.skipped.some((s) => s.reason === "promo") &&
+    dzen.skipped.some((s) => s.reason === "no-url") &&
+    dzen.skipped.filter((s) => s.reason === "no-date").length === 3,
+  dzen.skipped.map((s) => s.reason).join(", "),
+);
+
+check(
+  "Дзен: материал из будущего и материал 2009 года отбрасываются",
+  // Время в будущем — ошибка разметки, а не новость: поставить её наверх списка значит
+  // показать редакции материал, которого ещё нет. Карточка без `publication_date` — тоже
+  // no-date: возраст материала здесь часть решения, идти ли в сюжет.
+  (() => {
+    const undated = dzen.skipped.filter((s) => s.reason === "no-date").map((s) => s.title);
+    return (
+      undated.includes("Материал из будущего") &&
+      undated.includes("Материал 2009 года") &&
+      undated.includes("Тест. Угадайте советские фильмы")
+    );
+  })(),
+  dzen.skipped.filter((s) => s.reason === "no-date").map((s) => s.title).join(", "),
+);
+
+check(
+  "Дзен: идентификатор привязан к источнику и к карточке",
+  dzen.items[0]?.externalId === "DZEN:dzen-card-1",
+  dzen.items[0]?.externalId ?? "(нет)",
+);
+
+check(
+  "Дзен: битый ответ — ноль материалов, а не исключение",
+  parseDzenFeed("<html>не выдача</html>", { source: "DZEN", now: DZEN_NOW }).items.length === 0 &&
+    parseDzenFeed("{}", { source: "DZEN", now: DZEN_NOW }).items.length === 0,
+  "без исключений",
+);
+
+check(
+  "Дзен: источник объявлен как API, а не как мёртвый RSS",
+  FEED_SOURCES.some(
+    (feed) => feed.source === "DZEN" && feed.kind === "dzen" && feed.url.includes("/api/"),
+  ) &&
+    FEED_SOURCES.every((feed) => !feed.url.includes("dzen.ru/rss")),
+  FEED_SOURCES.map((f) => `${f.source}=${f.url}`).join(" "),
+);
+
+check(
+  "Дзен: уральский резерв — регион 66, а не 54 из задания",
+  // Измерено: 54 у Mail.ru отдаёт Новосибирск («Километровые пробки сковали Новосибирск»),
+  // 66 — Екатеринбург, 35 материалов с датами.
+  FEED_SOURCES.some(
+    (feed) => feed.source === "MAIL_URAL" && feed.url === "https://news.mail.ru/rss/main/66/",
+  ),
+  FEED_SOURCES.map((f) => f.url).join(" "),
+);
+
+check(
+  "Дзен: резерв один, и он привязан к Дзену",
+  FEED_SOURCES.filter((feed) => feed.fallbackFor).length === 1 &&
+    FEED_SOURCES.find((feed) => feed.fallbackFor)?.fallbackFor === "DZEN",
+  FEED_SOURCES.filter((f) => f.fallbackFor).map((f) => `${f.source}→${f.fallbackFor}`).join(", "),
+);
+
+check(
+  "Бейдж: «Топ Дзен» — человеческое имя источника",
+  feedSourceTitle("DZEN") === "Топ Дзен" && feedSourceTitle("MAIL_URAL") === "Топ Урал",
+  `${feedSourceTitle("DZEN")} / ${feedSourceTitle("MAIL_URAL")}`,
 );
 
 /*

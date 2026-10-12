@@ -15,12 +15,17 @@
  */
 
 /** The outlets the desk watches. */
-export type FeedSource = "E1" | "GOROD66";
+export type FeedSource = "DZEN" | "E1" | "GOROD66" | "MAIL_URAL";
+
+/** Чем читается лента: обычным RSS или карточками API Дзена. */
+export type FeedKind = "rss" | "dzen";
 
 export type FeedDefinition = {
   source: FeedSource;
   title: string;
   url: string;
+  /** По умолчанию `rss`. */
+  kind?: FeedKind;
   /**
    * Издание не публикует дат в ленте: материалы датируются временем первого опроса.
    *
@@ -29,22 +34,32 @@ export type FeedDefinition = {
    * проверено на проде: «66.RU | +0 | отказов: 10 | из них политика: 0».
    */
   undated?: boolean;
+  /**
+   * Резервная лента: опрашивается, только если её основной источник не дал ни одного материала.
+   *
+   * Так устроена пара «Топ Дзен — Топ Урал». Выдача Дзена открыта и работает (проверено), но
+   * она рекомендательная: половина карточек — пустые слоты, а число годных гуляет от запроса к
+   * запросу. Резерв из Mail.ru держит то же место за столом — повестку Урала с настоящими
+   * датами — и включается сам, когда Дзен не дал ничего. Подпись у его карточек своя, так что
+   * редакция видит, откуда материал, а не догадывается.
+   */
+  fallbackFor?: FeedSource;
 };
 
 /**
- * The feeds, in one place.
+ * Ленты предложки, в одном месте.
  *
- * **«Топ Дзен» не подключён, и это измеренный факт, а не недосмотр.** `dzen.ru/rss/news`
- * отвечает 302 на `sso.passport.yandex.ru/push` — публичного фида у Дзена нет, он требует
- * авторизацию Яндекса. Проверено и `zen.yandex.ru/rss/news`, и `dzen.ru/rss`, и
- * `/api/v3/rss/news`: первые два отдают ту же страницу входа (2899 байт HTML, ноль элементов),
- * третий — 44 байта JSON-ошибки. Скрапить это headless-браузером значило бы поставить браузер
- * на VPS с одним ядром, что правилами прямо запрещено.
+ * **«Топ Дзен» — это API, а не RSS.** `dzen.ru/rss/news` отвечает 302 на
+ * `sso.passport.yandex.ru/push`: публичного фида у Дзена нет, нужна авторизация Яндекса.
+ * Проверено и `zen.yandex.ru/rss/news`, и `dzen.ru/rss`, и `/api/v3/rss/news`, и `/news/rss`:
+ * первые отдают ту же страницу входа (2899 байт HTML, ноль элементов), API — 44 байта
+ * JSON-ошибки. Зато `api/v3/launcher/more` — та самая выдача, которую грузит главная Дзена, —
+ * открыт и отвечает 20 карточками. Скрапить RSS браузером значило бы поставить headless на VPS
+ * с одним ядром, что правилами прямо запрещено.
  *
- * Второй источник поэтому — реальный фид екатеринбургского городского издания, ближайший по
- * характеру к тому, что просили: происшествия и общество без федеральной политики. Оба адреса
- * взяты из объявлений самих сайтов (`<link rel="alternate" type="application/rss+xml">`) и
- * проверены запросом: E1 отвечает 100 элементами, 66.ru — 10.
+ * Уральский фид Mail.ru — это `/66/`, а не `/54/` из задания: 54 у Mail.ru отдаёт Новосибирск
+ * (первый заголовок — «Километровые пробки сковали Новосибирск»), а 66 — Екатеринбург, 35
+ * материалов с датами. Адрес измерен, а не взят из письма.
  */
 export const FEED_SOURCES: readonly FeedDefinition[] = [
   { source: "E1", title: "Топ Е1", url: "https://www.e1.ru/rss-feeds/rss.xml" },
@@ -53,6 +68,18 @@ export const FEED_SOURCES: readonly FeedDefinition[] = [
     title: "66.RU",
     url: "https://66.ru/rss/",
     undated: true,
+  },
+  {
+    source: "DZEN",
+    title: "Топ Дзен",
+    url: "https://dzen.ru/api/v3/launcher/more",
+    kind: "dzen",
+  },
+  {
+    source: "MAIL_URAL",
+    title: "Топ Урал",
+    url: "https://news.mail.ru/rss/main/66/",
+    fallbackFor: "DZEN",
   },
 ] as const;
 
@@ -72,7 +99,7 @@ export type ParsedFeedItem = {
 };
 
 /** Why an element of the feed could not become an item. */
-export type SkipReason = "no-title" | "no-url" | "no-date" | "politics";
+export type SkipReason = "no-title" | "no-url" | "no-date" | "politics" | "promo";
 
 /**
  * Темы, которые редакция не берёт: политика, власть и всё, что вокруг них.
@@ -465,4 +492,135 @@ export function parseFeed(
   }
 
   return { items, skipped };
+}
+
+/**
+ * Карточки публичного API Дзена — той самой выдачи, которую грузит его главная.
+ *
+ * **Почему API, а не RSS.** `dzen.ru/rss/news` отвечает 302 на `sso.passport.yandex.ru/push`:
+ * публичного фида у Дзена нет, нужна авторизация Яндекса. Зато его главная берёт ленту
+ * обычным JSON-запросом, и он открыт — проверено с сервера: `HTTP 200`, 664 КБ, 20 карточек,
+ * из них 10 с заголовком (остальные — пустые слоты выдачи, `card_type: null`).
+ *
+ * **Про User-Agent.** В задании просили браузерный. Он не нужен, и это измерено: наш
+ * `EartnewsBot/1.0 (+https://eartnews.ru; editorial-wire)` получает ту же выдачу, что Chrome,
+ * — байт в байт по структуре и числу карточек. Притворяться браузером там, где это ничего не
+ * добавляет, значит врать чужому серверу без причины; `Referer` тоже не требуется.
+ *
+ * **Чего в карточке нет.** `creation_time` — человеческая строка («5 дней назад»), а не время;
+ * время лежит рядом, в `publication_date`, и это Unix-время **строкой**. Поэтому дата берётся
+ * оттуда, а карточка без неё отбрасывается: возраст материала на этом столе — часть решения,
+ * идти ли в сюжет.
+ *
+ * Пустые слоты в `skipped` не попадают: это не отказ, а место, которое выдача ещё не
+ * заполнила, и десяток «отказов no-title» в сводке каждую синхронизацию только путал бы.
+ */
+export function parseDzenFeed(
+  body: string,
+  options: { source: FeedSource; limit?: number; now?: Date },
+): ParseResult {
+  const limit = options.limit ?? DEFAULT_FEED_LIMIT;
+  const now = options.now ?? new Date();
+
+  const items: ParsedFeedItem[] = [];
+  const skipped: ParseResult["skipped"] = [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    // Не JSON — не выдача. Пустой результат без исключения: вызывающий скажет об этом сводкой.
+    return { items, skipped };
+  }
+
+  const cards = (parsed as { items?: unknown })?.items;
+  if (!Array.isArray(cards)) return { items, skipped };
+
+  for (const raw of cards) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const card = raw as Record<string, unknown>;
+
+    const title = feedHtmlToText(typeof card.title === "string" ? card.title : "").trim();
+    if (!title) continue;
+
+    /*
+      Реклама до стола не доходит.
+
+      Выдача помечает её сама (`is_promo_publication`, `is_promoted`), и на измеренной ленте
+      все флаги были false — но поле подписано издателем, а не нами, и доверять ему дешевле,
+      чем потом объяснять редакции, почему в предложке стоит чужой баннер.
+    */
+    if (card.is_promo_publication === true || card.is_promoted === true) {
+      skipped.push({ reason: "promo", title });
+      continue;
+    }
+
+    const url = feedHtmlToText(
+      typeof card.share_link === "string"
+        ? card.share_link
+        : typeof card.link === "string"
+          ? card.link
+          : "",
+    ).trim();
+    if (!url) {
+      skipped.push({ reason: "no-url", title });
+      continue;
+    }
+
+    const publishedAt = dzenDate(card.publication_date, now);
+    if (!publishedAt) {
+      skipped.push({ reason: "no-date", title });
+      continue;
+    }
+
+    const rawText = feedHtmlToText(typeof card.text === "string" ? card.text : "");
+
+    if (isPoliticalText(title, rawText)) {
+      skipped.push({ reason: "politics", title });
+      continue;
+    }
+
+    items.push({
+      source: options.source,
+      externalId: externalIdFor(
+        options.source,
+        typeof card.id === "string"
+          ? card.id
+          : typeof card.publication_id === "string"
+            ? card.publication_id
+            : "",
+        url,
+        title,
+      ),
+      originalUrl: url,
+      title,
+      rawText,
+      publishedAt,
+    });
+
+    if (items.length >= limit) break;
+  }
+
+  return { items, skipped };
+}
+
+/**
+ * `publication_date` Дзена: Unix-время, но строкой.
+ *
+ * Рамка та же, что у `parseFeedDate`, и по той же причине: время в будущем — это не новость, а
+ * ошибка в разметке, и поставить её наверх списка значит показать редакции материал, которого
+ * ещё нет. Слишком старое тоже отбрасывается — карточка 2019 года в «Топе» читается как сбой.
+ */
+function dzenDate(value: unknown, now: Date): Date | null {
+  const seconds = typeof value === "string" ? Number.parseInt(value, 10) : NaN;
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+
+  const at = new Date(seconds * 1000);
+  if (Number.isNaN(at.getTime())) return null;
+
+  // Границы: не раньше 2010-го и не позже недели вперёд.
+  if (at.getTime() < Date.UTC(2010, 0, 1)) return null;
+  if (at.getTime() > now.getTime() + 7 * 24 * 60 * 60 * 1000) return null;
+
+  return at;
 }

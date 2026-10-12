@@ -5,6 +5,7 @@ import {
   type FeedSource,
   type ParsedFeedItem,
   isPoliticalText,
+  parseDzenFeed,
   parseFeed,
 } from "@/lib/feed-parse";
 import { prisma } from "@/lib/prisma";
@@ -31,6 +32,15 @@ const MAX_FEED_BYTES = 4 * 1024 * 1024;
 
 /** The `Accept` header a feed poll sends. The user agent and the guards live in wire-fetch.ts. */
 const FEED_ACCEPT = "application/rss+xml, application/atom+xml, application/xml, text/xml, */*";
+
+/**
+ * Выдача Дзена — JSON, и просить её надо как JSON.
+ *
+ * Браузерного User-Agent играть не нужно: проверено, что наш `EartnewsBot/1.0` получает ту же
+ * выдачу, что Chrome. А вот `Accept` важен — это единственное, чем один адрес отличается от
+ * другого запроса к тому же API, и без него ответ приходит «Unknown api request».
+ */
+const DZEN_ACCEPT = "application/json, text/plain, */*";
 
 export type SourceSyncResult = {
   source: FeedSource;
@@ -92,41 +102,35 @@ async function hideStoredPolitics(): Promise<number> {
  * Fetches and stores every configured feed.
  *
  * Never throws. Returns a per-source summary so the button can say what happened —
- * "добавлено 12, URA недоступен" is the answer an editor needs, and a bare success
+ * "добавлено 12, Топ Е1 недоступен" is the answer an editor needs, and a bare success
  * toast after a silent failure is the one outcome that would waste their morning.
+ *
+ * Резервные ленты идут вторым проходом и только тогда, когда их основной источник не дал
+ * ничего: пара «Топ Дзен — Топ Урал» задумана как подстраховка, а не как два одинаковых
+ * потока в списке. Молчание резерва в сводку не попадает — «Топ Урал: +0» рядом с работающим
+ * Дзеном читалось бы как поломка.
  */
 export async function syncFeeds(): Promise<SyncSummary> {
   const sources: SourceSyncResult[] = [];
 
-  for (const feed of FEED_SOURCES) {
-    try {
-      const xml = await fetchWireText(feed.url, {
-        accept: FEED_ACCEPT,
-        maxBytes: MAX_FEED_BYTES,
-      });
-      const parsed = parseFeed(xml, { source: feed.source, assumeUndated: feed.undated });
+  /** Сколько годных карточек дал каждый источник в этом прогоне. */
+  const accepted = new Map<FeedSource, number>();
 
-      const written = await storeItems(parsed.items);
+  for (const feed of FEED_SOURCES.filter((entry) => !entry.fallbackFor)) {
+    const result = await syncOne(feed);
+    accepted.set(feed.source, result.accepted);
+    sources.push(result.summary);
+  }
 
-      sources.push({
-        source: feed.source,
-        title: feed.title,
-        inserted: written,
-        skipped: parsed.skipped.length,
-        political: parsed.skipped.filter((item) => item.reason === "politics").length,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "неизвестная ошибка";
-      console.warn(`[feed] ${feed.source} не прочитан: ${message}`);
-      sources.push({
-        source: feed.source,
-        title: feed.title,
-        inserted: 0,
-        skipped: 0,
-        political: 0,
-        error: message,
-      });
-    }
+  for (const feed of FEED_SOURCES.filter((entry) => entry.fallbackFor)) {
+    if ((accepted.get(feed.fallbackFor as FeedSource) ?? 0) > 0) continue;
+
+    console.log(
+      `[feed] резерв: ${feed.title} — основной источник дал 0 материалов, берём резервную ленту`,
+    );
+    const result = await syncOne(feed);
+    accepted.set(feed.source, result.accepted);
+    sources.push(result.summary);
   }
 
   const hidden = await hideStoredPolitics();
@@ -140,6 +144,56 @@ export async function syncFeeds(): Promise<SyncSummary> {
     inserted: sources.reduce((total, source) => total + source.inserted, 0),
     hidden,
   };
+}
+
+/**
+ * Одна лента: забрать, разобрать, записать.
+ *
+ * Читается либо как RSS, либо как карточки Дзена — по `kind` источника. Разница только в
+ * разборе: дальше всё общее, включая фильтр политики, который живёт внутри обоих разборов, и
+ * запись с дедупликацией по `externalId`.
+ */
+async function syncOne(
+  feed: (typeof FEED_SOURCES)[number],
+): Promise<{ summary: SourceSyncResult; accepted: number }> {
+  const isDzen = feed.kind === "dzen";
+
+  try {
+    const body = await fetchWireText(feed.url, {
+      accept: isDzen ? DZEN_ACCEPT : FEED_ACCEPT,
+      maxBytes: MAX_FEED_BYTES,
+    });
+    const parsed = isDzen
+      ? parseDzenFeed(body, { source: feed.source })
+      : parseFeed(body, { source: feed.source, assumeUndated: feed.undated });
+
+    const written = await storeItems(parsed.items);
+
+    return {
+      accepted: parsed.items.length,
+      summary: {
+        source: feed.source,
+        title: feed.title,
+        inserted: written,
+        skipped: parsed.skipped.length,
+        political: parsed.skipped.filter((item) => item.reason === "politics").length,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "неизвестная ошибка";
+    console.warn(`[feed] ${feed.source} не прочитан: ${message}`);
+    return {
+      accepted: 0,
+      summary: {
+        source: feed.source,
+        title: feed.title,
+        inserted: 0,
+        skipped: 0,
+        political: 0,
+        error: message,
+      },
+    };
+  }
 }
 
 /**

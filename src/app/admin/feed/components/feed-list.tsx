@@ -137,7 +137,11 @@ export function FeedList({ rows, view }: FeedListProps) {
                           ? "bg-blue-100 text-blue-800"
                           : row.source === "GOROD66"
                             ? "bg-emerald-100 text-emerald-800"
-                            : "bg-neutral-200 text-neutral-600",
+                            : row.source === "DZEN"
+                              ? "bg-violet-100 text-violet-800"
+                              : row.source === "MAIL_URAL"
+                                ? "bg-orange-100 text-orange-800"
+                                : "bg-neutral-200 text-neutral-600",
                       )}
                     >
                       {row.sourceTitle}
