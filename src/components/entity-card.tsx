@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowRight, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { ENTITY_SLUG_ATTRIBUTE, entityHref, slugFromEntityHref, type EntityCardView } from "@/lib/entity-card";
 import { cn } from "@/lib/utils";
@@ -137,6 +137,60 @@ async function fetchCard(slug: string): Promise<EntityCardView | null> {
 /** How long the pointer must rest before the card opens. */
 const OPEN_DELAY_MS = 150;
 
+/** Ширина поповера и зазор до ссылки — оба считаются здесь, а не дублируются по разным блокам. */
+const POPOVER_WIDTH = 320;
+const POPOVER_GAP = 8;
+
+/** Отступ от края окна. */
+const POPOVER_MARGIN = 12;
+
+/**
+ * Высота компактной шапки, под которую нельзя уводить карточку.
+ *
+ * Шапка `fixed` высотой 52px и появляется после 120px прокрутки (см. `header-shell.tsx`), то
+ * есть именно тогда, когда читатель открывает поповер в длинной статье. Карточка, раскрытая
+ * под шапкой, выглядит как обрезанная и половины её не видно.
+ */
+const HEADER_HEIGHT = 52;
+
+/**
+ * Где рисовать поповер.
+ *
+ * Вынесено в чистую функцию, потому что ошибка тут видна только в момент открытия: карточка
+ * появляется в углу экрана и прыгает на место. Позиция считается от прямоугольника ссылки, а
+ * не от его середины и не от левого края — на длинной строке ссылка может начинаться в
+ * середине абзаца, и поповер, привязанный к краю, уезжал бы от курсора.
+ *
+ * `below` — есть ли место под ссылкой; `viewportHeight` и `viewportWidth` передаются, чтобы
+ * подсчёт был проверяемым без окна.
+ */
+export function popoverPosition(
+  anchor: Pick<DOMRect, "top" | "bottom" | "left" | "width">,
+  cardHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): { top: number; left: number } {
+  let left = anchor.left + anchor.width / 2 - POPOVER_WIDTH / 2;
+  left = Math.max(POPOVER_MARGIN, Math.min(left, viewportWidth - POPOVER_WIDTH - POPOVER_MARGIN));
+
+  /*
+    Под ссылкой — если влезает, над ней — если нет.
+
+    Нижняя граница считается от низа шапки, а не от верха окна: поповер не должен заезжать под
+    неё ни при каком положении ссылки.
+  */
+  const below = anchor.bottom + POPOVER_GAP;
+  const ceiling = Math.max(POPOVER_MARGIN, HEADER_HEIGHT + POPOVER_GAP);
+  const fitsBelow = below + cardHeight + POPOVER_MARGIN <= viewportHeight;
+
+  const top = fitsBelow
+    ? Math.max(ceiling, below)
+    : Math.max(ceiling, anchor.top - POPOVER_GAP - cardHeight);
+
+  /* Всё равно подрезаем снизу: карточка выше шапки может оказаться длиннее, чем окно целиком. */
+  return { top: Math.min(top, Math.max(ceiling, viewportHeight - cardHeight - POPOVER_MARGIN)), left };
+}
+
 /** And how long it must be gone before the card closes. */
 /**
  * How long a card stays on screen after the pointer leaves the link.
@@ -165,34 +219,35 @@ function EntityPopover({
   onClose,
 }: {
   card: EntityCardView;
-  anchor: DOMRect;
+  /** The link that opened the card. Kept as an element, not a snapshot rectangle: see below. */
+  anchor: HTMLElement;
   /** Cancels a pending close, so the card survives the pointer arriving on it. */
   onKeepOpen: () => void;
   onClose: () => void;
 }) {
   const layer = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    /*
+      Прямоугольник ссылки читается заново при каждом событии, а не хранится.
+
+      Снимок `getBoundingClientRect()`, снятый в момент наведения, устаревает при первом же
+      смещении страницы: ссылка уезжает из-под курсора, а карточка остаётся на месте. На
+      длинной статье это происходит сразу — читатель чуть дёрнул колесом, и карточка осталась
+      висеть над другим абзацем. Элемент в DOM всегда даёт актуальные координаты.
+    */
     const place = () => {
-      const width = 320;
-      const gap = 8;
-      const margin = 12;
-
-      const viewportWidth = window.innerWidth;
-      // Centred on the link, then clamped: a card on a link near the right edge would
-      // otherwise open half off-screen, which on a phone is most of it.
-      let left = anchor.left + anchor.width / 2 - width / 2;
-      left = Math.max(margin, Math.min(left, viewportWidth - width - margin));
-
-      // Below the link when there is room, above it otherwise. A card for the last
-      // paragraph of a story would otherwise open off the bottom of the viewport.
+      const element = anchor;
       const height = layer.current?.offsetHeight ?? 320;
-      const below = anchor.bottom + gap;
-      const fitsBelow = below + height + margin < window.innerHeight;
-      const top = fitsBelow ? below : Math.max(margin, anchor.top - gap - height);
-
-      setPosition({ top, left });
+      setPosition(
+        popoverPosition(
+          element.getBoundingClientRect(),
+          height,
+          window.innerWidth,
+          window.innerHeight,
+        ),
+      );
     };
 
     place();
@@ -204,12 +259,24 @@ function EntityPopover({
     };
   }, [anchor]);
 
+  /*
+    `useLayoutEffect`, а не `useEffect`: первый кадр обязан быть уже на месте.
+
+    При `useEffect` браузер успевает отрисовать поповер в точке, от которой он стартует, —
+    то есть в левом верхнем углу окна, — и только потом effect двигает его к ссылке. Читатель
+    видел белый прямоугольник в углу, прыгающий к тексту. Пока координаты не посчитаны,
+    карточка не рисуется вовсе (`invisible`), а не рисуется не на месте.
+  */
   return (
     <div
       ref={layer}
       role="dialog"
       aria-label={card.title}
-      style={{ top: position.top, left: position.left }}
+      style={position ? { top: position.top, left: position.left } : undefined}
+      className={cn(
+        "fixed z-50 w-[320px] rounded-lg border border-rule bg-white p-3 shadow-xl",
+        position ? "visible" : "invisible",
+      )}
       /*
         Entering the card *cancels* the close; leaving it starts one.
 
@@ -225,7 +292,6 @@ function EntityPopover({
       */
       onMouseEnter={onKeepOpen}
       onMouseLeave={onClose}
-      className="fixed z-50 w-[320px] rounded-lg border border-rule bg-white p-3 shadow-xl"
     >
       {card.category ? (
         <span className="mb-1.5 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
@@ -251,6 +317,58 @@ function EntityPopover({
 }
 
 /**
+ * Заглушка на время загрузки карточки.
+ *
+ * Раньше она ставилась в `{top: anchor.bottom + 8, left: anchor.left}` — по левому краю
+ * ссылки и без учёта краёв окна, тогда как готовая карточка считалась по центру и
+ * подрезалась. Карточка открывалась на 160px левее заглушки и ниже её: читатель видел, как
+ * блок переезжает. Теперь обе считает одна функция `popoverPosition`, с той же шириной и тем
+ * же запасом от краёв.
+ */
+function EntityPlaceholder({ anchor, loading }: { anchor: HTMLElement; loading: boolean }) {
+  const layer = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const place = () => {
+      const height = layer.current?.offsetHeight ?? 44;
+      setPosition(
+        popoverPosition(
+          anchor.getBoundingClientRect(),
+          height,
+          window.innerWidth,
+          window.innerHeight,
+        ),
+      );
+    };
+
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [anchor]);
+
+  return (
+    <div
+      ref={layer}
+      role="dialog"
+      aria-label="Карточка"
+      style={position ? { top: position.top, left: position.left } : undefined}
+      className={cn(
+        "fixed z-50 flex w-[320px] items-center gap-2 rounded-lg border border-rule bg-white p-3 text-xs text-neutral-500 shadow-xl",
+        position ? "visible" : "invisible",
+      )}
+    >
+      {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+      {loading ? "Открываем карточку…" : "Карточка недоступна"}
+    </div>
+  );
+}
+
+/**
  * Upgrades entity links inside a rendered article body into hoverable cards.
  *
  * A client component that receives the already-sanitised HTML and renders it, then walks
@@ -267,7 +385,7 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
   const container = useRef<HTMLDivElement>(null);
   const cache = useRef<Cache>(new Map());
 
-  const [active, setActive] = useState<{ slug: string; anchor: DOMRect } | null>(null);
+  const [active, setActive] = useState<{ slug: string; anchor: HTMLElement } | null>(null);
   const [card, setCard] = useState<EntityCardView | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -279,7 +397,7 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
 
-  const show = useCallback((slug: string, anchor: DOMRect) => {
+  const show = useCallback((slug: string, anchor: HTMLElement) => {
     cancelTimers();
     setActive({ slug, anchor });
 
@@ -329,12 +447,12 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
       // broken. It is also the only path a reader without a pointer can reach.
       if (event.type === "click") {
         event.preventDefault();
-        show(slug, target.getBoundingClientRect());
+        show(slug, target);
         return;
       }
 
       openTimer.current = setTimeout(() => {
-        show(slug, target.getBoundingClientRect());
+        show(slug, target);
       }, OPEN_DELAY_MS);
     };
 
@@ -404,16 +522,8 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
             onKeepOpen={cancelTimers}
             onClose={hide}
           />
-        ) : nothingToShow && !loading ? (
-          <div
-            role="dialog"
-            aria-label="Карточка"
-            style={{ top: active.anchor.bottom + 8, left: active.anchor.left }}
-            className="fixed z-50 flex w-[320px] items-center gap-2 rounded-lg border border-rule bg-white p-3 text-xs text-neutral-500 shadow-xl"
-          >
-            {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
-            {loading ? "Открываем карточку…" : "Карточка недоступна"}
-          </div>
+        ) : nothingToShow ? (
+          <EntityPlaceholder anchor={active.anchor} loading={loading} />
         ) : null
       ) : null}
     </>

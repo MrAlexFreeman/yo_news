@@ -54,6 +54,26 @@ yarn-error.log*
 *.db-*
 dev.db
 
+# database backups
+#
+# Копия боевой SQLite — это полная копия `.env`-значений, которые Prisma и приложение держат
+# в таблице настроек: токены Telegram, VK и MAX. На сервере такие файлы лежат рядом с базой
+# (`prisma/dev.db.bak-*`), и `git reset --hard` в `deploy.sh` их не трогает — они остаются
+# untracked и однажды попадают в коммит целиком вместе с секретами.
+*.bak
+*.bak-*
+*.db.bak*
+*-wal
+*-shm
+
+# scratch files the scripts and the webmaster verification drop into the project root.
+# Measured on the server 13 October: two untracked files sitting next to the repository —
+# a VK dedupe backup (a list of deleted wall post ids) and the Yandex webmaster
+# verification page. Neither belongs in the tree, and an untracked file is one `git add -A`
+# away from being committed.
+vk-dedupe-backup-*.json
+yandex_*.html
+
 # vercel
 .vercel
 

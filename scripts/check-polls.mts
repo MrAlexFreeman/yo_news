@@ -15,6 +15,8 @@ import {
   parsePollOptions,
   normalisePollInput,
   isPollUsable,
+  newPollOptionId,
+  POLL_OPTION_ID_PREFIX,
 } from "../src/lib/polls";
 import { proposalTitle, FORUM_TITLE_MAX_LENGTH } from "../src/lib/forum-text";
 
@@ -110,11 +112,105 @@ check(
 
 check(
   "Опрос: идентификаторы вариантов постоянны между сохранениями",
-  // Идентификатор берётся от места в списке, а не случайно: иначе уже поданный голос перестал
-  // бы находить свой вариант при каждом сохранении статьи.
+  // Форма без идентификаторов — это старая вкладка или запрос без новых полей: варианты
+  // нумеруются по месту, и голоса на месте остаются ровно те же, что и раньше.
   JSON.stringify(normalisePollInput("В", ["Да", "Нет"])?.options.map((o) => o.id)) ===
     JSON.stringify(["o1", "o2"]),
   JSON.stringify(normalisePollInput("В", ["Да", "Нет"])?.options.map((o) => o.id)),
+);
+
+/*
+  Голоса при удалении варианта.
+  Это и есть поломка, ради которой идентификатор переехал из позиции в строку.
+
+  Три варианта, голоса за третий. Редактор убирает второй. При номерах по месту третий
+  становится `o2`, и `saveArticlePoll` переносит на него голоса, поданные за вариант, которого
+  в опросе уже нет, — результаты меняются сами, без единого нажатия «Сохранить».
+*/
+check(
+  "Опрос: удаление варианта не переносит голоса на соседний",
+  (() => {
+    const stored = [
+      { id: "opt_a", text: "За", votes: 4 },
+      { id: "opt_b", text: "Против", votes: 7 },
+      { id: "opt_c", text: "Воздержался", votes: 2 },
+    ];
+
+    // Редактор удалил «Против» и отправил оставшиеся строки с их идентификаторами.
+    const submitted = normalisePollInput(
+      "Как вы голосовали?",
+      ["За", "Воздержался"],
+      ["opt_a", "opt_c"],
+    );
+
+    // То же, что делает saveArticlePoll: голоса переносятся по идентификатору.
+    const cast = new Map(stored.map((option) => [option.id, option.votes]));
+    const kept = submitted!.options.map((option) => ({ ...option, votes: cast.get(option.id) ?? 0 }));
+
+    return kept.length === 2 && kept[0].votes === 4 && kept[1].votes === 2;
+  })(),
+  "«Воздержался» сохранил свои 2 голоса, а не 7 от соседа",
+);
+
+/*
+  То же при перестановке: голос идёт за ответом, а не за местом.
+*/
+check(
+  "Опрос: перестановка вариантов не путает голоса",
+  (() => {
+    const stored = [
+      { id: "opt_a", text: "За", votes: 4 },
+      { id: "opt_b", text: "Против", votes: 7 },
+    ];
+    const cast = new Map(stored.map((option) => [option.id, option.votes]));
+
+    const swapped = normalisePollInput("?", ["Против", "За"], ["opt_b", "opt_a"])!;
+    const kept = swapped.options.map((option) => ({ ...option, votes: cast.get(option.id) ?? 0 }));
+
+    return kept[0].text === "Против" && kept[0].votes === 7 && kept[1].votes === 4;
+  })(),
+  "«Против» остался при семи голосах",
+);
+
+/*
+  Правка текста — самая частая операция, и она голосов не теряет.
+*/
+check(
+  "Опрос: правка формулировки сохраняет голоса",
+  (() => {
+    const stored = [{ id: "opt_a", text: "Хорошо", votes: 9 }];
+    const cast = new Map(stored.map((option) => [option.id, option.votes]));
+
+    const retyped = normalisePollInput("?", ["Отлично", "Нет"], ["opt_a", "opt_b"])!;
+    const kept = retyped.options.map((option) => ({ ...option, votes: cast.get(option.id) ?? 0 }));
+
+    return kept[0].text === "Отлично" && kept[0].votes === 9 && kept[1].votes === 0;
+  })(),
+  "новый вариант — с нулём, старый — со своими девятью",
+);
+
+/*
+  Мусор во входных данных не должен приводить к двум вариантам с одним идентификатором:
+  это тот же перенос голосов, только через другую дверь.
+*/
+check(
+  "Опрос: повторяющиеся и пустые идентификаторы не создают коллизию",
+  (() => {
+    const poll = normalisePollInput("?", ["А", "Б", "В"], ["opt_x", "opt_x", "   "])!;
+    const ids = poll.options.map((option) => option.id);
+    return new Set(ids).size === ids.length;
+  })(),
+  "три разных идентификатора",
+);
+
+check(
+  "Опрос: новый вариант получает идентификатор, а не место в списке",
+  (() => {
+    const first = newPollOptionId();
+    const second = newPollOptionId();
+    return first !== second && first.startsWith(POLL_OPTION_ID_PREFIX);
+  })(),
+  "идентификаторы выдаются и не совпадают",
 );
 
 // --- проценты -----------------------------------------------------------------

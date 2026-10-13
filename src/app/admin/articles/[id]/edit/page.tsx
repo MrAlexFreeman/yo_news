@@ -7,6 +7,7 @@ import { FALLBACK_CATEGORIES } from "@/app/admin/articles/types";
 import { isArticleStatus } from "@/lib/article-status";
 import { parseMedia } from "@/lib/article-media";
 import { canSetDzenExperiment } from "@/lib/dzen-experiment";
+import { siteDateToWallClock } from "@/lib/date";
 import { prisma } from "@/lib/prisma";
 
 export const metadata: Metadata = {
@@ -20,29 +21,19 @@ type EditPageProps = {
   params: Promise<{ id: string }>;
 };
 
-/** "YYYY-MM-DDTHH:mm" in Moscow, the format `datetime-local` expects. */
-function toMoscowInputValue(date: Date | null): string {
-  if (!date) return "";
-
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Moscow",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-
-  const parts = Object.fromEntries(
-    formatter
-      .formatToParts(date)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, part.value]),
-  );
-
-  const hour = parts.hour === "24" ? "00" : parts.hour;
-  return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}`;
+/**
+ * "YYYY-MM-DDTHH:mm" in the site's timezone, the format `datetime-local` expects.
+ *
+ * The field must show the same wall clock the article header will show the reader, otherwise
+ * the editor corrects a published date by the offset every time. Measured on production before
+ * `NEXT_PUBLIC_SITE_TIMEZONE` existed: stored 08:25 UTC, header read «11:25» (Moscow) while
+ * the form's own default was Moscow too — two hours out for a Yekaterinburg newsroom.
+ *
+ * Shared with the action that reads the field back, because the pair only works if both sides
+ * apply the same zone.
+ */
+function toPublishedAtInputValue(date: Date | null): string {
+  return siteDateToWallClock(date);
 }
 
 /**
@@ -143,13 +134,20 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         videoUrl: article.videoUrl ?? "",
         categoryId: article.categoryId ?? "",
         status: isArticleStatus(article.status) ? article.status : "draft",
-        publishedAt: toMoscowInputValue(article.publishedAt),
+        publishedAt: toPublishedAtInputValue(article.publishedAt),
         isDzen: article.isDzen,
         isVk: article.isVk,
         autoRelatedArticle: article.autoRelatedArticle,
         poll: {
           question: article.poll?.question ?? "",
-          options: parsePollOptions(article.poll?.options).map((option) => option.text),
+          /*
+            Идентификатор варианта едет в редактор, а не только текст.
+
+            По нему сохранение находит уже поданные голоса, поэтому он должен дойти до строки
+            формы нетронутым. Раньше форма знала только тексты и подставляла `o1`/`o2` по месту,
+            и удаление варианта сдвигало остальные вместе с голосами.
+          */
+          options: parsePollOptions(article.poll?.options).map(({ id, text }) => ({ id, text })),
         },
         /*
           Both messenger boxes start empty for a story that is already live.

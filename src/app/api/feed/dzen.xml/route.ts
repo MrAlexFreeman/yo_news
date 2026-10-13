@@ -1,6 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 
 import { parseMedia } from "@/lib/article-media";
+import { dzenBodyImageUrl, dzenCoverUrl } from "@/lib/dzen-cover";
 import { buildDzenContent } from "@/lib/dzen-feed-html";
 import { dzenPublicationMethod, dzenRating } from "@/lib/dzen-publication";
 import { prisma } from "@/lib/prisma";
@@ -130,21 +131,6 @@ type FeedArticle = Prisma.ArticleGetPayload<{
 }>;
 
 /**
- * MIME type for the enclosure, derived from the stored URL.
- *
- * Hardcoding image/jpeg was fine while every cover was a picsum JPEG. The demo
- * covers are PNG and editors can upload WebP, and Dzen uses this attribute to
- * decide how to fetch the file, so it has to follow the actual format.
- */
-function coverMimeType(url: string): string {
-  const path = url.split("?")[0].split("#")[0].toLowerCase();
-  if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".webp")) return "image/webp";
-  if (path.endsWith(".gif")) return "image/gif";
-  return "image/jpeg";
-}
-
-/**
  * How much readable text an article carries, in characters.
  *
  * Tags are stripped, entities decoded and whitespace collapsed, because the number has to mean
@@ -185,7 +171,45 @@ function looksLikePlaceholder(article: {
   );
 }
 
-function renderItem(article: FeedArticle, base: string): string {
+/**
+ * Переписывает адреса картинок в теле материала на форматы, которые Дзен берёт.
+ *
+ * Картинки из текста — это то, что редактор вставил в материал, и туда попадает всё, включая
+ * сгенерированные обложки в WebP. Замер на боевой базе 13 октября: после правки обложки в
+ * ленте оставались две картинки WebP именно из тела.
+ *
+ * Адреса заменяются по строке, а не разбором HTML: к моменту вызова разметка ещё не
+ * очищена санитайзером, и разбирать её здесь — значит держать в этом файле второе правило
+ * разбора. Подстановка безопасна тем, что меняется только значение `src` уже существующего
+ * тега, а санитайзер всё равно приведёт результат к своему подмножеству.
+ */
+async function rewriteBodyImages(html: string, base: string): Promise<string> {
+  const matches = [...html.matchAll(/<img[^>]+src="([^"]*)"/gi)];
+  if (matches.length === 0) return html;
+
+  const replacements = new Map<string, string>();
+  await Promise.all(
+    matches.map(async (match) => {
+      const source = match[1]?.replace(/&amp;/g, "&");
+      if (!source || replacements.has(source)) return;
+      const converted = await dzenBodyImageUrl(source, base);
+      if (converted) replacements.set(source, converted);
+    }),
+  );
+
+  let result = html;
+  for (const [from, to] of replacements) {
+    if (from !== to) result = result.split(from).join(to);
+  }
+  return result;
+}
+
+function renderItem(
+  article: FeedArticle,
+  base: string,
+  enclosure: { url: string; type: "image/jpeg" | "image/png" } | null,
+  rewrittenHtml: string,
+): string {
   /*
     Канонический адрес материала: ЧПУ, без query-параметров и без слэша в конце.
 
@@ -201,8 +225,16 @@ function renderItem(article: FeedArticle, base: string): string {
   const body = buildDzenContent({
     title: article.title,
     subtitle: article.subtitle,
-    contentHtml: article.contentHtml,
-    coverImage: article.coverImage,
+    contentHtml: rewrittenHtml,
+    /*
+      Обложка и в `<enclosure>`, и в `<figure>` внутри текста — одна и та же картинка, и
+      формат должен быть один.
+
+      Раньше `<figure>` собирался прямо из пути статьи, и картинка в тексте оставалась WebP
+      там, где обложка уже стала JPEG. Замер на боевой базе 13 октября: в ленте было 12 JPEG,
+      1 PNG и 6 WebP — все шесть из тела материалов, где обложка продублирована в текст.
+    */
+    coverImage: enclosure?.url ?? article.coverImage,
     photoAuthor: article.photoAuthor,
     photoSource: article.photoSource,
     gallery: parseMedia(article.media),
@@ -246,29 +278,30 @@ function renderItem(article: FeedArticle, base: string): string {
     parts.push(`      <media:rating scheme="urn:simple">${rating}</media:rating>`);
   }
 
-  if (article.coverImage) {
-    // coverImage may be stored as a site-relative path (/uploads/x.png) when the
-    // editor used the upload endpoint, so it needs the same absolutising as the
-    // item link. RSS requires an absolute URI here and Dzen refuses to fetch a
-    // relative one.
-    //
-    // One enclosure per item, and only ever the cover: Dzen documents it as the
-    // image for the article's cover and the news-slot medialock, «не
-    // отображается внутри текста публикации». Gallery photos ride in
-    // content:encoded as <figure> instead — see buildDzenContent.
-    const enclosure = /^https?:\/\//i.test(article.coverImage)
-      ? article.coverImage
-      : `${base}${article.coverImage.startsWith("/") ? "" : "/"}${article.coverImage}`;
+  if (enclosure) {
+    /*
+      `<enclosure>` — это обложка карточки, и площадка читает её по указанному типу.
 
+      Тип здесь всегда JPEG или PNG: `dzenCoverUrl` отдаёт формат из списка документации, а
+      обложку в WebP перекодирует один раз и кладёт рядом с оригиналом. Замер по боевой базе
+      показал, что без этого две трети свежих карточек выходили бы вовсе без изображения:
+      WebP хранится у половины материалов, потому что загрузка перекодирует всё в него.
+    */
     parts.push(
-      `      <enclosure url="${escapeXml(enclosure)}" type="${coverMimeType(article.coverImage)}" length="0" />`,
+      `      <enclosure url="${escapeXml(enclosure.url)}" type="${enclosure.type}" length="0" />`,
     );
   }
 
   return `    <item>\n${parts.join("\n")}\n    </item>`;
 }
 
-function renderFeed(items: FeedArticle[], base: string, builtAt: Date): string {
+function renderFeed(
+  items: FeedArticle[],
+  base: string,
+  builtAt: Date,
+  enclosures: Map<string, { url: string; type: "image/jpeg" | "image/png" }>,
+  bodies: Map<string, string>,
+): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
   <channel>
@@ -278,7 +311,16 @@ function renderFeed(items: FeedArticle[], base: string, builtAt: Date): string {
     <description>${escapeXml(RSS_CHANNEL_DESCRIPTION)}</description>
     <language>ru</language>
     <lastBuildDate>${toRfc822(builtAt)}</lastBuildDate>
-${items.map((article) => renderItem(article, base)).join("\n")}
+${items
+    .map((article) =>
+      renderItem(
+        article,
+        base,
+        enclosures.get(article.id) ?? null,
+        bodies.get(article.id) ?? article.contentHtml,
+      ),
+    )
+    .join("\n")}
   </channel>
 </rss>
 `;
@@ -347,7 +389,51 @@ export async function GET() {
     ...usable.filter((article) => !fresh.includes(article)),
   ]).slice(0, FEED_LIMIT);
 
-  const xml = renderFeed(articles, siteUrl(), now);
+  /*
+    Обложки — до отрисовки, потому что перекодирование асинхронное.
+
+    Раньше enclosure собирался из пути статьи, и формат брался из расширения: JPEG, PNG и
+    WebP одинаково считались годными. Формально проверка проходила, а по факту карточка
+    выходила без изображения — формата в списке Дзена нет. Теперь годность определяет сам
+    файл, а не его имя.
+  */
+  const base = siteUrl();
+  const enclosures = new Map<string, { url: string; type: "image/jpeg" | "image/png" }>();
+
+  /*
+    Тело материала переписывается здесь же, а не внутри `renderItem`.
+
+    Отрисовка синхронная, а перекодирование асинхронное — колбэк в строковую сборку не
+    положить. Заодно это единственное место, где живут обе карты: обложка и текст
+    перекодируются одним проходом по материалам, и стоимость на VPS складывается из одной
+    выборки вместо двух.
+  */
+  const bodies = new Map<string, string>();
+
+  await Promise.all(
+    articles.map(async (article) => {
+      const [url, body] = await Promise.all([
+        dzenCoverUrl(article.coverImage, base),
+        rewriteBodyImages(article.contentHtml ?? "", base),
+      ]);
+      bodies.set(article.id, body);
+      if (!url) return;
+      enclosures.set(article.id, {
+        url,
+        type: /\.png$/i.test(url.split("?")[0]) ? "image/png" : "image/jpeg",
+      });
+    }),
+  );
+
+  if (articles.length < MIN_ITEMS) {
+    console.warn(
+      `[dzen] в ленте ${articles.length} материалов из ${candidates.length} отобранных, ` +
+        `а требование — не меньше ${MIN_ITEMS}. Причины отсева: короче ${MIN_TEXT_CHARS} символов, ` +
+        `окно ${FEED_WINDOW_HOURS} часов, заглушки.`,
+    );
+  }
+
+  const xml = renderFeed(articles, base, now, enclosures, bodies);
 
   return new Response(xml, {
     headers: {

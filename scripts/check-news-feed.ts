@@ -37,7 +37,7 @@ import { ForumTopicsBlock } from "../src/components/forum-topics";
 import { OpinionsBlock } from "../src/components/opinions-block";
 import { TrendingBar } from "../src/components/trending-bar";
 import { fillSection } from "../src/lib/content-loop";
-import { dayLabel, formatTime, groupByDay } from "../src/lib/date";
+import { dayLabel, formatTime, groupByDay, siteWallClockToDate } from "../src/lib/date";
 import type { ActiveForumTopic } from "../src/lib/forum";
 import { newsPageHref, parsePageSegment } from "../src/lib/pagination";
 import { countWords, readingMinutes } from "../src/lib/reading-time";
@@ -62,8 +62,21 @@ function occurrences(haystack: string, needle: string): number {
 
 type Row = { id: string; at: Date; title: string };
 
-/** Noon Moscow time, so "today" and "yesterday" are unambiguous. */
-const NOW = new Date("2026-10-07T12:00:00+03:00");
+/**
+ * Wall-clock moment in the site's timezone, from a "YYYY-MM-DDTHH:mm" string.
+ *
+ * The fixtures below were written as `new Date("…+03:00")`, which hardcoded Moscow. When
+ * `NEXT_PUBLIC_SITE_TIMEZONE` became `Asia/Yekaterinburg` the same instant landed on a different
+ * calendar day: 23:30 Moscow is 01:30 the next day in Yekaterinburg, so the check that exists
+ * precisely to catch a day boundary crossed by hand stopped meaning anything.
+ *
+ * Building the fixtures through the site's own rule keeps them describing the same wall clocks
+ * whatever the zone is — which is what the grouping is being tested on.
+ */
+const at = (wallClock: string): Date => siteWallClockToDate(wallClock)!;
+
+/** Noon site time, so "today" and "yesterday" are unambiguous. */
+const NOW = at("2026-10-07T12:00");
 
 /**
  * Newest first, spanning four days — the shape a real feed has once it runs past
@@ -71,11 +84,11 @@ const NOW = new Date("2026-10-07T12:00:00+03:00");
  * reported symptom looked like.
  */
 const rows: Row[] = [
-  { id: "1", at: new Date("2026-10-07T07:59:00+03:00"), title: "07:59" },
-  { id: "2", at: new Date("2026-10-07T07:11:00+03:00"), title: "07:11" },
-  { id: "3", at: new Date("2026-10-06T06:35:00+03:00"), title: "06:35" },
-  { id: "4", at: new Date("2026-10-05T11:12:00+03:00"), title: "11:12" },
-  { id: "5", at: new Date("2026-10-04T17:28:00+03:00"), title: "17:28" },
+  { id: "1", at: at("2026-10-07T07:59"), title: "07:59" },
+  { id: "2", at: at("2026-10-07T07:11"), title: "07:11" },
+  { id: "3", at: at("2026-10-06T06:35"), title: "06:35" },
+  { id: "4", at: at("2026-10-05T11:12"), title: "11:12" },
+  { id: "5", at: at("2026-10-04T17:28"), title: "17:28" },
 ];
 
 function checkGrouping() {
@@ -124,11 +137,13 @@ function checkGrouping() {
     `часы скачут в ${jumps} местах: ${rows.map((r) => formatTime(r.at)).join(" ")}`,
   );
 
-  // 23:30 Moscow is 20:30 UTC the same day. Both must land in one group, which a
-  // naive slice of the ISO string would get wrong across the offset.
+  /*
+    23:30 по времени сайта — это 18:30 UTC того же дня. Обе записи обязаны попасть в одну
+    группу: наивная нарезка ISO-строки взяла бы срез по UTC и разнесла их по разным дням.
+  */
   const tzEdges: Row[] = [
-    { id: "a", at: new Date("2026-10-07T23:30:00+03:00"), title: "23:30" },
-    { id: "b", at: new Date("2026-10-07T20:45:00+03:00"), title: "20:45" },
+    { id: "a", at: at("2026-10-07T23:30"), title: "23:30" },
+    { id: "b", at: at("2026-10-07T20:45"), title: "20:45" },
   ];
   const tzGroups = groupByDay(tzEdges, (row) => row.at, NOW);
   check(
@@ -139,8 +154,8 @@ function checkGrouping() {
 
   check(
     "Дата: вчерашний день назван верно",
-    dayLabel(new Date("2026-10-06T23:59:00+03:00"), NOW) === "Вчера",
-    dayLabel(new Date("2026-10-06T23:59:00+03:00"), NOW),
+    dayLabel(at("2026-10-06T23:59"), NOW) === "Вчера",
+    dayLabel(at("2026-10-06T23:59"), NOW),
   );
 
   check(

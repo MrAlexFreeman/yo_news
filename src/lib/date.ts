@@ -168,6 +168,98 @@ export function groupByDay<T>(
   return groups;
 }
 
+/**
+ * Смещение часового пояса сайта в минутах для указанного момента.
+ *
+ * `Intl` спрашивается вместо константы `+300`, чтобы сдвиг остался верным, если правила
+ * часовых поясов изменятся, и чтобы `dayKey` и разбор строки редактора считались одним
+ * правилом, а не двумя копиями одного.
+ */
+export function siteOffsetMinutes(at: Date): number {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: SITE_TIME_ZONE,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+      .formatToParts(at)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+
+  // `hour` приходит как 24 в полночь при hour12:false в некоторых сборках ICU.
+  const hour = parts.hour === 24 ? 0 : parts.hour;
+  const asUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    hour,
+    parts.minute,
+    parts.second,
+  );
+
+  return (asUtc - at.getTime()) / 60_000;
+}
+
+/**
+ * Строка «2026-10-07T23:30» из поля `datetime-local` — момент в часовом поясе сайта.
+ *
+ * Поле не несёт часового пояса, а оставлять его на `new Date(...)` нельзя: тот прочёл бы
+ * строку в поясе машины, то есть на VPS в UTC, и сдвинул бы каждую отложенную публикацию на
+ * разницу. Измерено до появления `NEXT_PUBLIC_SITE_TIMEZONE`: поле заполнялось московским
+ * временем, а сдвиг считался от него же, поэтому материал, сохранённый как 08:25, выходил
+ * под заголовком «11:25».
+ *
+ * Строка без часового пояса разбирается только здесь — формой, действием сохранения и
+ * проверками, — потому что три разных разбора одного поля расходятся при первой же смене
+ * пояса.
+ */
+export function siteWallClockToDate(value: string): Date | null {
+  const raw = value.trim();
+  if (!raw) return null;
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(raw);
+  if (!match) return null;
+
+  const [, year, month, day, hour, minute, second] = match;
+  /*
+    Сначала как UTC, потом сдвиг: так поля «часы:минуты» переживают разбор и остаются теми же
+    числами, из которых собирается тот же момент в поясе сайта.
+  */
+  const asUtc = Date.UTC(+year, +month - 1, +day, +hour, +minute, +(second ?? "0"));
+  if (Number.isNaN(asUtc)) return null;
+
+  return new Date(asUtc - siteOffsetMinutes(new Date(asUtc)) * 60_000);
+}
+
+/** «2026-10-07T23:30» — момент часового пояса сайта в виде поля `datetime-local`. */
+export function siteDateToWallClock(value: Date | null): string {
+  if (!value) return "";
+
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: SITE_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    })
+      .formatToParts(value)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}`;
+}
+
 /** Russian plural rule: 1 товар, 2 товара, 5 товаров. */
 export function plural(
   count: number,

@@ -106,9 +106,11 @@ export type ArticleFormValues = {
   /**
    * Опрос, прикреплённый к материалу, в виде, который ждёт редактор.
    *
-   * Только текст: голоса — не то, что редактор правит руками, и форма их не показывает.
+   * Идентификатор варианта едет вместе с текстом: по нему сохранение находит уже поданные
+   * голоса, поэтому он не может выводиться в форме из позиции. Голоса при этом не приходят:
+   * редактор их не правит руками и форма их не показывает.
    */
-  poll?: { question: string; options: string[] };
+  poll?: { question: string; options: { id: string; text: string }[] };
   /** Repost into Telegram on first publication. */
   isTelegram: boolean;
   /** Repost into MAX on first publication. */

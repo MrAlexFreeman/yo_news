@@ -55,6 +55,7 @@ import {
   type MediaItem,
 } from "@/lib/article-media";
 import { appendFigureHtml } from "@/lib/article-figure";
+import { siteDateToWallClock, siteWallClockToDate } from "@/lib/date";
 import { AI_GENERATED_SOURCE } from "@/lib/photo-sources";
 import { RewritePanel } from "@/app/admin/articles/components/rewrite-panel";
 import { canSetDzenExperiment } from "@/lib/dzen-experiment";
@@ -91,50 +92,36 @@ const INITIAL_STATE: SaveArticleResult = { ok: false, message: "" };
 const LEAD_LIMIT = 240;
 
 /**
- * Current Moscow wall clock as "YYYY-MM-DDTHH:mm", the format `datetime-local`
- * expects.
+ * Current wall clock in the site's timezone as "YYYY-MM-DDTHH:mm", the format
+ * `datetime-local` expects.
  *
- * The editorial desk publishes on Moscow time regardless of where the editor's
+ * The editorial desk publishes on the site's time regardless of where the editor's
  * laptop is set, so the default is not taken from the browser. Server time is
  * used as the base and shifted by the zone's offset, which keeps this correct
  * on the 709 MB VPS where the process runs on UTC.
+ *
+ * The formatting lives in `lib/date.ts` next to the parsing side of the same field: the
+ * pair has to round-trip, and two copies of the rule drift at the first timezone change.
  */
-function moscowNow(): string {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Moscow",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-
-  const parts = Object.fromEntries(
-    formatter
-      .formatToParts(now)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, part.value]),
-  );
-
-  const hour = parts.hour === "24" ? "00" : parts.hour;
-  return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}`;
+function siteNow(): string {
+  return siteDateToWallClock(new Date());
 }
 
 /**
- * Inverse of `moscowNow` for the value in the datetime-local field: a
+ * Inverse of `siteNow` for the value in the datetime-local field: a
  * "YYYY-MM-DDTHH:mm" string read back as a Date, for display-only comparisons.
  *
- * Only used to decide whether the experiment flag is still editable, so a small
- * three-hour skew around the window boundary costs at most one checkbox update.
- * The stored date — and therefore the authoritative decision — comes from the
- * action, which does the conversion properly.
+ * Only used to decide whether the experiment flag is still editable, so a skew
+ * around the window boundary costs at most one checkbox update. The stored date —
+ * and therefore the authoritative decision — comes from the action, which does the
+ * conversion properly.
+ *
+ * Reads through the shared rule in `lib/date.ts` rather than parsing as UTC here. The local
+ * version was off by the site's offset from the moment the timezone became configurable, and
+ * nothing caught it because it only ever fed a checkbox.
  */
-function moscowInputToDate(value: string): Date | null {
-  if (!value) return null;
-  const parsed = Date.parse(`${value}:00Z`);
-  return Number.isNaN(parsed) ? null : new Date(parsed);
+function siteInputToDate(value: string): Date | null {
+  return siteWallClockToDate(value);
 }
 
 /**
@@ -208,9 +195,9 @@ export function ArticleForm({
   const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
 
   // Computed once per mount so the field starts at "now" rather than tracking
-  // every re-render, and always at Moscow time.
+  // every re-render, and always in the site's timezone.
   const defaultPublishedAt = useMemo(
-    () => initial?.publishedAt || moscowNow(),
+    () => initial?.publishedAt || siteNow(),
     [initial],
   );
 
@@ -331,7 +318,7 @@ export function ArticleForm({
     dzenExperimentLockedByServer ||
     !canSetDzenExperiment({
       storedPublishedAt: null,
-      chosenPublishedAt: moscowInputToDate(publishedAt),
+      chosenPublishedAt: siteInputToDate(publishedAt),
     });
   const errors = state.fieldErrors ?? {};
   const busy = pending || deletePending;
@@ -646,7 +633,7 @@ export function ArticleForm({
       setTags([]);
       setMedia([]);
       setVideoUrl("");
-      setPublishedAt(moscowNow());
+      setPublishedAt(siteNow());
       setUploadError(null);
       setUploadWarning(null);
       setPreviewOpen(false);

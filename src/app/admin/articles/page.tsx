@@ -7,6 +7,7 @@ import {
   type ArticleRow,
 } from "@/app/admin/articles/components/articles-table";
 import { isArticleStatus } from "@/lib/article-status";
+import { SITE_TIME_ZONE } from "@/lib/date";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 
@@ -26,12 +27,19 @@ const STATUS_LABELS = {
   published: "Опубликован",
 } as const;
 
+/*
+  Колонка «Дата» в списке — в часовом поясе сайта.
+
+  Формат без `timeZone` показывал время сервера, то есть UTC: редактор сравнивал строку в
+  списке с заголовком статьи и получал расхождение в два часа на каждой публикации.
+*/
 const DATE_FORMAT = new Intl.DateTimeFormat("ru-RU", {
   day: "2-digit",
   month: "2-digit",
   year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+  timeZone: SITE_TIME_ZONE,
 });
 
 type PageParams = { searchParams: Promise<{ view?: string }> };

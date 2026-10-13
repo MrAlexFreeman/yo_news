@@ -4,6 +4,7 @@ import { Check, Link as LinkIcon, Loader2, Search, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { MIN_QUERY_LENGTH, articlePath } from "@/lib/article-search";
+import { SITE_TIME_ZONE } from "@/lib/date";
 
 type Hit = { id: string; title: string; slug: string; publishedAt: string | null };
 
@@ -22,10 +23,18 @@ type LinkDialogProps = {
 
 const DEBOUNCE_MS = 300;
 
+/*
+  Даты в админке печатаются в часовом поясе сайта, а не в поясе машины.
+
+  Свой `Intl.DateTimeFormat` без `timeZone` брал время сервера: на VPS это UTC, и редактор
+  видел на два часа раньше то, что читатели видят в заголовке статьи. Здесь — тот же пояс,
+  что и на странице, из date.ts.
+*/
 const DATE_FORMAT = new Intl.DateTimeFormat("ru-RU", {
   day: "2-digit",
   month: "2-digit",
   year: "numeric",
+  timeZone: SITE_TIME_ZONE,
 });
 
 /**

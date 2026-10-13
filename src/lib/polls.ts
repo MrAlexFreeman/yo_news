@@ -55,32 +55,94 @@ export function isPollUsable(question: string, options: readonly PollOption[]): 
   return question.trim().length > 0 && options.length >= POLL_MIN_OPTIONS;
 }
 
+/** Префикс идентификатора, который выдаёт редактор в браузере. */
+export const POLL_OPTION_ID_PREFIX = "opt_";
+
+/** Длина случайной части идентификатора варианта. */
+const OPTION_ID_RANDOM_LENGTH = 10;
+
+/**
+ * Идентификатор нового варианта.
+ *
+ * Раньше идентификатор был номером места в списке (`o1`, `o2`), и это ломало опросы при
+ * редакции: удаление второго варианта из трёх сдвигало третий на `o2`, и уже поданные за него
+ * голоса переезжали к соседу. Измерено на боевой базе 13 октября: два опроса, голоса в обоих
+ * хранятся по `o1`/`o2`, то есть перенос голосов при удалении варианта был не гипотезой, а
+ * свойством схемы.
+ *
+ * Идентификатор теперь выдаётся один раз на строку в редакторе и едет вместе с текстом, то
+ * есть переживает и удаление соседа, и перестановку, и правку формулировки.
+ *
+ * Функция не зависит от браузера: её зовёт и редактор (`poll-editor.tsx`), и проверки.
+ */
+export function newPollOptionId(): string {
+  const random = Math.random().toString(36).slice(2, 2 + OPTION_ID_RANDOM_LENGTH);
+  return `${POLL_OPTION_ID_PREFIX}${random}${Date.now().toString(36)}`;
+}
+
+/** Обрезанный по длине идентификатор — тем же правилом, что и у пришедшего из редактора. */
+function cleanPollOptionId(value: unknown): string {
+  return typeof value === "string" ? value.trim().slice(0, POLL_OPTION_MAX) : "";
+}
+
 /**
  * Готовит то, что ввёл редактор, к хранению, или отвечает null.
  *
  * Возвращает null на всём, что не является опросом: пустой вопрос, один вариант, ни одного
  * заполненного варианта. Так форма сохранения статьи одним решением отвечает и «опроса нет»,
  * и «опрос такой» — без второго прохода по полям в вызывающем коде.
+ *
+ * `ids` — идентификаторы строк редактора, параллельные `texts`. Пустой или частичный список
+ * означает старую вкладку, где идентификаторов ещё не было: тогда варианты нумеруются по месту,
+ * как было раньше. Это осознанный запасной путь, а не основной, — он сохраняет поведение для
+ * запросов без новых полей.
  */
 export function normalisePollInput(
   question: string,
   texts: readonly string[],
+  ids: readonly (string | null | undefined)[] = [],
 ): { question: string; options: PollOption[] } | null {
   const trimmedQuestion = question.trim().slice(0, POLL_QUESTION_MAX);
-  const filled = texts.map((text) => text.trim()).filter((text) => text.length > 0);
+
+  const filled = texts
+    .map((text, index) => ({ text: text.trim(), id: ids[index] }))
+    .filter((row) => row.text.length > 0)
+    .slice(0, POLL_MAX_OPTIONS);
 
   if (!trimmedQuestion || filled.length < POLL_MIN_OPTIONS) return null;
 
+  /*
+    Присланный идентификатор берётся, если он не повторяет уже взятый.
+
+    Повтор — это тот же класс поломки, что был с номерами места: два варианта под одним id
+    означают, что голоса второго при следующем сохранении переедут к первому. Строка без
+    идентификатора (старая вкладка) получает запасной по месту, но не тот, который уже занят.
+  */
+  const taken = new Set<string>();
+
   return {
     question: trimmedQuestion,
-    options: filled.slice(0, POLL_MAX_OPTIONS).map((text, index) => ({
-      // Идентификатор по месту в списке, а не случайный: он должен быть одинаковым при
-      // каждом сохранении, иначе уже поданный голос перестанет находить свой вариант.
-      id: `o${index + 1}`,
-      text: text.slice(0, POLL_OPTION_MAX),
-      votes: 0,
-    })),
+    options: filled.map((row, index) => {
+      const candidate = cleanPollOptionId(row.id);
+      const id = candidate.length > 0 && !taken.has(candidate) ? candidate : freeSlotId(index);
+      taken.add(id);
+
+      return {
+        id,
+        text: row.text.slice(0, POLL_OPTION_MAX),
+        votes: 0,
+      };
+    }),
   };
+
+  /** Запасной идентификатор по месту — только если место ещё не занято. */
+  function freeSlotId(index: number): string {
+    for (let slot = index + 1; slot <= POLL_MAX_OPTIONS + 1; slot++) {
+      const candidate = `o${slot}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return newPollOptionId();
+  }
 }
 
 /**

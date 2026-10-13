@@ -232,6 +232,63 @@ async function main() {
     `${enclosureTypes[0] ?? "нет"} для ${enclosureUrls[0] ?? "нет enclosure"}`,
   );
 
+  /*
+    Формат, который Дзен действительно берёт.
+
+    Спецификация: «выбирайте файлы в формате JPEG, GIF или PNG», и дальше — «если изображение
+    пришло в некорректном формате, материал будет опубликован без картинки». То есть WebP не
+    считается ошибкой разметки: лента проходит проверки, а карточка выходит без изображения.
+
+    Замер по боевой базе 13 октября: из материалов за неделю в ленту уходило 14 JPEG, 6 WebP и
+    1 PNG — две трети карточек без изображения. Виной тому не лента, а загрузка: `/api/upload`
+    перекодирует всё в WebP, потому что браузеру так легче. Проверка ниже существовала и
+    проходила именно потому, что смотрела на расширение, а не на то, берёт ли площадка такой
+    файл.
+  */
+  const ACCEPTED_IMAGE = /\.(?:jpe?g|png|gif)$/i;
+  const unsupportedEnclosures = enclosureUrls.filter((u) => !ACCEPTED_IMAGE.test(u.split("?")[0]));
+  check(
+    "Enclosure: формат из списка Дзена (JPEG, GIF, PNG)",
+    unsupportedEnclosures.length === 0,
+    unsupportedEnclosures.length === 0
+      ? `${enclosureUrls.length} enclosure, все годные`
+      : `${unsupportedEnclosures.length} негодных, первый: ${unsupportedEnclosures[0]}`,
+  );
+
+  /*
+    То же для картинок внутри текста: они приходят из редактора и включают сгенерированные
+    обложки в WebP. Замер после правки обложки: в ленте оставались две такие картинки — обе из
+    тела материалов.
+  */
+  const bodyImages = items
+    .flatMap((item) => Array.from(item.querySelectorAll("img")))
+    .map((img) => img.getAttribute("src") ?? "");
+  const unsupportedBody = bodyImages.filter((u) => u && !ACCEPTED_IMAGE.test(u.split("?")[0]));
+  check(
+    "Картинки в тексте: формат из списка Дзена",
+    unsupportedBody.length === 0,
+    bodyImages.length === 0
+      ? "картинок в тексте нет"
+      : unsupportedBody.length === 0
+        ? `${bodyImages.length} картинок, все годные`
+        : `${unsupportedBody.length} негодных из ${bodyImages.length}, первый: ${unsupportedBody[0]}`,
+  );
+
+  // Обложка одна и та же в `<enclosure>` и в первой `<figure>` — разные адреса означают,
+  // что площадка получит две разные картинки для одного кадра.
+  const coverMismatch = items.filter((item) => {
+    const enclosureUrl = item.querySelector("enclosure")?.getAttribute("url") ?? null;
+    const firstFigureSrc = item.querySelector("content\\:encoded figure img")?.getAttribute("src") ?? null;
+    return enclosureUrl !== null && firstFigureSrc !== null && enclosureUrl !== firstFigureSrc;
+  });
+  check(
+    "Обложка одна и та же в enclosure и в первой figure",
+    coverMismatch.length === 0,
+    coverMismatch.length === 0
+      ? "совпадает везде"
+      : `${coverMismatch.length} расхождений`,
+  );
+
   // --- Dzen's documented rules -------------------------------------------------
   // https://dzen.ru/help/ru/website/rss-modify.html and
   // https://dzen.ru/help/ru/export-content/export.html

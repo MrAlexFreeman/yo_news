@@ -8,8 +8,14 @@ import {
   POLL_MIN_OPTIONS,
   POLL_OPTION_MAX,
   POLL_QUESTION_MAX,
+  newPollOptionId,
 } from "@/lib/polls";
 import { cn } from "@/lib/utils";
+
+/** Новая пустая строка с уже выданным идентификатором. */
+function emptyRow(): { id: string; text: string } {
+  return { id: newPollOptionId(), text: "" };
+}
 
 /**
  * «Прикрепить опрос» в редакторе материала.
@@ -28,15 +34,29 @@ import { cn } from "@/lib/utils";
 export function PollEditor({
   initial,
 }: {
-  initial: { question: string; options: string[] };
+  initial: { question: string; options: { id: string; text: string }[] };
 }) {
   const [question, setQuestion] = useState(initial.question);
-  // Two empty rows to start: the minimum a poll needs, so the shape is visible without a click.
-  const [options, setOptions] = useState<string[]>(
-    initial.options.length > 0 ? initial.options : ["", ""],
+
+  /*
+    Строка — это пара «идентификатор + текст», а не просто текст.
+
+    Идентификатор выдаётся один раз: при открытии существующего опроса берётся из базы, новым
+    строкам чеканится при добавлении. Он едет в форме скрытым полем, и по нему сохранение
+    переносит уже поданные голоса на тот же вариант.
+
+    Так было не всегда: идентификатор был номером места в списке, поэтому удаление второго
+    варианта из трёх сдвигало третий на `o2`, и голоса, поданные за него, переезжали к соседу.
+    На боевой базе оба опроса хранят варианты как `o1`/`o2` — то есть поломка была не
+    гипотезой, а тем, как устроены идентификаторы.
+  */
+  const [options, setOptions] = useState<{ id: string; text: string }[]>(() =>
+    initial.options.length > 0
+      ? initial.options
+      : [emptyRow(), emptyRow()],
   );
 
-  const filled = options.filter((text) => text.trim().length > 0).length;
+  const filled = options.filter((row) => row.text.trim().length > 0).length;
   const active = question.trim().length > 0 || filled > 0;
 
   return (
@@ -76,18 +96,25 @@ export function PollEditor({
 
         <div className="space-y-1">
           <span className="text-xs font-medium text-neutral-700">Варианты ответа</span>
-          {options.map((text, index) => (
-            <div key={index} className="flex items-center gap-2">
+          {options.map((option, index) => (
+            <div key={option.id} className="flex items-center gap-2">
+              {/*
+                Идентификатор строки едет вместе с текстом и в том же порядке, что и `pollOption`.
+
+                Действие читает оба списка через `getAll` и складывает их попарно, поэтому
+                порядок в DOM здесь и порядок чтения — одно и то же.
+              */}
+              <input type="hidden" name="pollOptionId" value={option.id} readOnly />
               <input
                 // Named identically for every row: the action reads them with `getAll`.
                 name="pollOption"
-                value={text}
+                value={option.text}
                 maxLength={POLL_OPTION_MAX}
                 placeholder={`Вариант ${index + 1}`}
                 onChange={(event) =>
                   setOptions((current) =>
-                    current.map((value, position) =>
-                      position === index ? event.target.value : value,
+                    current.map((row, position) =>
+                      position === index ? { ...row, text: event.target.value } : row,
                     ),
                   )
                 }
@@ -112,7 +139,7 @@ export function PollEditor({
 
           <button
             type="button"
-            onClick={() => setOptions((current) => [...current, ""])}
+            onClick={() => setOptions((current) => [...current, emptyRow()])}
             disabled={options.length >= POLL_MAX_OPTIONS}
             className="mt-1 inline-flex items-center gap-1.5 rounded-sm border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-40"
           >
@@ -124,7 +151,8 @@ export function PollEditor({
         <p className="text-xs text-neutral-500">
           Пустые варианты не сохраняются, но и не считаются: чтобы опрос появился, нужен вопрос и
           минимум {POLL_MIN_OPTIONS} заполненных варианта. Голоса, уже поданные читателями,
-          сохраняются при правке текста варианта.
+          сохраняются при правке текста варианта, при его перестановке и при удалении соседнего
+          варианта.
         </p>
       </div>
     </details>

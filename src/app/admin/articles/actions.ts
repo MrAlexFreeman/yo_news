@@ -15,6 +15,7 @@ import type { SaveArticleResult } from "@/app/admin/articles/types";
 import { normalizeArticleHtml } from "@/lib/article-html";
 import { isArticleStatus } from "@/lib/article-status";
 import { buildSearchText } from "@/lib/article-search";
+import { siteWallClockToDate } from "@/lib/date";
 import { parseMediaField } from "@/lib/article-media";
 import {
   DZEN_EXPERIMENT_LOCKED_HINT,
@@ -65,11 +66,15 @@ function checkbox(formData: FormData, key: string): boolean {
 /**
  * Attaches, replaces or removes the poll, keeping the votes already cast.
  *
- * **Votes are carried over by option id**, which `normalisePollInput` mints from the answer's
- * position. An editor fixing a typo in an answer, or adding a fifth one, therefore does not wipe
- * the votes already counted; swapping two answers does, because the id stays with the slot. That
- * is the trade the ids buy, and it is the harmless way round: reordering a poll under a story is
- * rare, retyping an answer is not.
+ * **Votes are carried over by option id**, and the id now belongs to the answer rather than to
+ * its position. The editor mints one per row and submits it with the text, so an editor fixing a
+ * typo, reordering the answers or deleting one of them keeps the votes where they were cast.
+ *
+ * That last case is why the id moved. With positional ids (`o1`, `o2`, `o3`) deleting the second
+ * answer made the third become `o2`, and every vote for it was silently re-counted for its
+ * neighbour — the poll's results changed without anybody touching the numbers. Measured on the
+ * live database 13 October: both polls in production still carry positional ids, so the fix
+ * applies from the next save onwards and the old ids keep working unchanged.
  *
  * A story that stopped having a poll loses the row. Publishing without touching the fields — the
  * checkbox path, a re-save from an old tab — sends no poll fields, which reads as "no poll" and
@@ -115,63 +120,22 @@ function mediaColumn(raw: string): Prisma.InputJsonValue | typeof Prisma.JsonNul
 }
 
 /**
- * `datetime-local` sends "2026-10-01T12:30" with no timezone. That is the
- * editor's wall clock in Moscow, so it is converted explicitly rather than left
- * to `new Date(...)`, which would read it in the *server's* zone — UTC on the
- * VPS — and silently shift every scheduled post by three hours.
+ * `datetime-local` sends "2026-10-01T12:30" with no timezone. That is the wall
+ * clock of the site's timezone, so it is converted explicitly rather than left to
+ * `new Date(...)`, which would read it in the *server's* zone — UTC on the VPS
+ * — and silently shift every scheduled post.
+ *
+ * The zone is the same one the form filled the field in and the header prints it in
+ * (`NEXT_PUBLIC_SITE_TIMEZONE`). All three have to agree, or the editor corrects the
+ * date by the offset on every save.
+ *
+ * The conversion itself lives in `lib/date.ts`, shared with the form that writes the field
+ * and with the checks: three places parsing one timezone-less string is how they drift apart,
+ * and they did — the form and this action agreed on Moscow while the header printed
+ * Yekaterinburg for a fortnight.
  */
-const EDITOR_TIME_ZONE = "Europe/Moscow";
-
 function publicationDate(formData: FormData): Date | null {
-  const raw = str(formData, "publishedAt");
-  if (!raw) return null;
-
-  // "YYYY-MM-DDTHH:mm" read as UTC, then re-read in Moscow: if the wall-clock
-  // fields survive the round trip, the offset applied is the Moscow one.
-  const asUtc = Date.parse(`${raw}:00Z`);
-  if (Number.isNaN(asUtc)) return null;
-
-  const wallClock = new Date(asUtc);
-  const offsetMinutes = moscowOffsetMinutes(wallClock);
-  return new Date(asUtc - offsetMinutes * 60_000);
-}
-
-/**
- * Moscow's UTC offset in minutes for the given instant, DST included.
- * `Intl` is asked rather than hardcoding +180 so the published dates stay right
- * across a future change to Russia's timezone rules.
- */
-function moscowOffsetMinutes(at: Date): number {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: EDITOR_TIME_ZONE,
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-
-  const parts = Object.fromEntries(
-    formatter
-      .formatToParts(at)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, Number(part.value)]),
-  );
-
-  // `hour` comes back as 24 at midnight under hour12:false in some ICU builds.
-  const hour = parts.hour === 24 ? 0 : parts.hour;
-  const asUtc = Date.UTC(
-    parts.year,
-    parts.month - 1,
-    parts.day,
-    hour,
-    parts.minute,
-    parts.second,
-  );
-
-  return (asUtc - at.getTime()) / 60_000;
+  return siteWallClockToDate(str(formData, "publishedAt"));
 }
 
 /**
@@ -367,6 +331,14 @@ export async function createArticleAction(
   const pollInput = normalisePollInput(
     str(formData, "pollQuestion"),
     formData.getAll("pollOption").map((value) => (typeof value === "string" ? value : "")),
+    /*
+      Идентификаторы вариантов — в том же порядке, что и тексты.
+
+      Форма отдаёт их скрытыми полями по одной строке, так что `getAll` возвращает списки
+      одинаковой длины и по одному на вариант. Старая вкладка их не присылает — тогда список
+      пустой и `normalisePollInput` нумерует варианты по месту, как было раньше.
+    */
+    formData.getAll("pollOptionId").map((value) => (typeof value === "string" ? value : null)),
   );
 
   // The row write and the tag sync share one transaction: a tag set half-written
