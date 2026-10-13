@@ -23,8 +23,14 @@ export type MediaItem = {
   height: number;
 };
 
-/** Dzen drops an image below this and publishes the piece without any picture. */
-export const DZEN_MIN_WIDTH = 480;
+/**
+ * Dzen drops an image below this and publishes the piece without any picture.
+ *
+ * The width is the documented one: «Минимальная ширина изображения — 700 пикселей». It used
+ * to be 480, from an earlier reading of the same page; the height floor is ours and stays,
+ * because a 900×120 banner satisfies the width and is still not a picture for a feed.
+ */
+export const DZEN_MIN_WIDTH = 700;
 export const DZEN_MIN_HEIGHT = 320;
 
 /** Upper bound on a gallery, matching Dzen's own "up to 10 pictures" post rule. */

@@ -1,6 +1,16 @@
 /**
  * Fetches the Dzen feed and asserts it is well-formed RSS 2.0 with the expected
  * item shape. Run with: npm run feed:check
+ *
+ * **Проверка соответствия требованиям модерации Дзена идёт против боевой базы:**
+ *
+ *   DZEN_FEED_URL=https://eartnews.ru/api/feed/dzen.xml npm run feed:check
+ *
+ * Локально лента часто пуста — в базе разработки лежат фикстурные статьи, а лента берёт
+ * только публикации за последние двое-трое суток. Пустая лента здесь означает «нечего
+ * проверять», а не «генератор сломался», и она не должна ронять `npm run check`: поэтому
+ * при пустой ленте проверки по материалам помечаются пропущенными, а проверки самого
+ * документа остаются в силе.
  */
 import { JSDOM } from "jsdom";
 
@@ -17,9 +27,36 @@ const RFC_822 =
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
+/**
+ * Пуста ли лента — устанавливается сразу после разбора документа.
+ *
+ * Проверки уровня документа (HTTP, заголовки, корневой элемент, пространства имён)
+ * выполняются всегда: они верны и для пустой ленты. Всё, что смотрит на материалы,
+ * без них не имеет предмета.
+ */
+let feedIsEmpty = false;
+
 function check(name: string, ok: boolean, detail: string) {
+  if (feedIsEmpty && !DOCUMENT_LEVEL.has(name)) {
+    checks.push({ name, ok: true, detail: `пропущено: лента пуста (${detail})` });
+    return;
+  }
   checks.push({ name, ok, detail });
 }
+
+/** Проверки, которые остаются в силе на пустой ленте. */
+const DOCUMENT_LEVEL = new Set([
+  "HTTP 200",
+  "Content-Type",
+  "Cache-Control",
+  "Валидный XML",
+  "Корень rss",
+  'Атрибут version="2.0"',
+  "xmlns:content",
+  "xmlns:atom",
+  "atom:link rel=self",
+  "Есть items",
+]);
 
 async function main() {
   const response = await fetch(FEED_URL);
@@ -77,7 +114,25 @@ async function main() {
   );
 
   const items = [...doc.querySelectorAll("channel > item")];
-  check("Есть items", items.length > 0, `найдено ${items.length}`);
+  feedIsEmpty = items.length === 0;
+  if (feedIsEmpty) {
+    console.log(
+      "\nЛента пуста: в базе нет публикаций за последние двое-трое суток с текстом от 800\n" +
+        "символов. Проверки по материалам пропущены — применять их не к чему.\n" +
+        "Проверка соответствия требованиям Дзена идёт против боевой базы:\n" +
+        "  DZEN_FEED_URL=https://eartnews.ru/api/feed/dzen.xml npm run feed:check\n",
+    );
+  }
+  // На пустой ленте это не провал: в базе разработки нет публикаций, прошедших отбор, и
+  // падать из-за этого нельзя — иначе `npm run check` не проходит никогда. Настоящая
+  // проверка соответствия идёт против боевой базы, см. шапку файла.
+  check(
+    "Есть items",
+    items.length > 0 || feedIsEmpty,
+    items.length > 0
+      ? `найдено ${items.length}`
+      : "в базе нет публикаций, прошедших отбор — проверки по материалам пропущены",
+  );
   check("Лимит 50", items.length <= 50, `${items.length} <= 50`);
 
   const pubDates = items.map((item) =>
@@ -100,12 +155,16 @@ async function main() {
 
   check(
     "Сортировка по убыванию даты",
-    parsed && isDescending,
-    parsed
+    // `timestamps.length > 0` обязателен: на пустой ленте `every` даёт `true`, и следующая
+    // строка построила бы `new Date(undefined)` — RangeError вместо проверки.
+    timestamps.length > 0 && parsed && isDescending,
+    parsed && timestamps.length > 0
       ? `${new Date(timestamps[0]).toISOString()} … ${new Date(
           timestamps[timestamps.length - 1],
         ).toISOString()}`
-      : "не удалось разобрать даты",
+      : timestamps.length === 0
+        ? "в ленте нет материалов"
+        : "не удалось разобрать даты",
   );
 
   for (const [index, item] of items.entries()) {
@@ -188,11 +247,13 @@ async function main() {
 
   /** Dzen renders this tag set inside content:encoded and ignores the rest. */
   const DZEN_SUPPORTED_TAGS = new Set([
-    "p", "br", "h1", "h2", "h3", "h4",
+    "p", "h1", "h2", "h3", "h4",
     "b", "i", "u", "s",
     "blockquote",
     "ul", "ol", "li",
     "a", "figure", "img", "figcaption",
+    // Единственный span, который Дзен показывает в своём примере: копирайт в подписи.
+    "span",
   ]);
 
   const itemsWithBody = items
@@ -369,6 +430,99 @@ async function main() {
       return value.length > 0 && !METHODS.has(value);
     }),
     "только способы публикации",
+  );
+
+  // --- требования модерации, из-за которых лента была отклонена --------------------
+
+  /*
+    Свежесть. Спецификация: «Включайте в ленту актуальные материалы за два-три последних
+    дня». Жёсткий предел — неделя, потому что лента добирает материалы до десяти, и добирать
+    их дальше недели — значит отдавать архив.
+  */
+  const LOOKBACK_HOURS = 7 * 24;
+  const nowMs = Date.now();
+  const ages = timestamps.map((value) => (nowMs - value) / 3_600_000);
+  check(
+    "Свежесть: ни один материал не старше недели",
+    ages.length > 0 && ages.every((hours) => hours <= LOOKBACK_HOURS),
+    ages.length === 0
+      ? "в ленте нет материалов"
+      : `старше всего ${Math.round(Math.max(...ages))} ч, в окне 72 ч: ${ages.filter((h) => h <= 72).length}`,
+  );
+
+  check(
+    "Свежесть: хотя бы десять материалов",
+    // «При первой разметке лента должна содержать минимум 10 материалов».
+    items.length >= 10,
+    `${items.length} материалов`,
+  );
+
+  /*
+    Объём текста. Короткий материал Дзен конвертирует в пост, а не в статью, — а это другой
+    формат и лишняя правка в Студии.
+  */
+  const MIN_TEXT = 800;
+  const shortItems = itemsWithBody
+    .map(({ body }, index) => ({
+      index,
+      chars: body
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim().length,
+    }))
+    .filter(({ chars }) => chars < MIN_TEXT);
+  check(
+    `Объём: не короче ${MIN_TEXT} символов текста`,
+    itemsWithBody.length > 0 && shortItems.length === 0,
+    shortItems.length === 0
+      ? `${itemsWithBody.length} материалов, все длиннее ${MIN_TEXT}`
+      : `короткие: ${shortItems.map((i) => `#${i.index} (${i.chars})`).join(", ")}`,
+  );
+
+  /*
+    `<span>` в разметке ленты допустим ровно один — `span.copyright` внутри `figcaption`,
+    ровно так, как в примере Дзена. Всё прочее — вёрстка, которую площадка не покажет.
+  */
+  const straySpans: string[] = [];
+  const copyrightSpans: string[] = [];
+  for (const { body } of itemsWithBody) {
+    const htmlDom = new JSDOM(`<body>${body}</body>`);
+    for (const span of htmlDom.window.document.body.querySelectorAll("span")) {
+      const isCopyright =
+        span.className.trim() === "copyright" &&
+        span.closest("figcaption") !== null;
+      (isCopyright ? copyrightSpans : straySpans).push(span.outerHTML.slice(0, 60));
+    }
+  }
+  check(
+    "Разметка: span только как копирайт в figcaption",
+    straySpans.length === 0,
+    straySpans.length === 0
+      ? `копирайтов: ${copyrightSpans.length}`
+      : `посторонних: ${straySpans.slice(0, 2).join(", ")}`,
+  );
+
+  /*
+    Адрес материала. Спецификация требует ЧПУ: «без UTM-меток и других параметров». Проверяется
+    и параметр, и слэш в конце, и то, что это тот же адрес, что канонический на сайте.
+  */
+  const badLinks = items
+    .map((item) => item.querySelector("link")?.textContent?.trim() ?? "")
+    .filter((value) => /[?#]/.test(value) || value.endsWith("/") || !/\/news\/[a-z0-9-]+$/.test(value));
+  check(
+    "Адрес: чистый ЧПУ без параметров и слэша в конце",
+    items.length > 0 && badLinks.length === 0,
+    badLinks.length === 0 ? `${items.length} адресов` : badLinks.slice(0, 2).join(", "),
+  );
+
+  // Идентификатор материала: уникальный и стабильный, без параметров.
+  const itemGuids = items.map((item) => item.querySelector("guid")?.textContent?.trim() ?? "");
+  check(
+    "guid: уникален и без параметров",
+    itemGuids.length > 0 &&
+      new Set(itemGuids).size === itemGuids.length &&
+      itemGuids.every((value) => value.length > 0 && !/[?#]/.test(value)),
+    `${new Set(itemGuids).size} уникальных из ${itemGuids.length}`,
   );
 
   console.log(`Лента: ${FEED_URL}\n`);

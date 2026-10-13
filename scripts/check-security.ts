@@ -912,8 +912,12 @@ function checkArticleMedia() {
 
   check(
     "Дзен: разметка вне поддерживаемого набора вырезана",
-    !/<table|<div|<span|<pre|class=|style=/i.test(dzenBody),
-    "только разрешённые теги",
+    // `span` — единственное исключение, и только как `span.copyright` в подписи: его
+    // показывает собственный пример Дзена. Остальные span, class и style в ленте не
+    // допускаются, и `<br>` тоже — в списке поддерживаемых тегов его нет.
+    !/<table|<div|<pre|<br|class="(?!copyright")|style=/i.test(dzenBody) &&
+      !/<span(?![^>]*class="copyright")/i.test(dzenBody),
+    "только разрешённые теги, span — лишь как копирайт",
   );
 
   check(
@@ -948,14 +952,75 @@ function checkArticleMedia() {
 
   check(
     "Дзен: галерея с подписью в figure",
-    dzenBody.includes("<figcaption>Один. Фото АС</figcaption>"),
-    "figcaption на месте",
+    // Форма подписи — как в примере Дзена: текст подписи, а автор или источник в
+    // `span.copyright`, потому что это единственный класс, который площадка показывает.
+    dzenBody.includes(
+      "<figcaption>Один <span class=\"copyright\">Фото АС</span></figcaption>",
+    ),
+    "figcaption с копирайтом",
   );
 
   check(
     "Дзен: видео — обычная ссылка",
     dzenBody.includes('<a href="https://youtu.be/dQw4w9WgXcQ">') && !/<iframe/i.test(dzenBody),
     "ссылка вместо плеера",
+  );
+
+  /*
+    Переносы строк. `<br>` в списке поддерживаемых Дзеном тегов нет, и в боевой ленте он
+    стоял внутри абзацев у десяти материалов из тринадцати свежих, а у части тел не было ни
+    одного `<p>` вовсе — такой материал площадка не разбирает.
+  */
+  check(
+    "Дзен: перенос внутри абзаца убран",
+    !buildDzenContent({
+      title: "Т",
+      subtitle: null,
+      base: "https://eartnews.ru",
+      coverImage: null,
+      gallery: [],
+      videoUrl: null,
+      contentHtml: "<p>Первый<br>второй</p>",
+    }).includes("<br"),
+    "<br> вырезан",
+  );
+
+  check(
+    "Дзен: тело из одних переносов становится абзацами",
+    buildDzenContent({
+      title: "Т",
+      subtitle: null,
+      base: "https://eartnews.ru",
+      coverImage: null,
+      gallery: [],
+      videoUrl: null,
+      contentHtml: "Первый<br>Второй<br />Третий",
+    }) === "<h1>Т</h1><p>Первый</p><p>Второй</p><p>Третий</p>",
+    buildDzenContent({
+      title: "Т",
+      subtitle: null,
+      base: "https://eartnews.ru",
+      coverImage: null,
+      gallery: [],
+      videoUrl: null,
+      contentHtml: "Первый<br>Второй<br />Третий",
+    }),
+  );
+
+  check(
+    "Дзен: пустые абзацы из переносов не попадают в ленту",
+    !/<p>\s*<\/p>/.test(
+      buildDzenContent({
+        title: "Т",
+        subtitle: null,
+        base: "https://eartnews.ru",
+        coverImage: null,
+        gallery: [],
+        videoUrl: null,
+        contentHtml: "Первый<br><br><br>Второй",
+      }),
+    ),
+    "пустых <p> нет",
   );
 
   // The link is what Dzen turns into a widget; shipping an unsupported host would

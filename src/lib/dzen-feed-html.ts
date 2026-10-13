@@ -19,6 +19,13 @@ import {
  *
  * Dzen's supported set, from https://dzen.ru/help/ru/website/rss-modify.html:
  * p, a, b, i, u, s, h1–h4, blockquote, ul/li, ol/li, figure/img/figcaption, video.
+ *
+ * `br` в списке Дзена нет, и раньше он здесь был по недосмотру: в боевой ленте `<br>` стоял
+ * внутри абзацев у десяти материалов из тринадцати свежих, а Дзен такой разметки не
+ * документирует. Он остаётся в списке разрешённых **только как метка границы**: без него
+ * очистка склеила бы тело из одних переносов в один абзац раньше, чем его увидит
+ * `normaliseBlocks`. Убирают и превращают в абзацы переносы уже там, и в ленту `<br>` не
+ * попадает ни в одной форме.
  */
 const DZEN_TAGS = [
   "p", "br",
@@ -75,16 +82,66 @@ function videoLink(value: string, base: string): string | null {
 /** `<figure>` for one image, in the shape Dzen documents. */
 function figure(url: string, caption: string, source: string): string {
   const alt = escapeAttribute(caption || source);
-  const credit = [caption, source].filter(Boolean).join(". ");
+  const captionText = caption.trim();
+  const sourceText = source.trim();
+
+  /*
+    Подпись в том виде, в каком её показывает Дзен в собственном примере:
+    «<figcaption> Первый андроид-фермер смотрит на свои угодья <span
+    class="copyright">Михаил Родченков</span> </figcaption>». Автор или источник идёт в
+    `span.copyright` — это единственный `span` и единственный `class`, которые Дзен
+    использует, и потому единственные, которые в разметке ленты вообще допустимы.
+    Обычный текст подписи остаётся текстом: кредит должен отличаться от того, что
+    фотограф снял.
+  */
+  const figcaption =
+    captionText && sourceText
+      ? `<figcaption>${escapeText(captionText)} <span class="copyright">${escapeText(sourceText)}</span></figcaption>`
+      : captionText || sourceText
+        ? `<figcaption>${escapeText(captionText || sourceText)}</figcaption>`
+        : "";
 
   return [
     "<figure>",
     `<img src="${escapeAttribute(url)}" alt="${alt}" />`,
-    credit ? `<figcaption>${escapeText(credit)}</figcaption>` : "",
+    figcaption,
     "</figure>",
   ]
     .filter(Boolean)
     .join("");
+}
+
+/**
+ * Приводит очищенное тело к тому, что Дзен разбирает: абзацы вместо переносов.
+ *
+ * Замер по боевой ленте: часть материалов приходит с абзацами, часть — с голыми
+ * переносами строк, и у части тела не было ни одного `<p>` вовсе (в разметке оставался
+ * только `<h1>` заголовка). Для Дзена это материал без разметки, а он такие не берёт.
+ *
+ * Правило одно и зависит от того, есть ли в теле абзац:
+ *
+ *  - есть `<p>` — перенос внутри него лишний, абзац уже разделяет строки, `<br>` убирается;
+ *  - `<p>` нет — тело держится на одних переносах, и убрать их значило бы слить
+ *    материал в одну простыню. Тогда каждый перенос становится границей абзаца.
+ */
+export function normaliseBlocks(html: string): string {
+  const trimmed = html.trim();
+  if (!trimmed) return "";
+
+  if (!/<p[\s>]/i.test(trimmed)) {
+    return trimmed
+      .split(/<br\s*\/?>/i)
+      .map((run) => run.trim())
+      .filter((run) => run.length > 0)
+      .map((run) => `<p>${run}</p>`)
+      .join("");
+  }
+
+  return trimmed
+    .replace(/<br\s*\/?>/gi, "")
+    .replace(/<p>\s*<\/p>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /** Dzen strips whatever presentation an attribute carries, so escape it well. */
@@ -115,6 +172,9 @@ export type DzenContentInput = {
   subtitle: string | null;
   contentHtml: string;
   coverImage: string | null;
+  /** Credit for the cover photo: goes into `span.copyright`, the only span Dzen documents. */
+  photoAuthor?: string | null;
+  photoSource?: string | null;
   gallery: MediaItem[];
   videoUrl: string | null;
   base: string;
@@ -149,7 +209,7 @@ export function buildDzenContent(input: DzenContentInput): string {
   // DOMPurify instance would unhook each other, and that already cost the public
   // pages their data-URI and iframe-host guards for a whole request cycle.
   setFeedBase(base);
-  const body = withPolicy("dzen", () =>
+  const raw = withPolicy("dzen", () =>
     DOMPurify.sanitize(input.contentHtml, {
       ALLOWED_TAGS: DZEN_TAGS,
       ALLOWED_ATTR: DZEN_ATTR,
@@ -162,6 +222,10 @@ export function buildDzenContent(input: DzenContentInput): string {
   );
 
   const seenUrls = new Set<string>();
+  // `br` в списке разрешённых тегов нет (см. DZEN_TAGS), и переносы превращаются в
+  // абзацы здесь — после очистки, чтобы правило видело уже готовую разметку.
+  const body = normaliseBlocks(raw);
+
   for (const match of body.matchAll(/<img[^>]+src="([^"]*)"/gi)) {
     seenUrls.add(match[1].replace(/&amp;/g, "&").toLowerCase());
   }
@@ -178,11 +242,18 @@ export function buildDzenContent(input: DzenContentInput): string {
   }
 
   // The cover doubles as the card image, so it has to be the first figure.
+  //
+  // Its caption is the headline and its credit is the article's: `span.copyright` is the one
+  // place Dzen documents for an author, and the cover is the picture a reader sees first.
+  const coverCredit = [input.photoAuthor?.trim(), input.photoSource?.trim()]
+    .filter(Boolean)
+    .join(" · ");
+
   const cover = input.coverImage?.trim();
   if (cover) {
     const url = absolutize(cover, base);
     if (!seenUrls.has(url.toLowerCase()) && firstImageUrl(body) !== url) {
-      blocks.push(figure(url, input.title, ""));
+      blocks.push(figure(url, input.title, coverCredit));
       seenUrls.add(url.toLowerCase());
     }
   }

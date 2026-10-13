@@ -6,7 +6,40 @@ import { dzenPublicationMethod, dzenRating } from "@/lib/dzen-publication";
 import { prisma } from "@/lib/prisma";
 import { RSS_CHANNEL_DESCRIPTION, RSS_CHANNEL_TITLE } from "@/lib/site";
 
-/** How many articles the feed exposes, newest first. */
+/**
+ * How far back a story may sit in the feed.
+ *
+ * Dzen's own wording: «Включайте в ленту актуальные материалы за два-три последних дня».
+ * Seventy-two hours is the top of that range, and the earlier revision had no limit at all —
+ * the live feed carried fifty items across ten days, which is a backlog, not a feed.
+ */
+const FEED_WINDOW_HOURS = 72;
+
+/**
+ * How far the feed may reach for extra material when three days are not enough.
+ *
+ * Спецификация требует «минимум 10 материалов» в ленте. Замер по боевой базе на 13 октября:
+ * за 72 часа — 13 публикаций, из них после отсева коротких остаётся 9. Ограничиться окном
+ * означало бы отдать ленту из девяти материалов и рискнуть тем самым требованием, ради
+ * которого всё затевалось, поэтому окно расширяется — но не до бесконечности, а до недели:
+ * неделя — это предел, за которым материал перестаёт быть новостью.
+ */
+const FEED_LOOKBACK_DAYS = 7;
+
+/** Dzen's own minimum for a submitted feed. */
+const MIN_ITEMS = 10;
+
+/**
+ * The floor on an article's plain text.
+ *
+ * Спецификация рекомендует «не менее 300 знаков», но там же описана конвертация: материал
+ * короче 800 символов и без картинок превращается в пост, где «поддерживается форматирование
+ * только гиперссылок и списков». Пост вместо статьи для городской новости — это другой формат
+ * и лишняя правка в Студии, поэтому короткое в фид не идёт.
+ */
+const MIN_TEXT_CHARS = 800;
+
+/** Ceiling on what the feed may return, well under Dzen's own "не более 500 публикаций". */
 const FEED_LIMIT = 50;
 
 /**
@@ -111,8 +144,58 @@ function coverMimeType(url: string): string {
   return "image/jpeg";
 }
 
+/**
+ * How much readable text an article carries, in characters.
+ *
+ * Tags are stripped, entities decoded and whitespace collapsed, because the number has to mean
+ * what a reader sees: 800 символов «текста» из двухсот пустых `<p>` — это не текст.
+ */
+function plainTextLength(html: string): number {
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim().length;
+}
+
+/**
+ * Is this row a demo, a fixture or a placeholder rather than an article?
+ *
+ * Замер по боевой базе на 13 октября: таких строк нет — поиск по слагам, заголовкам, адресам
+ * обложек и подписям к фото не нашёл ни одной. Фильтр оставлен как страховка от того, что
+ * такая строка появится: демо-статья в боевой ленте выглядит для модерации как мусор, и
+ * обнаружить её можно только по таким меткам, а не по дате публикации.
+ */
+function looksLikePlaceholder(article: {
+  title: string;
+  slug: string;
+  coverImage: string | null;
+  photoSource: string | null;
+  photoAuthor: string | null;
+}): boolean {
+  return /\bpicsum|placeholder|placehold|dummyimage|lorem ipsum|loremipsum/i.test(
+    article.coverImage ?? "",
+  ) || /\b(demo|demo-|test|test-|fixture|lorem|placeholder|sample)\b|^(тест|демо|пример|фикстура|заглушка)\b/iu.test(
+    `${article.slug} ${article.title}`,
+  );
+}
+
 function renderItem(article: FeedArticle, base: string): string {
-  const link = `${base}/news/${article.slug}`;
+  /*
+    Канонический адрес материала: ЧПУ, без query-параметров и без слэша в конце.
+
+    Требование спецификации дословно: «URL материалов должен быть ЧПУ (человеко-понятным),
+    без UTM-меток и других параметров». Слаг из базы уже чистый, но он приходит строкой, и
+    одна правка в редакторе с параметром уехала бы в ленту как отдельная публикация — поэтому
+    адрес собирается здесь, из очищенного слага, а не копируется из поля.
+  */
+  const slug = article.slug.trim().split("?")[0].split("#")[0].replace(/\/+$/, "");
+  const link = `${base}/news/${slug}`;
   const date = article.publishedAt ?? article.createdAt;
 
   const body = buildDzenContent({
@@ -120,6 +203,8 @@ function renderItem(article: FeedArticle, base: string): string {
     subtitle: article.subtitle,
     contentHtml: article.contentHtml,
     coverImage: article.coverImage,
+    photoAuthor: article.photoAuthor,
+    photoSource: article.photoSource,
     gallery: parseMedia(article.media),
     videoUrl: article.videoUrl,
     base,
@@ -129,8 +214,11 @@ function renderItem(article: FeedArticle, base: string): string {
     `      <title>${escapeXml(article.title)}</title>`,
     `      <link>${escapeXml(link)}</link>`,
     // Left as the row id: it is stable, unique and already published to Dzen.
-    // The docs merely *recommend* a permalink here, and changing a published
-    // guid is what makes a syndicator treat every old story as new.
+    //
+    // The docs say to keep «изначальный guid», and also allow a URL here — but switching an
+    // already-submitted feed from ids to URLs makes every previously published story look
+    // like a new one, which is exactly the duplicate the docs warn about. The <link> above
+    // already carries the clean permalink the brief asks for.
     `      <guid isPermaLink="false">${escapeXml(article.id)}</guid>`,
     `      <pubDate>${toRfc822(date)}</pubDate>`,
     `      <description>${cdata(article.lead ?? "")}</description>`,
@@ -197,13 +285,24 @@ ${items.map((article) => renderItem(article, base)).join("\n")}
 }
 
 export async function GET() {
-  const articles = await prisma.article.findMany({
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - FEED_WINDOW_HOURS * 60 * 60 * 1000);
+  const lookbackStart = new Date(now.getTime() - FEED_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+
+  const candidates = await prisma.article.findMany({
     // `deletedAt: null` is not optional here. A trashed story still has its Dzen flag
     // on, and syndicating it would republish on the partner's side — where there is
     // no trash to take it back from.
-    where: { status: "published", deletedAt: null, isDzen: true },
+    where: {
+      status: "published",
+      deletedAt: null,
+      isDzen: true,
+      publishedAt: { gte: lookbackStart },
+    },
     orderBy: { publishedAt: "desc" },
-    take: FEED_LIMIT,
+    // A week's worth at most, and far more than the feed can return: the text floor below
+    // removes roughly a third of what the desk publishes.
+    take: 120,
     select: {
       id: true,
       title: true,
@@ -226,7 +325,29 @@ export async function GET() {
     },
   });
 
-  const xml = renderFeed(articles, siteUrl(), new Date());
+  /*
+    Отбор: сначала окно в трое суток, и только если его не хватает — добор из более старых.
+
+    Порядок именно такой, а не «взять десять самых свежих»: требование про актуальность и
+    требование про десять материалов тянут ленту в разные стороны в день, когда публикаций
+    немного. Сначала соблюдаем свежесть, потом добираем количество, и оба правила объявлены
+    константами выше, а не спрятаны в условии.
+  */
+  const usable = candidates.filter(
+    (article) =>
+      plainTextLength(article.contentHtml) >= MIN_TEXT_CHARS &&
+      !looksLikePlaceholder(article),
+  );
+
+  const fresh = usable.filter(
+    (article) => (article.publishedAt ?? article.createdAt ?? now) >= windowStart,
+  );
+  const articles = (fresh.length >= MIN_ITEMS ? fresh : [
+    ...fresh,
+    ...usable.filter((article) => !fresh.includes(article)),
+  ]).slice(0, FEED_LIMIT);
+
+  const xml = renderFeed(articles, siteUrl(), now);
 
   return new Response(xml, {
     headers: {
