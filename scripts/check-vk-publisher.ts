@@ -10,6 +10,7 @@ import {
   extractArticleSlug,
   leadSummary,
   listWallPosts,
+  padVerticalCover,
   parseVkUploadResult,
   planWallDedupe,
   publishArticleToVk,
@@ -1051,6 +1052,7 @@ async function main() {
   else process.env.VK_ACCESS_TOKEN = savedToken;
 
   await checkCoverImageReads();
+  await checkVerticalPad();
 
   console.log("VK publisher\n");
   for (const { name, ok, detail } of checks) {
@@ -1100,6 +1102,54 @@ const IMAGE_FIXTURES = [
     type: "image/jpeg",
   },
 ];
+
+/**
+ * Узкая вертикаль должна уйти на стену пейзажным кадром, а не «километровой» полоской.
+
+ * Проверяется сам `padVerticalCover`, а не полный путь публикации: он чистый (sharp + память,
+ * без сети), и это то место, где решается, будет ли лента сообщества выглядеть опрятно. Пейзаж
+ * и умеренный портрет проходят нетронутыми.
+ */
+async function checkVerticalPad() {
+  const { default: sharp } = await import("sharp");
+
+  const vertical = await sharp({
+    create: { width: 300, height: 900, channels: 3, background: { r: 200, g: 80, b: 40 } },
+  })
+    .jpeg()
+    .toBuffer();
+
+  const padded = await padVerticalCover(vertical.buffer as ArrayBuffer, "image/jpeg");
+  const meta = await sharp(Buffer.from(padded.bytes)).metadata();
+
+  check(
+    "Обложка: вертикаль 1:3 становится пейзажем 4:3",
+    meta.width === 1280 && meta.height === 960 && padded.contentType === "image/jpeg",
+    `${meta.width}x${meta.height} (${meta.height! / meta.width!})`,
+  );
+
+  const portrait = await sharp({
+    create: { width: 400, height: 500, channels: 3, background: { r: 40, g: 120, b: 200 } },
+  })
+    .jpeg()
+    .toBuffer();
+  const kept = await padVerticalCover(portrait.buffer as ArrayBuffer, "image/jpeg");
+  const keptMeta = await sharp(Buffer.from(kept.bytes)).metadata();
+
+  check(
+    "Обложка: умеренный портрет 4:5 проходит нетронутым",
+    keptMeta.width === 400 && keptMeta.height === 500,
+    `${keptMeta.width}x${keptMeta.height}`,
+  );
+
+  const broken = new TextEncoder().encode("не картинка").buffer as ArrayBuffer;
+  const brokenResult = await padVerticalCover(broken, "image/jpeg");
+  check(
+    "Обложка: битые байты не роняют публикацию",
+    brokenResult.bytes === broken,
+    "вернул как есть",
+  );
+}
 
 async function checkCoverImageReads() {
   const written: string[] = [];

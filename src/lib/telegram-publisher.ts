@@ -20,8 +20,8 @@
  * (a reverse proxy, a Cloudflare Worker) and an outbound proxy.
  */
 
-import { extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
-import { planTelegramPost, buildMessengerPost, cutForReading } from "@/lib/messenger-post";
+import { coverImageUrl, extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
+import { coverPreviewLink, planTelegramPost, buildMessengerPost } from "@/lib/messenger-post";
 import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
 import { SyndicationHttpError, withRetry } from "@/lib/syndication/retry";
 
@@ -360,21 +360,47 @@ async function sendPhoto(
   return sent.result?.message_id != null ? String(sent.result.message_id) : null;
 }
 
-/** Sends the text on its own. */
-async function sendMessage(config: TelegramConfig, text: string): Promise<string | null> {
+/**
+ * Sends the text, optionally with the cover as a large preview above it.
+ *
+ * `previewUrl` is the cover's absolute address. It is prepended as an invisible zero-width
+ * link (`coverPreviewLink`), so Telegram picks it as the first link and, with
+ * `link_preview_options`, renders it as a full-size photo above the text. This is how a long
+ * post keeps its cover without a second message.
+ *
+ * Without a preview URL the post is sent with previews disabled, because the footer's own
+ * credit link would otherwise get an automatic card rendered under the post.
+ */
+async function sendMessage(
+  config: TelegramConfig,
+  text: string,
+  options: { previewUrl?: string | null } = {},
+): Promise<string | null> {
+  const previewUrl = options.previewUrl?.trim() ?? null;
+  const body = previewUrl ? `${coverPreviewLink(previewUrl)}${text}` : text;
+
+  const payload: Record<string, unknown> = {
+    chat_id: config.channelId,
+    text: body,
+    parse_mode: "HTML",
+  };
+
+  if (previewUrl) {
+    payload.link_preview_options = {
+      is_disabled: false,
+      prefer_large_media: true,
+      show_above_text: true,
+    };
+  } else {
+    // The post already ends with its own credit line. Telegram's automatic preview card would
+    // render that URL a second time, below it, as a separate block.
+    payload.disable_web_page_preview = true;
+  }
+
   const sent = await callTelegram<TelegramEnvelope>(
     config.token,
     "sendMessage",
-    {
-      json: {
-        chat_id: config.channelId,
-        text,
-        parse_mode: "HTML",
-        // The post already ends with its own credit line. Telegram's automatic preview
-        // card would render that URL a second time, below it, as a separate block.
-        disable_web_page_preview: true,
-      },
-    },
+    { json: payload },
     telegramApiBase(config),
   );
   return sent.result?.message_id != null ? String(sent.result.message_id) : null;
@@ -438,7 +464,10 @@ export async function publishArticleToTelegram(
       siteUrl: siteUrl(),
     });
 
-    const plan = planTelegramPost(post, { hasCover: Boolean(article.coverImage) });
+    const plan = planTelegramPost(post, {
+      hasCover: Boolean(article.coverImage),
+      coverUrl: article.coverImage ? coverImageUrl(article.coverImage) : null,
+    });
 
     /*
       The line an operator reads when a channel post is wrong: which story, whether it had a
@@ -449,37 +478,23 @@ export async function publishArticleToTelegram(
     console.log(
       `[telegram] публикация: статья ${article.id ?? "без id"} «${article.slug}», обложка: ${
         article.coverImage ?? "нет"
-      }, текста ${plan.length} символов, режим ${plan.mode}, шагов ${plan.steps.length}`,
+      }, текста ${plan.length} символов, режим ${plan.mode}`,
     );
 
+    // План всегда из одного шага: либо фото с подписью, либо текст (с предпросмотром или без).
+    const step = plan.steps[0];
     let warning: string | undefined;
     let firstMessageId: string | null = null;
-    let sent = 0;
 
-    for (const step of plan.steps) {
-      if (step.kind === "photo") {
-        // Only reached when a cover exists; `planTelegramPost` was told so above.
-        const cover = article.coverImage;
-        if (!cover) continue;
-
+    if (step?.kind === "photo") {
+      const cover = article.coverImage;
+      if (cover) {
         try {
-          /*
-            `await` first, then `??=`, and the order is the whole point of this shape.
-
-            Written the obvious way — `firstMessageId ??= await sendPhoto(…)` — the
-            assignment operator skips its right-hand side once an id already exists, so
-            the *second* step of a plan was never sent at all. For every post longer than
-            a caption that meant: the cover went out, the `sendMessage` carrying the text
-            was never called, and the channel showed a picture with nothing under it.
-            That is the reported fault, and it lived in one operator.
-          */
-          const id = await withRetry(() => sendPhoto(config, cover, step.caption), {
+          firstMessageId = await withRetry(() => sendPhoto(config, cover, step.caption), {
             onRetry: telegramRetryLog("sendPhoto"),
           });
-          firstMessageId ??= id;
-          sent += 1;
           console.log(
-            `[telegram] sendPhoto → сообщение ${id ?? "?"}, подпись ${step.caption?.length ?? 0} символов`,
+            `[telegram] sendPhoto → сообщение ${firstMessageId ?? "?"}, подпись ${step.caption?.length ?? 0} символов`,
           );
         } catch (error) {
           warning = `Обложка не отправлена: ${
@@ -487,65 +502,37 @@ export async function publishArticleToTelegram(
           }`;
           console.warn(`[telegram] ${warning}`);
         }
-        continue;
       }
 
       /*
-        Шаг с текстом: повтор при 429 и 5xx, и отказ после повторов не роняет публикацию.
-
-        Это и есть дыра, ради которой всё делалось. Раньше строка была голым `await`: если
-        Telegram отклонял текст — «too many requests», таймаут, 5xx на его стороне, — исключение
-        уходило в общий catch внизу, публикация объявлялась несостоявшейся, и редактор видел
-        «не ушло». А обложка к этому моменту уже была в канале: читатель получил фотографию с
-        короткой подписью и без текста, и по логу понять это было нечем.
-
-        Теперь отказ приходит сюда и превращается в предупреждение с id того, что уже в канале.
-        Не «всё хорошо» — `ok: false`, потому что текста в канале нет, — но с id, по которому
-        видно: пост существует. `actions.ts` запишет этот id, и повторная публикация не
-        продублирует обложку. Обе половины нужны: без ошибки редактор не узнает, без id он
-        получит вторую фотографию, когда попробует снова.
+        Режим caption несёт весь текст *в подписи к фото*, поэтому отказ загрузки фото оставляет
+        канал ни с чем. Текст досылается сам по себе — та же деградация, что и в VK.
       */
-      let id: string | null = null;
-      try {
-        id = await withRetry(() => sendMessage(config, step.text), {
-          onRetry: telegramRetryLog("sendMessage"),
-        });
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "неизвестная ошибка";
-        console.warn(`[telegram] текст не отправлен: ${reason}`);
-
-        return {
-          ok: false,
-          messageId: firstMessageId,
-          error: `Telegram принял обложку, но не принял текст: ${reason}`,
-          ...(firstMessageId
-            ? {
-                warning: `В канале осталось сообщение ${firstMessageId} без текста — оно не удалено, потому что в нём может быть обложка.`,
-              }
-            : {}),
-        };
+      if (firstMessageId === null) {
+        try {
+          firstMessageId = await withRetry(() => sendMessage(config, post.text), {
+            onRetry: telegramRetryLog("sendMessage (без обложки)"),
+          });
+        } catch (error) {
+          return {
+            ok: false,
+            error: `Telegram не принял публикацию: ${
+              error instanceof Error ? error.message : "неизвестная ошибка"
+            }`,
+          };
+        }
       }
-
-      firstMessageId ??= id;
-      sent += 1;
-      console.log(
-        `[telegram] sendMessage → сообщение ${id ?? "?"}, ${step.text.length} символов`,
-      );
-    }
-
-    /*
-      A caption-mode plan carries the text *inside* the photo step, so a cover that
-      fails to upload leaves nothing delivered at all — the story would silently
-      never reach the channel. Sending the text on its own is the same degradation
-      the VK path makes when a cover upload fails.
-    */
-    if (sent === 0) {
-      const fallback = plan.truncated ? cutForReading(post) : post.text;
+    } else if (step?.kind === "text") {
       try {
-        firstMessageId = await withRetry(() => sendMessage(config, fallback), {
-          onRetry: telegramRetryLog("sendMessage (без обложки)"),
-        });
-        sent = 1;
+        firstMessageId = await withRetry(
+          () => sendMessage(config, step.text, { previewUrl: step.previewUrl }),
+          { onRetry: telegramRetryLog("sendMessage") },
+        );
+        console.log(
+          `[telegram] sendMessage → сообщение ${firstMessageId ?? "?"}, ${step.text.length} символов${
+            step.previewUrl ? ", с предпросмотром обложки" : ""
+          }`,
+        );
       } catch (error) {
         return {
           ok: false,
@@ -559,13 +546,11 @@ export async function publishArticleToTelegram(
     const summary =
       plan.mode === "caption"
         ? "Telegram: одно сообщение с обложкой."
-        : plan.mode === "split"
-          ? "Telegram: обложка и полный текст двумя сообщениями."
-          : plan.mode === "chunks"
-            ? "Telegram: обложка и полный текст несколькими сообщениями."
-            : plan.mode === "truncated"
-              ? "Telegram: текст со ссылкой на полный материал."
-              : "Telegram: текст без обложки.";
+        : plan.mode === "preview"
+          ? "Telegram: одно сообщение, обложка предпросмотром сверху."
+          : plan.mode === "truncated"
+            ? "Telegram: текст со ссылкой на полный материал."
+            : "Telegram: текст без обложки.";
 
     console.log(
       `[telegram] готово: ${summary}${warning ? ` Предупреждение: ${warning}` : ""}`,

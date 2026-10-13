@@ -18,12 +18,9 @@ import {
   MAX_MESSAGE_LIMIT,
   MESSENGER_QUOTE_PREFIX,
   TELEGRAM_CAPTION_LIMIT,
-  TELEGRAM_CAPTION_MORE,
-  TELEGRAM_CAPTION_SAFE_LIMIT,
   TELEGRAM_MESSAGE_LIMIT,
   buildMessengerPost,
-  buildPhotoCaption,
-  chunkForTelegram,
+  coverPreviewLink,
   cutForReading,
   escapeAttribute,
   escapeHtml,
@@ -32,7 +29,6 @@ import {
   planTelegramPost,
   readMoreLink,
   readingNotice,
-  shortPhotoCaption,
   stripKickerLines,
   toHashtag,
   type MessengerPost,
@@ -329,26 +325,20 @@ check(
 );
 
 check(
-  "Ссылка в подвале: обрезанный пост и подпись оборачивают адрес одинаково",
+  "Ссылка в подвале: обрезанный пост и предпросмотр оборачивают адрес одинаково",
   readingNotice(`${SITE}/news/x`).includes(`<a href="${SITE}/news/x">`) &&
-    shortPhotoCaption(simplePost)?.includes(`<a href="${SITE}/news/zagolovok-novosti">`) === true,
+    coverPreviewLink(`${SITE}/news/x`).includes(`<a href="${SITE}/news/x">`),
   readingNotice(`${SITE}/news/x`).slice(-60),
 );
 
 check(
-  "Ссылка в подвале: обрезка не разрезает тег",
-  // Абзац длиннее лимита режется по символам, и разрез мог бы попасть внутрь `<a href>` в
-  // подвале. Непарный тег отклонил бы всё сообщение целиком, поэтому режущая функция
-  // откатывается до последней открывающей скобки.
-  chunkForTelegram(`<b>Заголовок</b>\n\n${"аб ".repeat(2000)}${readMoreLink(`${SITE}/news/x`)}`, 500)
-    .every((chunk) => {
-      const opened = (chunk.match(/<a\b/g) ?? []).length;
-      const closed = (chunk.match(/<\/a>/g) ?? []).length;
-      return opened === closed;
-    }),
-  chunkForTelegram(`<b>Заголовок</b>\n\n${"аб ".repeat(2000)}${readMoreLink(`${SITE}/news/x`)}`, 500)
-    .map((chunk) => `${chunk.length}${/<\/?a[ >]/.test(chunk.slice(-20)) ? "(в теге)" : ""}`)
-    .join(", "),
+  "Предпросмотр: невидимая ссылка на обложку стоит нулевой шириной",
+  // Текст ссылки — U+200B, нулевая ширина: в канале не видна, но это первая ссылка, и по ней
+  // Telegram строит большое фото над текстом. Кавычки в адресе экранируются, как и в подвале.
+  coverPreviewLink(`${SITE}/uploads/x.jpg`) ===
+    `<a href="${SITE}/uploads/x.jpg">&#8203;</a>` &&
+    (coverPreviewLink(`${SITE}/uploads/x" onmouseover="a`).match(/"/g) ?? []).length === 2,
+  coverPreviewLink(`${SITE}/uploads/x.jpg`),
 );
 
 check(
@@ -503,8 +493,8 @@ check(
 // --- the 1024 caption boundary ------------------------------------------------
 
 /*
-  The headline case: a post that fits in a caption arrives as ONE message, because a photo
-  with the text under it is what a channel reader wants and what the channel preview shows.
+  The headline case: a post that fits in a caption arrives as ONE message — a photo with the
+  whole post as its caption.
 */
 const shortPost = buildMessengerPost({
   title: "Короткая новость",
@@ -516,13 +506,6 @@ const shortPost = buildMessengerPost({
 
 const shortPlan = planTelegramPost(shortPost, { hasCover: true });
 
-/*
-  A post that fits under the picture goes out as ONE message with the whole post as its caption.
-
-  Asserted against `post.text` rather than part by part: while the caption is the post itself,
-  the shape is whatever `buildMessengerPost` assembles, and a check that re-listed the pieces
-  would go on passing after one of them was dropped.
-*/
 const shortCaptionOfPhoto =
   shortPlan.steps[0]?.kind === "photo" ? (shortPlan.steps[0].caption ?? "") : "";
 
@@ -535,20 +518,6 @@ check(
   `${shortPlan.mode}, ${shortPlan.length} символов, шагов: ${shortPlan.steps.length}`,
 );
 
-/*
-  The caption is read through a narrowed step rather than `steps[0]?.caption`, because
-  `TelegramStep` is a union: a text step has no `caption` at all, and indexing the
-  union blindly would let a plan that is entirely text pass this assertion vacuously.
-*/
-const shortCaption =
-  shortPlan.steps[0]?.kind === "photo" ? shortPlan.steps[0].caption : undefined;
-
-check(
-  "Telegram: подпись короче лимита",
-  typeof shortCaption === "string" && shortCaption.length <= TELEGRAM_CAPTION_LIMIT,
-  `${shortCaption?.length ?? "нет подписи"} <= ${TELEGRAM_CAPTION_LIMIT}`,
-);
-
 check(
   "Telegram: ровно 1024 — ещё подпись",
   planTelegramPost(
@@ -559,23 +528,9 @@ check(
 );
 
 /*
-  Past the ceiling the post goes out as **the picture plus the full text**.
-
-  This is the shape the brief asks for, and it is the opposite of what an earlier revision did:
-  a long post used to be cut to a teaser so that the channel showed one message. The editor then
-  asked for the whole story in the channel and accepted the second message, so a post over the
-  caption ceiling is now the cover with a short caption — the headline and the link — followed by
-  the text itself.
+  Past the caption ceiling the post goes out as ONE message with the cover as a link preview —
+  never as a picture followed by a wall of text.
 */
-check(
-  "Telegram: 1025 — уже обложка и полный текст, а не обрез",
-  planTelegramPost(
-    barePost(paragraph(TELEGRAM_CAPTION_LIMIT + 1), `${SITE}/news/s`),
-    { hasCover: true },
-  ).mode === "split",
-  "один символ через границу",
-);
-
 const mediumPost = buildMessengerPost({
   title: "Средняя новость",
   contentHtml: `<p>${paragraph(2500)}</p>`,
@@ -583,168 +538,65 @@ const mediumPost = buildMessengerPost({
   categoryName: "Общество",
   siteUrl: SITE,
 });
-const mediumPlan = planTelegramPost(mediumPost, { hasCover: true });
-const mediumCaption =
-  mediumPlan.steps[0]?.kind === "photo" ? (mediumPlan.steps[0].caption ?? "") : "";
+const mediumPlan = planTelegramPost(mediumPost, { hasCover: true, coverUrl: `${SITE}/uploads/cover.jpg` });
 const mediumText =
-  mediumPlan.steps[1]?.kind === "text" ? mediumPlan.steps[1].text : "";
+  mediumPlan.steps[0]?.kind === "text" ? mediumPlan.steps[0].text : "";
 
 check(
-  "Telegram: длинный пост — обложка и следом полный текст",
-  mediumPlan.mode === "split" &&
-    mediumPlan.steps.length === 2 &&
-    mediumPlan.steps[0]?.kind === "photo" &&
-    mediumPlan.steps[1]?.kind === "text",
-  `${mediumPlan.mode}, видов: ${mediumPlan.steps.map((s) => s.kind).join(",")}`,
+  "Telegram: 1025 — одно сообщение с предпросмотром обложки, а не двумя постами",
+  planTelegramPost(
+    barePost(paragraph(TELEGRAM_CAPTION_LIMIT + 1), `${SITE}/news/s`),
+    { hasCover: true, coverUrl: `${SITE}/uploads/c.jpg` },
+  ).mode === "preview",
+  "один символ через границу",
 );
 
 check(
-  "Telegram: подпись к обложке короткая и в лимите 1024",
-  // The ceiling Telegram enforces, and the one thing that turns the post into an error rather
-  // than a short one.
-  mediumCaption.length > 0 &&
-    mediumCaption.length <= TELEGRAM_CAPTION_LIMIT &&
-    mediumCaption.includes("<b>Средняя новость</b>") &&
-    mediumCaption.includes(`${SITE}/news/srednyaya`),
-  `${mediumCaption.length} <= ${TELEGRAM_CAPTION_LIMIT}`,
+  "Telegram: длинный пост — одно сообщение, текст целиком",
+  mediumPlan.mode === "preview" &&
+    mediumPlan.steps.length === 1 &&
+    mediumPlan.steps[0]?.kind === "text" &&
+    mediumText === mediumPost.text,
+  `${mediumPlan.mode}, ${mediumPlan.steps.length} шагов`,
 );
 
 check(
-  "Telegram: текст вторым сообщением — это ровно пост, целиком",
-  mediumText === mediumPost.text,
-  `${mediumText.length} против ${mediumPost.text.length}`,
+  "Telegram: у текстового шага с обложкой есть адрес для предпросмотра",
+  mediumPlan.steps[0]?.kind === "text" && mediumPlan.steps[0].previewUrl === `${SITE}/uploads/cover.jpg`,
+  mediumPlan.steps[0]?.kind === "text" ? (mediumPlan.steps[0].previewUrl ?? "нет") : "не текст",
+);
+
+/*
+  Без обложки текстовый шаг не должен тащить предпросмотр: иначе Telegram покажет карточку
+  кредитной ссылки в подвале поста.
+*/
+check(
+  "Telegram: без обложки у текстового шага нет предпросмотра",
+  (() => {
+    const plan = planTelegramPost(mediumPost, { hasCover: false });
+    const step = plan.steps[0];
+    return step?.kind === "text" && step.previewUrl === null;
+  })(),
+  "previewUrl = null",
 );
 
 check(
   "Telegram: короткий пост по-прежнему одной подписью к фото",
-  // The shape that is strictly better when it fits: one message, picture attached. The split
-  // above exists only because 1024 characters cannot hold an article.
   planTelegramPost(
     buildMessengerPost({ title: "Короткая", contentHtml: `<p>${paragraph(200)}</p>`, slug: "kor", siteUrl: SITE }),
-    { hasCover: true },
+    { hasCover: true, coverUrl: `${SITE}/uploads/k.jpg` },
   ).mode === "caption",
   "одно сообщение, пока влезает",
 );
 
-/*
-  The promise that matters more than the target: never past the ceiling.
-
-  Measured over the shapes that can push it there — a wall of text with no spaces, one
-  paragraph longer than any budget, a headline longer than the whole caption, and a body that
-  is nothing but a rubric tag's worth of lead.
-*/
-const captionCeilings = [
-  buildMessengerPost({
-    title: "Средняя новость",
-    contentHtml: `<p>${paragraph(2500)}</p>`,
-    slug: "srednyaya",
-    categoryName: "Общество",
-    siteUrl: SITE,
-  }),
-  buildMessengerPost({
-    title: "Проза",
-    contentHtml: Array.from({ length: 40 }, (_, i) => `<p>Предложение ${i + 1} дня.</p>`).join(""),
-    slug: "proza",
-    categoryName: "Происшествия",
-    siteUrl: SITE,
-  }),
-  buildMessengerPost({
-    title: "З".repeat(1200),
-    contentHtml: `<p>${paragraph(300)}</p>`,
-    slug: "dlинный",
-    categoryName: "Общество",
-    siteUrl: SITE,
-  }),
-  buildMessengerPost({
-    title: "Коротко",
-    contentHtml: "",
-    slug: "pustoy",
-    categoryName: null,
-    siteUrl: SITE,
-  }),
-  buildMessengerPost({
-    title: "Т",
-    contentHtml: `<p>${paragraph(50000)}</p>`,
-    slug: "gigant",
-    categoryName: "Общество",
-    siteUrl: SITE,
-  }),
-];
-
-check(
-  "Telegram: подпись НИКОГДА не превышает 1000 символов",
-  captionCeilings.every((post) => buildPhotoCaption(post).length <= TELEGRAM_CAPTION_SAFE_LIMIT) &&
-    captionCeilings.every((post) => buildPhotoCaption(post).length <= TELEGRAM_CAPTION_LIMIT),
-  captionCeilings
-    .map((post) => buildPhotoCaption(post).length)
-    .join(", ") + ` <= ${TELEGRAM_CAPTION_SAFE_LIMIT}`,
-);
-
-check(
-  "Telegram: подпись всегда несёт ссылку и рубрику, если они есть",
-  captionCeilings.slice(0, 3).every((post) => {
-    const caption = buildPhotoCaption(post);
-    return (
-      caption.includes(`${SITE}/news/${post.url.split("/").pop()}`) && caption.includes("#")
-    );
-  }) &&
-    // A post with no rubric has no tag to print, and must not grow a stray empty line for one.
-    !buildPhotoCaption(captionCeilings[3]!).includes("#") &&
-    !buildPhotoCaption(captionCeilings[3]!).endsWith("\n"),
-  buildPhotoCaption(captionCeilings[3]!).slice(-60),
-);
-
 check(
   "Telegram: длинный пост отдаётся целиком, а не обрезком",
-  // The whole point of the change: nothing is dropped, so the teaser path is not taken.
   !mediumPlan.truncated &&
-    mediumPlan.mode === "split" &&
     mediumPlan.length === mediumPost.text.length,
   `${mediumPlan.mode}, исходных ${mediumPlan.length}`,
 );
 
-check(
-  "Telegram: подпись к длинному посту короткая — заголовок и ссылка",
-  // Не обрез статьи: текст идёт отдельным сообщением, поэтому в подписи остаются только
-  // заголовок и ссылка, и она помещается в лимит с большим запасом.
-  mediumCaption.length < 400,
-  `${mediumCaption.length} символов подписи`,
-);
-
-/*
-  A cut in real prose lands on a full stop, not mid-word: a teaser that stops halfway through
-  a sentence reads as a broken page rather than as an editor's decision.
-*/
-const prosePost = buildMessengerPost({
-  title: "Проза",
-  contentHtml: Array.from(
-    { length: 20 },
-    (_, i) => `<p>Предложение номер ${i + 1} про событие дня. Ещё одно предложение следом.</p>`,
-  ).join(""),
-  slug: "proza",
-  siteUrl: SITE,
-});
-const prosePlan = planTelegramPost(prosePost, { hasCover: true });
-
-check(
-  "Telegram: проза уходит целиком, а не обрезком на полуслове",
-  prosePlan.mode === "split" &&
-    (prosePlan.steps[1]?.kind === "text" ? prosePlan.steps[1].text : "") === prosePost.text,
-  `${prosePlan.mode}, ${prosePlan.steps.length} шагов`,
-);
-
-check(
-  "Telegram: у подписи всегда есть ссылка на материал",
-  (() => {
-    const step = planTelegramPost(barePost(paragraph(3000), `${SITE}/news/s`), { hasCover: true })
-      .steps[0];
-    const caption = step?.kind === "photo" ? (step.caption ?? "") : "";
-    return caption.includes(`${SITE}/news/s`) && caption.length <= TELEGRAM_CAPTION_LIMIT;
-  })(),
-  "ссылка есть всегда, даже у поста, собранного вручную",
-);
-
-// --- photos are always captioned, never followed by a second message -----------
+// --- too long for one message: the teaser -------------------------------------
 
 const longText = buildMessengerPost({
   title: "Расследование",
@@ -754,13 +606,15 @@ const longText = buildMessengerPost({
   siteUrl: SITE,
 });
 
-const longPlan = planTelegramPost(longText, { hasCover: true });
+const longPlan = planTelegramPost(longText, { hasCover: true, coverUrl: `${SITE}/uploads/long.jpg` });
 
 check(
-  "Telegram: 9000 символов уходят несколькими сообщениями, но целиком",
-  longPlan.mode === "chunks" &&
-    !longPlan.truncated &&
-    longPlan.steps.filter((step) => step.kind === "text").length >= 2,
+  "Telegram: 9000 символов — один пост-обрез с предпросмотром, а не простыня",
+  longPlan.mode === "truncated" &&
+    longPlan.truncated &&
+    longPlan.steps.length === 1 &&
+    longPlan.steps[0]?.kind === "text" &&
+    longPlan.steps[0].previewUrl === `${SITE}/uploads/long.jpg`,
   `${longPlan.mode}, шагов ${longPlan.steps.length}, исходных ${longPlan.length}`,
 );
 
@@ -810,38 +664,26 @@ check(
   "нет шага с фото",
 );
 
-/*
-  No picture: the text alone, in the same chunks as the covered case.
-
-  There is no caption to hang the words on, so the messages carry them — which is what the
-  covered case does too once the post outgrows the caption ceiling. The difference between the
-  two is the picture, not the length of the article.
-*/
-const noCoverShort = planTelegramPost(barePost(paragraph(2500), "u"), { hasCover: false });
-const noCoverLong = planTelegramPost(barePost(paragraph(9000), `${SITE}/news/s`), { hasCover: false });
-
 check(
-  "Telegram: без обложки длинный текст уходит несколькими сообщениями целиком",
-  noCoverShort.steps.length === 1 &&
-    noCoverShort.mode === "text-only" &&
-    noCoverLong.steps.length > 1 &&
-    noCoverLong.mode === "chunks" &&
-    !noCoverLong.truncated &&
-    noCoverLong.steps.every((step) => step.kind === "text"),
-  `${noCoverShort.mode}/${noCoverShort.steps.length}, ${noCoverLong.mode}/${noCoverLong.steps.length}`,
+  "Telegram: без обложки текст до 4096 — одно сообщение целиком",
+  (() => {
+    const plan = planTelegramPost(barePost(paragraph(2500), "u"), { hasCover: false });
+    const step = plan.steps[0];
+    return plan.mode === "text-only" && plan.steps.length === 1 &&
+      step?.kind === "text" && step.text.length === plan.length;
+  })(),
+  "text-only, один шаг",
 );
 
 check(
-  "Telegram: каждое сообщение без обложки влезает в лимит",
-  // The ceiling that matters on this path: no caption is involved, so the message limit is the
-  // one being tested, and using the caption's 1024 here would cut Russian text four times too
-  // early.
-  noCoverLong.steps.every(
-    (step) => step.kind === "text" && step.text.length <= TELEGRAM_MESSAGE_LIMIT,
-  ),
-  noCoverLong.steps
-    .map((step) => (step.kind === "text" ? step.text.length : 0))
-    .join(", ") + ` <= ${TELEGRAM_MESSAGE_LIMIT}`,
+  "Telegram: без обложки текст свыше 4096 — один пост-обрез",
+  (() => {
+    const plan = planTelegramPost(barePost(paragraph(9000), `${SITE}/news/s`), { hasCover: false });
+    const step = plan.steps[0];
+    return plan.mode === "truncated" && plan.steps.length === 1 &&
+      step?.kind === "text" && step.text.length <= TELEGRAM_MESSAGE_LIMIT;
+  })(),
+  "truncated, один шаг в лимите",
 );
 
 // --- MAX ----------------------------------------------------------------------
@@ -1148,7 +990,7 @@ function expectedPost(article: {
 }
 
 try {
-  // 1. A short post: the caption must be on the photo. This is the reported bug. */
+  // 1. A short post: the whole post rides in the photo caption. */
   calls.length = 0;
   const shortArticle = {
     title: "Короткая новость",
@@ -1175,10 +1017,7 @@ try {
     `${calls[0]?.form?.get("parse_mode")} / ${calls[0]?.form?.get("chat_id")}`,
   );
 
-  // 2. A long post: one message, the picture carrying a cut caption with the link. This is
-  //    the shape an editor complained about — it used to go out as a picture and then the
-  //    whole text as a second message, which reads in the channel as a wall of text with no
-  //    cover on it.
+  // 2. A long post: ONE sendMessage with the cover as a link preview — no second message.
   calls.length = 0;
   const longArticle = {
     title: "Длинная новость",
@@ -1188,49 +1027,50 @@ try {
     coverImage: COVER_URL,
   };
   const longResult = await publishArticleToTelegram(longArticle);
-  const longCaption = String(calls[0]?.form?.get("caption") ?? "");
+  const longJson = calls[0]?.json ?? {};
 
   check(
-    "Мок: длинный пост — обложка и следом полный текст",
+    "Мок: длинный пост — одно сообщение, а не обложка + простыня",
     longResult.ok &&
-      calls.length === 2 &&
-      calls[0]?.method === "sendPhoto" &&
-      calls[1]?.method === "sendMessage" &&
-      String(calls[1]?.json?.text ?? "") === expectedPost(longArticle).text,
+      calls.length === 1 &&
+      calls[0]?.method === "sendMessage",
     `${calls.length} запрос(ов): ${calls.map((call) => call.method).join(", ")}`,
   );
 
   check(
-    "Мок: подпись к обложке короткая, в лимите и со ссылкой-словами",
-    longCaption.length > 0 &&
-      longCaption.length <= TELEGRAM_CAPTION_LIMIT &&
-      longCaption.includes(TELEGRAM_CAPTION_MORE) &&
-      // Адрес есть только внутри `href` — иначе он снова занимает три строки.
-      longCaption.includes(`<a href="${SITE}/news/dlinnaia">`) &&
-      !longCaption.replace(/<a href="[^"]*">/g, "").includes(SITE),
-    `${longCaption.length} символов, хвост: ${JSON.stringify(longCaption.slice(-70))}`,
+    "Мок: длинный пост несёт невидимую ссылку на обложку первой",
+    String(longJson.text ?? "").startsWith(`<a href="${COVER_URL}">&#8203;</a>`),
+    JSON.stringify(String(longJson.text ?? "").slice(0, 80)),
   );
 
   check(
-    "Мок: обе отправки Telegram несут parse_mode HTML",
-    // Разметка без parse_mode не работает: Telegram покажет `<a href="…">` как текст, а с
-    // `parse_mode` разберёт его в ссылку. Проверяются оба вызова — подпись и текст, — потому
-    // что формат задаётся в двух разных местах кода: multipart и JSON.
-    calls[0]?.method === "sendPhoto" &&
-      calls[0]?.form?.get("parse_mode") === "HTML" &&
-      calls[1]?.method === "sendMessage" &&
-      calls[1]?.json?.parse_mode === "HTML",
-    `sendPhoto=${calls[0]?.form?.get("parse_mode")}, sendMessage=${calls[1]?.json?.parse_mode}`,
+    "Мок: предпросмотр включён: крупное фото сверху над текстом",
+    (longJson.link_preview_options as Record<string, unknown> | undefined)?.is_disabled === false &&
+      (longJson.link_preview_options as Record<string, unknown> | undefined)?.prefer_large_media === true &&
+      (longJson.link_preview_options as Record<string, unknown> | undefined)?.show_above_text === true &&
+      longJson.disable_web_page_preview === undefined,
+    JSON.stringify(longJson.link_preview_options),
   );
 
   check(
-    "Мок: текстовое сообщение несёт ту же ссылку-словами",
-    String(calls[1]?.json?.text ?? "").includes(`<a href="${SITE}/news/dlinnaia">`),
-    JSON.stringify(String(calls[1]?.json?.text ?? "").slice(-70)),
+    "Мок: текст целиком идёт после невидимой ссылки",
+    String(longJson.text ?? "").endsWith(expectedPost(longArticle).text),
+    `${String(longJson.text ?? "").length} против ${expectedPost(longArticle).text.length}`,
   );
 
-  // 3. The escaping, end to end: this body is exactly what used to make Telegram refuse
-  //    the message, which left the picture without it.
+  check(
+    "Мок: текстовое сообщение несёт ссылку-словами",
+    String(longJson.text ?? "").includes(`<a href="${SITE}/news/dlinnaia">`),
+    JSON.stringify(String(longJson.text ?? "").slice(-70)),
+  );
+
+  check(
+    "Мок: сообщение идёт с parse_mode HTML",
+    longJson.parse_mode === "HTML",
+    String(longJson.parse_mode),
+  );
+
+  // 3. The escaping, end to end: no cover, one plain message.
   calls.length = 0;
   const trickyArticle = {
     title: "Сравнение",
@@ -1253,11 +1093,6 @@ try {
 
   check(
     "Мок: живые теги только те, что мы ставим сами: <b> и <a href>",
-    // Раньше проверка требовала, чтобы в тексте был ровно один тег — <b> заголовка. Теперь их
-    // два вида, и это проверка на то, что получатель не откажет текст целиком: Telegram
-    // разбирает только известное подмножество HTML и отвечает «can't parse entities» на всё,
-    // что в него не входит, а не на конкретный тег. Тег из статьи сюда попасть не может —
-    // тело экранировано, это проверяется отдельно.
     (() => {
       const tags = trickyText.match(/<[^>]*>/g) ?? [];
       const allowed = new Set(["<b>", "</b>", `<a href="${SITE}/news/sravnenie">`, "</a>"]);
@@ -1266,12 +1101,11 @@ try {
     JSON.stringify(trickyText.match(/<[^>]*>/g) ?? []),
   );
 
-  // 4. Telegram refuses the picture. The story must still reach the channel as text, and the
-  //    reason must reach the log in full — this is the degradation the VK path also makes,
-  //    and without it a rejected cover would cost the post.
+  // 4. Telegram refuses the picture on a short post. The whole text was in the caption, so the
+  //    story must still reach the channel as a plain message — the VK degradation.
   calls.length = 0;
-  const warnings: string[] = [];
   const realWarn = console.warn;
+  const warnings: string[] = [];
   console.warn = (...args: unknown[]) => {
     warnings.push(args.map((value) => String(value)).join(" "));
   };
@@ -1305,7 +1139,7 @@ try {
     });
   }) as typeof fetch;
 
-  const coverRejected = await publishArticleToTelegram(longArticle);
+  const coverRejected = await publishArticleToTelegram(shortArticle);
   console.warn = realWarn;
 
   check(
@@ -1362,84 +1196,11 @@ try {
   );
 
   /*
-    6. Обложка ушла, текст — нет. Это и есть дыра, ради которой добавлен повтор.
-
-    Раньше шаг с текстом был голым `await`: ошибка уходила в общий catch, публикация объявлялась
-    несостоявшейся, и редактор видел «не ушло» — а обложка уже стояла в канале. Здесь проверяется
-    обе половины починки: результат несёт id того, что уже опубликовано (иначе повторная
-    публикация продублирует картинку), и причина названа.
-  */
-  calls.length = 0;
-  const partialWarnings: string[] = [];
-  console.warn = (...args: unknown[]) => {
-    partialWarnings.push(args.map((value) => String(value)).join(" "));
-  };
-
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url === COVER_URL) {
-      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
-        status: 200,
-        headers: { "content-type": "image/jpeg" },
-      });
-    }
-    if (/\/sendPhoto$/.test(url)) {
-      calls.push({ method: "sendPhoto", form: init?.body as FormData, json: null });
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 707 } }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
-    // Текст отклоняется безвозвратно: 400 повтором не лечится.
-    calls.push({
-      method: "sendMessage",
-      form: null,
-      json: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
-    });
-    return new Response(
-      JSON.stringify({
-        ok: false,
-        error_code: 400,
-        description: "Bad Request: message is too long",
-      }),
-      { status: 400, headers: { "content-type": "application/json" } },
-    );
-  }) as typeof fetch;
-
-  const partial = await publishArticleToTelegram(longArticle);
-  console.warn = realWarn;
-
-  check(
-    "Мок: обложка ушла, текст упал — результат несёт id опубликованного",
-    partial.ok === false && partial.messageId === "707",
-    `ok=${partial.ok}, messageId=${partial.messageId ?? "нет"}`,
-  );
-
-  check(
-    "Мок: частичный отказ объясняет, что уже в канале",
-    (partial.error ?? "").includes("не принял текст") &&
-      (partial.warning ?? "").includes("707"),
-    partial.error ?? "нет ошибки",
-  );
-
-  /*
-    Шаг текста не повторяется на 400 — и это проверка экономии, а не формальности: повторять
-    неверный запрос значит заставлять редактора ждать публикацию, которая уже не состоится.
-  */
-  check(
-    "Мок: отказ текста с кодом 400 не повторяется",
-    calls.filter((call) => call.method === "sendMessage").length === 1,
-    `sendMessage вызван ${calls.filter((call) => call.method === "sendMessage").length} раз`,
-  );
-
-  /*
-    7. Лимит площадки (429) на тексте — лечится повтором. Это то, ради чего пауза вообще нужна:
-    Telegram просит подождать, и через секунду текст проходит.
+    6. Лимит площадки (429) на сообщении — лечится повтором. Пауза подменяется, чтобы проверка
+    не спала полсекунды на ровном месте.
   */
   calls.length = 0;
   let textAttempts = 0;
-
-  // Пауза подменяется: проверка не должна спать полсекунды на ровном месте. Ставится здесь, а
-  // не в начале блока, чтобы проверки выше шли без подмены — они повторов не вызывают.
   setSyndicationSleep(async () => {});
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1448,12 +1209,6 @@ try {
       return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
         status: 200,
         headers: { "content-type": "image/jpeg" },
-      });
-    }
-    if (/\/sendPhoto$/.test(url)) {
-      calls.push({ method: "sendPhoto", form: init?.body as FormData, json: null });
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 708 } }), {
-        headers: { "content-type": "application/json" },
       });
     }
     textAttempts += 1;
@@ -1480,15 +1235,11 @@ try {
   const rateLimited = await publishArticleToTelegram(longArticle);
 
   check(
-    "Мок: 429 на тексте лечится повтором, публикация доходит",
+    "Мок: 429 на сообщении лечится повтором, публикация доходит",
     rateLimited.ok === true && textAttempts === 2,
     `ok=${rateLimited.ok}, попыток текста: ${textAttempts}`,
   );
 
-  /*
-    Пауза между попытками не должна превращаться в реальное ожидание: здесь она подменяется,
-    как и в наборе проверок самого повтора, — иначе этот блок спал бы полсекунды на ровном месте.
-  */
   resetSyndicationSleep();
 } finally {
   globalThis.fetch = realFetch;

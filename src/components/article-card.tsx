@@ -203,7 +203,7 @@ export function ArticleCard({
           the box keep the height its ratio implies.
         */}
         <div className={cn("relative shrink-0 self-start overflow-hidden bg-paper-dim paper-skeleton", thumb.box)}>
-          <Cover article={article} sizes={thumb.sizes} className="transition-transform duration-300 group-hover:scale-105" />
+          <Cover article={article} sizes={thumb.sizes} className="object-top transition-transform duration-300 group-hover:scale-105" />
         </div>
         <div className="min-w-0">
           <div className="mb-1 flex flex-wrap items-center gap-1.5">
@@ -255,7 +255,7 @@ export function ArticleCard({
           !article.coverImage && "hidden",
         )}
       >
-        <Cover article={article} sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 300px" preload={preload} className="transition-transform duration-300 group-hover:scale-105" />
+        <Cover article={article} sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 300px" preload={preload} className="object-top transition-transform duration-300 group-hover:scale-105" />
       </div>
 
       <div className={cn("flex flex-1 flex-col", article.coverImage ? "mt-2.5" : "mt-0")}>

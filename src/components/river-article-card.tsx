@@ -148,7 +148,7 @@ export function RiverArticleCard({
               src={article.coverImage as string}
               alt=""
               sizes="(max-width: 768px) 100vw, (max-width: 1280px) 60vw, 460px"
-              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.02]"
+              className="h-full w-full object-cover object-top transition-transform duration-500 group-hover:scale-[1.02]"
             />
           </Link>
 

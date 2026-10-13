@@ -409,26 +409,6 @@ body {
   text-transform: uppercase;
 }
 
-/* Ticker strip in the header. */
-@keyframes ticker-scroll {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-50%);
-  }
-}
-
-.ticker-track {
-  animation: ticker-scroll 45s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ticker-track {
-    animation: none;
-  }
-}
-
 /* Clamp helpers keep card grids from stretching on very long headlines. */
 .clamp-2 {
   display: -webkit-box;

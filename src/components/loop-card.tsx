@@ -90,7 +90,7 @@ export function LoopCard({ story }: { story: LoopCardStory }) {
           src={story.coverImage}
           alt=""
           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-          className="object-cover transition-transform group-hover:scale-[1.02]"
+          className="object-cover object-top transition-transform group-hover:scale-[1.02]"
         />
       </Link>
 

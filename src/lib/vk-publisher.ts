@@ -471,13 +471,60 @@ async function communityGroupIdForPhotos(): Promise<string> {
 }
 
 /**
+ * A cover that is too tall is padded onto a landscape canvas with a blurred copy of itself as
+ * the background — the "blur letterbox".
+ *
+ * A "kilometer vertical" (a phone screenshot, a portrait three times taller than it is wide)
+ * reads on a wall as a thin sliver that pushes everything else down. Padded it becomes a clean
+ * 4:3 tile with the whole photograph still visible — nothing is cropped away, which is the
+ * "safe" half of "safe crop/pad": a naive centre-crop would cut the head off a portrait.
+ *
+ * Returns the original untouched when the image is landscape or mildly portrait, when sharp
+ * cannot read the dimensions, or when the pad itself fails — a nicer tile is never worth a lost
+ * post.
+ */
+export async function padVerticalCover(
+  bytes: ArrayBuffer,
+  contentType: string,
+): Promise<{ bytes: ArrayBuffer; contentType: string }> {
+  try {
+    const { default: sharp } = await import("sharp");
+    const meta = await sharp(Buffer.from(bytes)).metadata();
+    const width = meta.width ?? 0;
+    const height = meta.height ?? 0;
+    if (width === 0 || height === 0) return { bytes, contentType };
+    // Taller than 3:2 is where a portrait starts to read as a sliver on a wall.
+    if (height / width <= 1.5) return { bytes, contentType };
+
+    const canvas = { width: 1280, height: 960 }; // 4:3, the aspect VK's wall feed is happiest with.
+    const background = await sharp(Buffer.from(bytes))
+      .resize(canvas.width, canvas.height, { fit: "cover" })
+      .blur(40)
+      .modulate({ brightness: 0.65 })
+      .toBuffer();
+    const foreground = await sharp(Buffer.from(bytes))
+      .resize({ height: canvas.height, withoutEnlargement: true })
+      .toBuffer();
+    const padded = await sharp(background)
+      .composite([{ input: foreground, gravity: "centre" }])
+      .jpeg({ quality: 86 })
+      .toBuffer();
+
+    return { bytes: Uint8Array.from(padded).buffer, contentType: "image/jpeg" };
+  } catch {
+    return { bytes, contentType };
+  }
+}
+
+/**
  * Uploads the cover to VK and returns the saved wall photo attachment id.
  *
  * Exported for the cover backfill, which needs the same photo without a wall.post around it.
  */
 export async function uploadCoverAttachment(imageUrl: string): Promise<string> {
   const groupId = await communityGroupIdForPhotos();
-  const { bytes, contentType } = await readCoverImage(imageUrl);
+  const raw = await readCoverImage(imageUrl);
+  const { bytes, contentType } = await padVerticalCover(raw.bytes, raw.contentType);
   const extension = extensionFor(contentType) ?? ".jpg";
   log(`обложка прочитана: ${bytes.byteLength} байт, ${contentType}, group_id=${groupId}`);
 

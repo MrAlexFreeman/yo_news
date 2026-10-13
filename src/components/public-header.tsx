@@ -76,18 +76,24 @@ export function PublicHeader({
             <>
               <span aria-hidden className="hidden h-3 w-px bg-rule sm:block" />
 
+              {/*
+                Курс и погода — три коротких значения, они влезают в строку и не нуждаются в
+                бегущей строке. Раньше список дублировался (`[...items, ...items]`), чтобы
+                анимация `translateX(-50%)` прокручивалась без шва, и читатель видел «USD … EUR …
+                Екатеринбург … USD … EUR …» — тот же набор дважды подряд, как будто строка
+                зациклилась на середине. Теперь это статичный ряд, каждый элемент один раз.
+              */}
               <div
-                className="relative hidden min-w-0 flex-1 overflow-hidden sm:block"
+                className="hidden min-w-0 flex-1 truncate sm:block"
                 aria-label="Курсы и погода"
               >
-                {/* The track holds the list twice so the loop has no visible seam. */}
-                <div className="ticker-track flex w-max gap-8 whitespace-nowrap">
-                  {[...tickerItems, ...tickerItems].map((item, index) => (
-                    <span key={`${item}-${index}`} className="text-ink-soft">
+                <span className="flex items-center gap-6 whitespace-nowrap">
+                  {tickerItems.map((item) => (
+                    <span key={item} className="text-ink-soft">
                       • {item}
                     </span>
                   ))}
-                </div>
+                </span>
               </div>
             </>
           ) : null}

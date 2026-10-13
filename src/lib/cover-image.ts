@@ -107,6 +107,21 @@ export async function readCoverImage(
   return { bytes: await response.arrayBuffer(), contentType };
 }
 
+/**
+ * The absolute URL of a cover, for a third party that must fetch it itself.
+ *
+ * `readCoverImage` resolves the three shapes a stored cover can take, but it returns bytes —
+ * a link-preview needs the address, not the file. This is the same resolution as that function's
+ * third case: an `http(s)` address passes through, anything else is resolved against the site
+ * URL. The `/uploads/…` relative path becomes `https://eartnews.ru/uploads/…`, which is the
+ * address Telegram's crawler fetches to build the preview.
+ */
+export function coverImageUrl(coverImage: string): string {
+  const trimmed = coverImage.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `${siteUrl()}${trimmed.startsWith("/") ? trimmed : `/${trimmed}`}`;
+}
+
 /** The extension that goes with a content type, for a multipart filename. */
 export function extensionFor(contentType: string): string | null {
   switch (contentType.split(";")[0]?.trim().toLowerCase()) {
