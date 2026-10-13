@@ -9,7 +9,8 @@ import { ArticleVideo } from "@/components/article-video";
 import { CoverImage } from "@/components/cover-image";
 import { PhotoCredit } from "@/components/photo-credit";
 import { ArticleBodyWithCards } from "@/components/entity-card";
-import { ReadingProgress } from "@/components/reading-progress";
+import { ReadingRibbon } from "@/components/reading-ribbon";
+import { WitnessBox } from "@/components/witness-box";
 import { PersonalizedContinueReading } from "@/components/personalized-continue-reading";
 import { ReadAlsoBlock } from "@/components/read-also-block";
 import { ReaderStoryForm } from "@/components/reader-story-form";
@@ -369,7 +370,12 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         Sidebar last in the DOM, so on a phone it lands strictly under the story with no
         ordering rule needed to achieve it.
       */}
-      <ReadingProgress targetId="article" />
+      <ReadingRibbon
+        title={article.title}
+        minutes={readingMinutes(article.contentHtml)}
+        articleUrl={absoluteUrl(`/news/${article.slug}`)}
+        targetId="article"
+      />
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
       <article id="article" className="min-w-0 lg:col-span-8">
@@ -432,18 +438,6 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         {article.subtitle ? (
           <p className="mt-4 font-[family-name:var(--font-lora)] text-xl leading-snug text-ink-soft sm:text-2xl">
             {article.subtitle}
-          </p>
-        ) : null}
-
-        {article.lead ? (
-          /*
-            The standfirst. Set apart from the body by size, weight and a rule below,
-            because it is the one sentence written to be read twice — once in the feed
-            and once here. `border-rule` and `text-ink` are the theme's own tokens
-            rather than a slate palette, so the lead follows a brand change.
-          */
-          <p className="mt-4 mb-6 border-b border-rule pb-4 text-lg leading-relaxed font-medium text-ink sm:text-xl">
-            {article.lead}
           </p>
         ) : null}
 
@@ -523,6 +517,23 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
       ) : null}
 
       {/*
+        «Коротко о главном» — то, что раньше было стандефирстом под заголовком, но в форме,
+        которую видно и при беглом пролистывании. Axios и NYT ставят такой блок перед телом:
+        читатель, который не будет читать весь лонгрид, забирает суть отсюда. Лид теперь живёт
+        здесь, а не в шапке, чтобы не повторяться на одном экране.
+      */}
+      {article.lead ? (
+        <aside className="bg-paper-dim/60 border-l-4 border-yo rounded-r-lg p-4 sm:p-5 my-6">
+          <div className="text-xs font-bold uppercase tracking-wider text-ink-soft mb-2 flex items-center gap-1.5">
+            <span aria-hidden>⚡</span> Главное за 30 секунд
+          </div>
+          <p className="text-base sm:text-lg text-ink font-medium leading-relaxed">
+            {article.lead}
+          </p>
+        </aside>
+      ) : null}
+
+      {/*
         The body. Authored in the editorial CMS, so it is sanitised before rendering:
         <script>, inline on* handlers and javascript: URLs are removed.
 
@@ -567,6 +578,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           files a reader's story into «Новости и события». See `ReaderStoryForm`.
         */}
         {articlePoll ? <ArticlePoll poll={articlePoll} /> : null}
+        <WitnessBox />
         <ReaderStoryForm />
 
         {/*

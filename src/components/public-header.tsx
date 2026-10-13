@@ -52,9 +52,14 @@ export function PublicHeader({
     сайта ЦБ, погода — с open-meteo; что не удалось прочитать, то просто отсутствует. Зашитый
     «USD/RUB 92,40» выглядел как биржа, но биржей не был — полуправда в мачте хуже пустой строки.
   */
+  /*
+    Единый формат, без дублей и без пустых огрызков. Погода приходит только когда есть числовая
+    температура (иначе `getYekaterinburgWeather` вернул бы null), поэтому «°С, пасмурно» без
+    числа появиться не может. «Екатеринбург:» с двоеточием — заголовок значения, а не его часть.
+  */
   const tickerItems = [
     weather
-      ? `Екатеринбург ${weather.temp > 0 ? "+" : ""}${weather.temp}°C, ${weather.condition}`
+      ? `Екатеринбург: ${weather.temp > 0 ? "+" : ""}${weather.temp}°C, ${weather.condition}`
       : null,
     rates ? `USD ${rates.usd.toFixed(2)} ₽` : null,
     rates ? `EUR ${rates.eur.toFixed(2)} ₽` : null,
@@ -87,10 +92,15 @@ export function PublicHeader({
                 className="hidden min-w-0 flex-1 truncate sm:block"
                 aria-label="Курсы и погода"
               >
-                <span className="flex items-center gap-6 whitespace-nowrap">
-                  {tickerItems.map((item) => (
+                <span className="flex items-center whitespace-nowrap">
+                  {tickerItems.map((item, index) => (
                     <span key={item} className="text-ink-soft">
-                      • {item}
+                      {index > 0 ? (
+                        <span aria-hidden className="mx-3 text-ink-soft/40">
+                          ·
+                        </span>
+                      ) : null}
+                      {item}
                     </span>
                   ))}
                 </span>

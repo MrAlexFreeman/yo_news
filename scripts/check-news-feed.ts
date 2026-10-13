@@ -691,10 +691,25 @@ function checkArticlePageChrome() {
   );
 
   check(
-    "Статья: прогресс чтения привязан к статье, а не ко всей странице",
-    /ReadingProgress\s+targetId="article"/.test(source) &&
+    "Статья: полоса чтения привязана к статье, а не ко всей странице",
+    /ReadingRibbon/.test(source) &&
+      /targetId="article"/.test(source) &&
       /<article\s+id="article"/.test(source),
-    "ReadingProgress + id=article",
+    "ReadingRibbon + id=article",
+  );
+
+  check(
+    "Статья: блок «Коротко о главном» стоит перед телом и показывает лид",
+    /Главное за 30 секунд/.test(source) &&
+      source.indexOf("Главное за 30 секунд") < source.indexOf("{bodySplitNode}"),
+    "⚡ Главное за 30 секунд",
+  );
+
+  check(
+    "Статья: блок очевидца в подвале с кнопками Telegram и формы",
+    /<WitnessBox \/>/.test(source) &&
+      source.indexOf("<WitnessBox />") < source.indexOf("<ReaderStoryForm />"),
+    "WitnessBox перед ReaderStoryForm",
   );
 }
 
@@ -871,6 +886,16 @@ function checkNewShelves() {
       /weather\??:\s*Weather/.test(headerSource) &&
       headerSource.includes("tickerItems"),
     "пропы rates + weather",
+  );
+  check(
+    "Мачта: погода печатается «Екатеринбург: +12°C», а не без заголовка значения",
+    headerSource.includes("Екатеринбург: $"),
+    "двоеточие после «Екатеринбург»",
+  );
+  check(
+    "Мачта: значения тикера разделены средней точкой, а не слиты",
+    headerSource.includes("mx-3 text-ink-soft/40") && headerSource.includes("·"),
+    "разделитель ·",
   );
 }
 
