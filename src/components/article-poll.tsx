@@ -134,12 +134,14 @@ export function ArticlePoll({ poll }: { poll: PollView }) {
                   pending && "opacity-70",
                 )}
               >
-                {/* Полоса результата: видна только после голосования. */}
+                {/* Полоса результата: видна только после голосования.
+                    Лежит под текстом за счёт порядка в DOM: она стоит раньше, а текст — это
+                    `relative`, поэтому рисуется поверх. Отдельный z-index не нужен. */}
                 {showResults ? (
                   <span
                     aria-hidden
                     className={cn(
-                      "absolute inset-y-0 left-0 -z-0",
+                      "absolute inset-y-0 left-0",
                       chosen ? "bg-accent/20" : "bg-ink/10",
                     )}
                     style={{ width: `${percent}%` }}
@@ -151,8 +153,12 @@ export function ArticlePoll({ poll }: { poll: PollView }) {
                     {option.text}
                   </span>
                   {showResults ? (
-                    <span className="shrink-0 text-xs tabular-nums text-ink-soft">
-                      {percent}%
+                    <span className="shrink-0 text-right tabular-nums">
+                      {/* Процент и число голосов: «64% · 14». Процент — итог, число — масштаб:
+                          «64%» из трёх голосов значит меньше, чем из трёхсот, и цифра рядом
+                          говорит это без слов. */}
+                      <span className="text-xs font-semibold text-ink">{percent}%</span>
+                      <span className="ml-1.5 text-xs text-ink-soft/70">{option.votes}</span>
                     </span>
                   ) : null}
                 </span>

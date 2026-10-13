@@ -403,6 +403,14 @@ check(
 check("Подписка: Дзен", subscribeHtml.includes("Наш канал в Дзене"), "кнопка есть");
 check("Подписка: ВКонтакте", subscribeHtml.includes("Мы во ВКонтакте"), "кнопка есть");
 check(
+  "Подписка: у ВК своя иконка, а не бумажный самолётик Telegram",
+  // AtSign — «социальная ручка», Send — логотип Telegram. Раньше ВК и Telegram несли один Send,
+  // и два соседних пункта выглядели одинаково. В тесте TG_URL пуст, поэтому самолётика не должно
+  // быть нигде, а у ВК — AtSign.
+  subscribeHtml.includes("lucide-at-sign") && !subscribeHtml.includes("lucide-send"),
+  subscribeHtml.includes("lucide-at-sign") ? "AtSign у ВК" : "иконка ВК не AtSign",
+);
+check(
   "Подписка: Telegram скрыт при пустом NEXT_PUBLIC_TG_URL",
   !subscribeHtml.includes("Telegram-канал"),
   "кнопки нет",

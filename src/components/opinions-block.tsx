@@ -1,6 +1,5 @@
 import Link from "next/link";
 
-import { RubricLabel } from "@/components/article-card";
 import { formatRelative } from "@/lib/date";
 import type { ArticleListItem } from "@/lib/public-queries";
 import { SITE_NAME } from "@/lib/site";
@@ -91,15 +90,6 @@ export function OpinionsBlock({
                       {formatRelative(timestamp, now)}
                     </time>
                   </span>
-
-                  {article.category ? (
-                    <span className="mt-1 block">
-                      <RubricLabel
-                        name={article.category.name}
-                        slug={article.category.slug}
-                      />
-                    </span>
-                  ) : null}
 
                   <span className="clamp-3 mt-1 block font-[family-name:var(--font-lora)] text-sm leading-snug font-bold tracking-tight text-ink transition-colors group-hover:text-accent group-hover:underline decoration-1 underline-offset-4">
                     {article.title}

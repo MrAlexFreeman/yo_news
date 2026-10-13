@@ -40,9 +40,19 @@ export function TrendingBar({ tags, heading = "В центре внимания"
           one-line strip reads as a page that has more content than it has room for, which
           is exactly the impression this row is trying not to make.
         */}
-        <ul className="flex min-w-0 flex-1 items-center gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {tags.map((tag) => (
-            <li key={tag.slug} className="shrink-0">
+        <ul className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {tags.map((tag, index) => (
+            <li key={tag.slug} className="flex shrink-0 items-center">
+              {/*
+                Разделитель между темами. Без него пять слов подряд читаются как одна фраза:
+                «бензин антициклон беспилотники» — список без пауз. Серая точка тоньше, чем
+                отступ, и не спорит с самими ссылками.
+              */}
+              {index > 0 ? (
+                <span aria-hidden className="mx-4 text-ink-soft/40">
+                  ·
+                </span>
+              ) : null}
               <Link
                 href={`/tags/${tag.slug}`}
                 className="text-xs text-ink-soft transition-colors hover:text-accent hover:underline decoration-1 underline-offset-4"

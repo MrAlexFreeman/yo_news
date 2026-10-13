@@ -1,4 +1,4 @@
-import { Rss, Send, type LucideIcon } from "lucide-react";
+import { AtSign, Rss, Send, type LucideIcon } from "lucide-react";
 import { useId } from "react";
 
 import { DZEN_URL, TG_URL, VK_COMMUNITY_URL } from "@/lib/site";
@@ -12,9 +12,14 @@ type Channel = {
   hint?: string;
 };
 
+/*
+  Иконки подобраны по смыслу, а не наугад. `Send` — это бумажный самолётик, то есть сам логотип
+  Telegram; раньше он стоял и у ВК, отчего два соседних пункта выглядели одинаково и ни один не
+  говорил, куда ведёт. `AtSign` у ВК — социальная ручка сообщества, `Rss` у Дзена — лента.
+*/
 const CHANNELS: Channel[] = [
   { href: DZEN_URL, label: "Наш канал в Дзене", icon: Rss },
-  { href: VK_COMMUNITY_URL, label: "Мы во ВКонтакте", icon: Send },
+  { href: VK_COMMUNITY_URL, label: "Мы во ВКонтакте", icon: AtSign },
   // No fallback on purpose: without a configured channel there is nothing to
   // point at, so the button is left out rather than rendered dead.
   ...(TG_URL ? [{ href: TG_URL, label: "Telegram-канал", icon: Send }] : []),
