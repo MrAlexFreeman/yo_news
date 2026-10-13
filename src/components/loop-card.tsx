@@ -84,7 +84,7 @@ export function LoopCard({ story }: { story: LoopCardStory }) {
         href={`/news/${story.slug}`}
         tabIndex={-1}
         aria-hidden
-        className="relative block aspect-video w-full overflow-hidden rounded-sm bg-paper-dim"
+        className="relative block aspect-video w-full overflow-hidden rounded-sm bg-paper-dim paper-skeleton"
       >
         <CoverImage
           src={story.coverImage}

@@ -670,6 +670,34 @@ function checkArchive() {
   );
 }
 
+/**
+ * Хром страницы материала: мера текста и прогресс чтения.
+
+ * Оба — серверный рендер, поэтому проверяются по исходнику страницы, а не через рендер
+ * компонента: страница статьи тянет статью целиком со связями, и собирать её ради одной строки
+ * `max-w-[44rem]` — это строить макет ради мебели. Селектор точный, и это то, что реально уходит
+ * в HTML.
+ */
+function checkArticlePageChrome() {
+  const source = readFileSync(
+    new URL("../src/app/(public)/news/[slug]/page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  check(
+    "Статья: текст ограничен мерой 44rem (704px), а не разлит на всю колонку",
+    /max-w-\[44rem\]/.test(source),
+    "max-w-[44rem]",
+  );
+
+  check(
+    "Статья: прогресс чтения привязан к статье, а не ко всей странице",
+    /ReadingProgress\s+targetId="article"/.test(source) &&
+      /<article\s+id="article"/.test(source),
+    "ReadingProgress + id=article",
+  );
+}
+
 /** The two new shelves: the topic strip under the navigation, and the opinion column. */
 function checkNewShelves() {
   const tags = [
@@ -1468,6 +1496,7 @@ checkTypography();
 checkFonts();
 checkForumBlock();
 checkArchive();
+checkArticlePageChrome();
 
 console.log("Главная: лента новостей, карточки, форум, архив\n");
 for (const { name, ok, detail } of checks) {

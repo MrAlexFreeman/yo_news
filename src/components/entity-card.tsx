@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight, Loader2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { ENTITY_SLUG_ATTRIBUTE, entityHref, slugFromEntityHref, type EntityCardView } from "@/lib/entity-card";
@@ -112,6 +112,40 @@ export function EntityOutboundLink({ card }: { card: EntityCardView }) {
 }
 
 /**
+ * The card's content, shared by the popover and the mobile sheet.
+ *
+ * One component, two frames: the reference desk's note reads the same whether it floats by a
+ * link or rises from the bottom of a phone. Splitting the markup would let one of them drift —
+ * a fact or the outbound link present in one and not the other — and the reader would meet a
+ * different card depending on where they tapped.
+ */
+function EntityCardContent({ card }: { card: EntityCardView }) {
+  return (
+    <>
+      {card.category ? (
+        <span className="mb-1.5 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+          {card.category}
+        </span>
+      ) : null}
+
+      <h3 className="text-sm font-semibold leading-snug text-ink">{card.title}</h3>
+
+      {card.images.length > 0 ? (
+        <div className="mt-2">
+          <EntityGallery images={card.images} alt={card.title} />
+        </div>
+      ) : null}
+
+      <EntityFacts card={card} />
+
+      <p className="mt-2 text-xs leading-relaxed text-neutral-700">{card.summary}</p>
+
+      <EntityOutboundLink card={card} />
+    </>
+  );
+}
+
+/**
  * Cards this session has already fetched.
  *
  * Keyed by slug and shared by every popover on the page, so opening a card twice — the
@@ -195,13 +229,17 @@ export function popoverPosition(
 /**
  * How long a card stays on screen after the pointer leaves the link.
  *
- * 300 ms, and the number is the whole difference between a card that is reachable and one
- * that is not. The card sits 8 px below the link and is a separate element, so the pointer
- * has to cross a strip that belongs to neither of them; at 180 the crossing was inside the
- * window on a fast mouse and outside it on a slow one, which is the kind of bug that
- * reproduces for the person who reported it and nobody else.
+ * The card sits 8 px below the link and is a separate element, so the pointer has to cross a
+ * strip that belongs to neither of them — the "safe hover bridge". Two things together make
+ * that crossing non-fatal: this grace period, and an invisible 8 px extension on the popover's
+ * top edge (`.entity-popover::before`) that widens its hit area up to the link. The pointer can
+ * travel the gap on the bridge, and if it briefly leaves both, the timer holds the card open.
+ *
+ * 250 ms, tuned with the bridge rather than instead of it. At 180 the crossing was inside the
+ * window on a fast mouse and outside it on a slow one; 250 clears the slow mouse without the
+ * card lingering after the reader has clearly moved on.
  */
-const CLOSE_DELAY_MS = 300;
+const CLOSE_DELAY_MS = 250;
 
 /**
  * The popover itself: positioned near the link that opened it.
@@ -274,7 +312,7 @@ function EntityPopover({
       aria-label={card.title}
       style={position ? { top: position.top, left: position.left } : undefined}
       className={cn(
-        "fixed z-50 w-[320px] rounded-lg border border-rule bg-white p-3 shadow-xl",
+        "entity-popover fixed z-50 w-[320px] rounded-lg border border-rule bg-white p-3 shadow-xl",
         position ? "visible" : "invisible",
       )}
       /*
@@ -293,25 +331,51 @@ function EntityPopover({
       onMouseEnter={onKeepOpen}
       onMouseLeave={onClose}
     >
-      {card.category ? (
-        <span className="mb-1.5 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-          {card.category}
-        </span>
-      ) : null}
+      <EntityCardContent card={card} />
+    </div>
+  );
+}
 
-      <h3 className="text-sm font-semibold leading-snug text-ink">{card.title}</h3>
+/**
+ * The mobile frame: a bottom sheet under a dimmed backdrop.
+ *
+ * A hover popover has no place on a touch screen — there is no hover, and a 320px box anchored
+ * to a tapped word in a sentence is easy to open and hard to reach. The tap opens this instead:
+ * the same card, the same link out, but in a sheet that rises from the bottom where the thumb
+ * already is, with a backdrop that closes it on a tap and a handle that signals it is dismissable.
+ */
+function EntitySheet({
+  card,
+  onClose,
+}: {
+  card: EntityCardView;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={card.title}>
+      {/* Backdrop: tap anywhere outside the sheet dismisses it. */}
+      <div
+        className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]"
+        onClick={onClose}
+        aria-hidden
+      />
 
-      {card.images.length > 0 ? (
-        <div className="mt-2">
-          <EntityGallery images={card.images} alt={card.title} />
+      <div className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto rounded-t-xl bg-white p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
+        {/* The drag handle: a short bar that reads as "swipe or tap to close". */}
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-rule" aria-hidden />
+
+        <div className="flex items-start justify-between gap-3">
+          <EntityCardContent card={card} />
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Закрыть карточку"
+            className="-mr-1 -mt-1 shrink-0 rounded-full p-1.5 text-ink-soft transition-colors hover:bg-paper-dim hover:text-ink"
+          >
+            <X className="size-4" aria-hidden />
+          </button>
         </div>
-      ) : null}
-
-      <EntityFacts card={card} />
-
-      <p className="mt-2 text-xs leading-relaxed text-neutral-700">{card.summary}</p>
-
-      <EntityOutboundLink card={card} />
+      </div>
     </div>
   );
 }
@@ -385,7 +449,12 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
   const container = useRef<HTMLDivElement>(null);
   const cache = useRef<Cache>(new Map());
 
-  const [active, setActive] = useState<{ slug: string; anchor: HTMLElement } | null>(null);
+  const [active, setActive] = useState<{
+    slug: string;
+    anchor: HTMLElement;
+    /** `popover` floats by the link, `sheet` rises from the bottom on a touch device. */
+    mode: "popover" | "sheet";
+  } | null>(null);
   const [card, setCard] = useState<EntityCardView | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -397,9 +466,9 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
 
-  const show = useCallback((slug: string, anchor: HTMLElement) => {
+  const show = useCallback((slug: string, anchor: HTMLElement, mode: "popover" | "sheet") => {
     cancelTimers();
-    setActive({ slug, anchor });
+    setActive({ slug, anchor, mode });
 
     const cached = cache.current.get(slug);
     if (cached !== undefined) {
@@ -445,14 +514,19 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
       // A touch device has no hover. This is the tap path, and it opens immediately: the
       // 150 ms dwell that makes a desktop popover feel deliberate would make a tap feel
       // broken. It is also the only path a reader without a pointer can reach.
+      //
+      // A coarse pointer gets the bottom sheet rather than the floating popover: a box anchored
+      // to a tapped word is hard to reach with a thumb, and the sheet puts the same card where
+      // the thumb already is. A fine pointer — a mouse click instead of a hover — keeps the
+      // popover, because that is the shape the reader is already in.
       if (event.type === "click") {
         event.preventDefault();
-        show(slug, target);
+        show(slug, target, isCoarsePointer() ? "sheet" : "popover");
         return;
       }
 
       openTimer.current = setTimeout(() => {
-        show(slug, target);
+        show(slug, target, "popover");
       }, OPEN_DELAY_MS);
     };
 
@@ -515,7 +589,13 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
       <div ref={container} className={className} dangerouslySetInnerHTML={{ __html: html }} />
 
       {active && slug ? (
-        card ? (
+        active.mode === "sheet" ? (
+          card ? (
+            <EntitySheet card={card} onClose={hide} />
+          ) : nothingToShow ? (
+            <EntitySheetLoading />
+          ) : null
+        ) : card ? (
           <EntityPopover
             card={card}
             anchor={active.anchor}
@@ -527,5 +607,35 @@ export function ArticleBodyWithCards({ html, className }: { html: string; classN
         ) : null
       ) : null}
     </>
+  );
+}
+
+/** Заглушка шторки на время загрузки карточки. */
+function EntitySheetLoading() {
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-label="Карточка">
+      <div className="absolute inset-0 bg-ink/50" aria-hidden />
+      <div className="absolute inset-x-0 bottom-0 rounded-t-xl bg-white p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-rule" aria-hidden />
+        <div className="flex items-center gap-2 text-sm text-neutral-500">
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          Открываем карточку…
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Whether the primary pointer is coarse — a finger, not a mouse.
+ *
+ * Checked at interaction time, not at mount, so the decision follows the device that tapped
+ * rather than the one the page happened to render on. `window.matchMedia` is absent only in a
+ * server render, and there the function is never called.
+ */
+function isCoarsePointer(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(pointer: coarse)").matches === true
   );
 }

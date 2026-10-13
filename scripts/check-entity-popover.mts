@@ -153,8 +153,54 @@ check(
   "Прямоугольник ссылки читается заново, а не хранится",
   /anchor\.getBoundingClientRect\(\)/.test(popoverSource) &&
     !/anchor: DOMRect/.test(popoverSource) &&
-    /show\(slug, target\)/.test(popoverSource),
+    /show\(slug, target,/.test(popoverSource),
   "элемент ссылки вместо снимка",
+);
+
+/*
+  Мобильная шторка: на сенсорном устройстве тап открывает лист снизу, а не поповер у слова.
+
+  Решение принимается в момент тапа по `(pointer: coarse)`, а не при загрузке страницы: то же
+  устройство с подключённой мышью должно получить поповер, а не лист. Проверяется форма исходника,
+  потому что `matchMedia` в jsdom без мока не эмулирует палец.
+*/
+check(
+  "Мобильная шторка: тап на сенсорном устройстве открывает лист, а не поповер",
+  /isCoarsePointer\(\)/.test(popoverSource) &&
+    /"sheet"/.test(popoverSource) &&
+    /EntitySheet/.test(popoverSource),
+  "isCoarsePointer + mode sheet + EntitySheet",
+);
+
+check(
+  "Мобильная шторка: фон затемнён и закрывает по тапу, есть кнопка закрытия",
+  /bg-ink\/50/.test(popoverSource) &&
+    /onClick=\{onClose\}/.test(popoverSource) &&
+    /Закрыть карточку/.test(popoverSource),
+  "backdrop + close",
+);
+
+check(
+  "Задержка закрытия — в безопасном окне 200–250 мс",
+  /CLOSE_DELAY_MS = (\d+)/.test(popoverSource) &&
+    Number(/CLOSE_DELAY_MS = (\d+)/.exec(popoverSource)?.[1]) >= 200 &&
+    Number(/CLOSE_DELAY_MS = (\d+)/.exec(popoverSource)?.[1]) <= 250,
+  String(/CLOSE_DELAY_MS = (\d+)/.exec(popoverSource)?.[1]),
+);
+
+/*
+  Безопасная зона перехода со ссылки на карточку.
+
+  Невидимый `::before` расширяет зону попадания поповера на 8px вверх — ровно на зазор до ссылки.
+  Псевдоэлемент, а не дочерний div: ему не нужна раскладка, и в него нельзя попасть табом.
+  Класс `entity-popover` висит на самом поповере, поэтому зона ездит вместе с ним.
+*/
+const globalCss = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+check(
+  "Безопасная зона: невидимый мостик 8px над карточкой",
+  /entity-popover/.test(popoverSource) &&
+    /\.entity-popover::before\s*\{[\s\S]*?top:\s*-8px/.test(globalCss),
+  "класс + ::before с top: -8px",
 );
 
 check(

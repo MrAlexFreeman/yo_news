@@ -156,6 +156,24 @@ body {
   --tw-prose-hr: var(--color-rule);
   --tw-prose-quotes: var(--color-ink);
   --tw-prose-captions: var(--color-ink-soft);
+
+  /*
+    The long-read's type size, stated here rather than left to the prose plugin.
+
+    The plugin steps the body 16px → 18px at `lg`; a newspaper long-read wants the magazine size
+    everywhere, phone included, because a phone is where most of the audience reads. 18px on a
+    360px screen is three or four words to a line, which is the rhythm the measure was tuned
+    for, not a cramped one. 19px at `lg` gives the desktop column the extra air of a broadsheet
+    feature.
+  */
+  font-size: 1.125rem;
+  line-height: 1.75;
+}
+
+@media (min-width: 64rem) {
+  .article-body {
+    font-size: 1.1875rem;
+  }
 }
 
 /* Drop cap on the lead paragraph, newspaper style.
@@ -331,11 +349,13 @@ body {
 .article-body .article-figure__caption,
 .article-body figure figcaption {
   font-family: var(--font-inter), sans-serif;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-style: italic;
   line-height: 1.5;
   text-align: center;
-  color: var(--color-ink-soft);
+  /* 70% of the soft ink: a caption is furniture, quieter than the text it sits under,
+     but still the same hue so it does not detach from the photograph. */
+  color: color-mix(in srgb, var(--color-ink-soft) 70%, transparent);
   margin-top: 0.5rem;
 }
 
@@ -422,4 +442,60 @@ body {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/*
+  The safe hover bridge of the entity popover.
+
+  The card floats 8px below the link, and that strip belongs to neither of them — the pointer
+  crossing it briefly leaves both, which is exactly the moment a naive card closes. This
+  invisible extension widens the popover's hit area up to the link, so the pointer never
+  actually leaves the card while travelling the gap. Pseudo-element rather than a child div: it
+  needs no layout and cannot be tabbed into.
+*/
+.entity-popover::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+/*
+  A soft paper skeleton behind a cover that has not loaded yet.
+
+  The image's box already reserves its aspect ratio, so there is no layout shift to fix — the
+  fight was won with `aspect-*` and explicit `width`/`height`. What remains is the dead flat
+  block the reader sees while the bytes arrive. A slow sheen, a few percent of ink over the
+  paper tint, reads as "an image is coming" instead of "nothing is here". The `next/image`
+  element is painted on top of this, so the shimmer is covered the moment the real photograph
+  arrives and there is nothing to clean up.
+*/
+.paper-skeleton {
+  background-color: var(--color-paper-dim);
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in srgb, var(--color-ink) 5%, transparent) 50%,
+    transparent 80%
+  );
+  background-size: 200% 100%;
+  animation: paper-sheen 2.4s ease-in-out infinite;
+}
+
+@keyframes paper-sheen {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paper-skeleton {
+    animation: none;
+    background-image: none;
+  }
 }

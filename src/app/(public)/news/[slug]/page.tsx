@@ -9,6 +9,7 @@ import { ArticleVideo } from "@/components/article-video";
 import { CoverImage } from "@/components/cover-image";
 import { PhotoCredit } from "@/components/photo-credit";
 import { ArticleBodyWithCards } from "@/components/entity-card";
+import { ReadingProgress } from "@/components/reading-progress";
 import { PersonalizedContinueReading } from "@/components/personalized-continue-reading";
 import { ReadAlsoBlock } from "@/components/read-also-block";
 import { ReaderStoryForm } from "@/components/reader-story-form";
@@ -295,8 +296,8 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         html={html}
         className={
           isFirst
-            ? "article-body drop-cap prose prose-slate mt-6 max-w-none lg:prose-lg"
-            : "article-body prose prose-slate mt-6 max-w-none lg:prose-lg"
+            ? "article-body drop-cap prose prose-slate mt-6 max-w-[44rem] lg:prose-lg"
+            : "article-body prose prose-slate mt-6 max-w-[44rem] lg:prose-lg"
         }
       />
     );
@@ -355,20 +356,23 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   const videoUrl = article.videoUrl ?? "";
 
   return (
-    /*
-      Two columns on a wide screen, one column below `lg`.
+    <>
+      {/*
+        Two columns on a wide screen, one column below `lg`.
 
-      The grid, not a second container: `(public)/layout.tsx` already wraps every page
-      in `max-w-7xl` with its own horizontal padding. Adding `mx-auto max-w-7xl px-4`
-      here as well would stack the padding and make the article page narrower than
-      every other page on the site, which is the opposite of what the wider layout is
-      for.
+        The grid, not a second container: `(public)/layout.tsx` already wraps every page
+        in `max-w-7xl` with its own horizontal padding. Adding `mx-auto max-w-7xl px-4`
+        here as well would stack the padding and make the article page narrower than
+        every other page on the site, which is the opposite of what the wider layout is
+        for.
 
-      Sidebar last in the DOM, so on a phone it lands strictly under the story with no
-      ordering rule needed to achieve it.
-    */
-    <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
-      <article className="min-w-0 lg:col-span-8">
+        Sidebar last in the DOM, so on a phone it lands strictly under the story with no
+        ordering rule needed to achieve it.
+      */}
+      <ReadingProgress targetId="article" />
+
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+      <article id="article" className="min-w-0 lg:col-span-8">
         {/* Breadcrumbs. */}
         <nav aria-label="Хлебные крошки" className="mb-5 text-[11px] text-ink-soft">
         <ol className="flex flex-wrap items-center gap-1">
@@ -590,6 +594,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         currentTitle={article.title}
         currentUrl={absoluteUrl(`/news/${article.slug}`)}
       />
-    </div>
+      </div>
+    </>
   );
 }

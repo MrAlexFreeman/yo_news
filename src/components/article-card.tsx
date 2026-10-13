@@ -202,7 +202,7 @@ export function ArticleCard({
           something other than the square it asks for. Opting out of the stretch lets
           the box keep the height its ratio implies.
         */}
-        <div className={cn("relative shrink-0 self-start overflow-hidden bg-paper-dim", thumb.box)}>
+        <div className={cn("relative shrink-0 self-start overflow-hidden bg-paper-dim paper-skeleton", thumb.box)}>
           <Cover article={article} sizes={thumb.sizes} className="transition-transform duration-300 group-hover:scale-105" />
         </div>
         <div className="min-w-0">
@@ -251,7 +251,7 @@ export function ArticleCard({
       */}
       <div
         className={cn(
-          "relative aspect-[3/2] overflow-hidden rounded-sm bg-paper-dim",
+          "relative aspect-[3/2] overflow-hidden rounded-sm bg-paper-dim paper-skeleton",
           !article.coverImage && "hidden",
         )}
       >

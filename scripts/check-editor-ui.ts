@@ -1110,6 +1110,51 @@ check(
   "сверка с витриной",
 );
 
+/*
+  Типографика лонгрида, объявленная в одном месте.
+
+  Базовый размер и интерлиньяж должны стоять на `.article-body`, а не прятаться за `prose-lg`
+  на `lg`: ниже этого брейкпоинта тело оставалось бы 16px, а большинство читателей — телефон.
+  18px всюду, 19px на широком экране, интерлиньяж 1.75.
+*/
+check(
+  "Типографика: базовый размер 18px и интерлиньяж 1.75 на .article-body",
+  /\.article-body\s*\{[\s\S]*?font-size:\s*1\.125rem/.test(globalCss) &&
+    /\.article-body\s*\{[\s\S]*?line-height:\s*1\.75/.test(globalCss),
+  "18px + 1.75",
+);
+
+check(
+  "Типографика: на широком экране тело укрупняется до 19px",
+  /@media\s*\(min-width:\s*64rem\)\s*\{[\s\S]*?\.article-body\s*\{[\s\S]*?font-size:\s*1\.1875rem/.test(globalCss),
+  "19px от 64rem",
+);
+
+/*
+  Подпись к фото — мебель, тише текста, но того же тона. 70% мягкого чернила, а не серый из
+  палитры: caption должен читаться как часть снимка, а не как чужой элемент.
+*/
+check(
+  "Типографика: подпись к фото — 70% мягкого чернила",
+  /\.article-body\s+(?:\.article-figure__caption|figure\s+figcaption)[\s\S]*?70%/.test(globalCss) ||
+    /color-mix\([^)]*ink-soft[^)]*70%/.test(globalCss),
+  "color-mix с 70%",
+);
+
+/*
+  Мягкий бумажный скелетон под обложкой, которая ещё не загрузилась.
+
+  Геометрию уже держат aspect-* и width/height; скелетон убирает «мёртвый» плоский блок на
+  время загрузки. Замедленный блеск в тон бумаги, и отключается при prefers-reduced-motion.
+*/
+check(
+  "Скелетон: класс и анимация объявлены, с учётом reduced-motion",
+  /\.paper-skeleton\s*\{/.test(globalCss) &&
+    /@keyframes\s+paper-sheen/.test(globalCss) &&
+    /prefers-reduced-motion[\s\S]*?\.paper-skeleton/.test(globalCss),
+  "класс + keyframes + reduced-motion",
+);
+
 /**
  * Every construct a stored article body can contain.
  *

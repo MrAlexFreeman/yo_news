@@ -142,7 +142,7 @@ export function RiverArticleCard({
             href={`/news/${article.slug}`}
             tabIndex={-1}
             aria-hidden
-            className="relative block aspect-video max-h-[360px] w-full overflow-hidden rounded-sm bg-paper-dim md:max-h-[380px]"
+            className="relative block aspect-video max-h-[360px] w-full overflow-hidden rounded-sm bg-paper-dim paper-skeleton md:max-h-[380px]"
           >
             <CoverImage
               src={article.coverImage as string}
