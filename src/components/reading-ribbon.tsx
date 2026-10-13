@@ -17,7 +17,13 @@ import { useEffect, useRef, useState } from "react";
  */
 
 const SCROLL_THRESHOLD = 300;
-const HEADER_HEIGHT = 52;
+
+/**
+ * Полоса висит под компактной шапкой. Её высота — 52px плюс безопасный отступ сверху: в
+ * Android-приложении шапка начинается из-под системной строки статуса, и без того же слагаемого
+ * полоса наехала бы на неё. `env()` вне жестового режима даёт 0.
+ */
+const RIBBON_TOP = "calc(52px + env(safe-area-inset-top))";
 
 export function ReadingRibbon({
   title,
@@ -86,7 +92,7 @@ export function ReadingRibbon({
       className={`fixed left-0 right-0 z-30 bg-paper/95 backdrop-blur border-b border-rule/60 transition-transform duration-300 ${
         visible ? "translate-y-0" : "-translate-y-full"
       }`}
-      style={{ top: HEADER_HEIGHT }}
+      style={{ top: RIBBON_TOP }}
     >
       {/* Тончайшая линия прогресса. `transform` вместо `width`, чтобы не пересчитывать layout. */}
       <div className="h-[2px] bg-yo" aria-hidden>

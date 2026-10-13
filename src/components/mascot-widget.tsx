@@ -58,7 +58,9 @@ export function MascotWidget() {
       should be clickable; the padding around it belongs to the article.
     */
     <div
-      className="pointer-events-none fixed right-4 bottom-4 z-30 hidden md:block"
+      /* Нижний безопасный отступ: на планшете с жестовой полосой кот не должен оказаться
+         под ней. */
+      className="pointer-events-none fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-30 hidden md:block"
       /* Reserve the corner even before the chunk arrives, so the cat's arrival never shifts
          anything. Height and width are set here rather than on the cat so the layout is
          identical in both states. */

@@ -31,8 +31,11 @@ export function checkMascot() {
 
   check(
     "Маскот: правый нижний угол, поверх контента",
-    widgetSource.includes("fixed right-4 bottom-4") && widgetSource.includes("z-30"),
-    "fixed right-4 bottom-4 z-30",
+    // Угол с учётом нижнего safe-area: на планшете с жестовой полосой кот не должен оказаться
+    // под ней. В браузере `env()` даёт 0, и это тот же 1rem, что был раньше.
+    widgetSource.includes("fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))]") &&
+      widgetSource.includes("z-30"),
+    "fixed right-4 bottom-[calc(1rem+safe-area)] z-30",
   );
 
   check(

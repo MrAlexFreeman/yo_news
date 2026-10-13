@@ -186,6 +186,13 @@ function CompactHeader({
         className={[
           "fixed inset-x-0 top-0 z-50",
           "border-b border-rule bg-paper/95 shadow-sm backdrop-blur-sm",
+          /*
+            Safe area сверху: в Android-приложении полоса начинается из-под системной строки
+            статуса и выреза. В обычном браузере `env()` даёт 0, отступ не появляется, высота
+            бара не меняется. Высота 52px — константа в `HEADER_HEIGHT_CONSTANT` ниже, и
+            читающая полоса (`reading-ribbon`) считает свой `top` от той же формулы.
+          */
+          "pt-[env(safe-area-inset-top)]",
           // No horizontal padding here: the row inside carries the page gutter, so the bar
           // spans the full width while its contents stay on the 7xl grid.
           "transition-transform duration-300 ease-out motion-reduce:transition-none",
@@ -255,7 +262,8 @@ function CompactHeader({
         id={MENU_PANEL_ID}
         inert={menuOpen ? undefined : true}
         hidden={!menuOpen}
-        className="fixed inset-x-0 top-[52px] z-50 border-b border-rule bg-paper shadow-md"
+        // Под баром, высота которого = 52px + безопасный отступ сверху.
+        className="fixed inset-x-0 top-[calc(52px+env(safe-area-inset-top))] z-50 border-b border-rule bg-paper shadow-md"
       >
         <nav
           aria-label="Разделы"

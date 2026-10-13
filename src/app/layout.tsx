@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Lora } from "next/font/google";
 
+import { NativeShell } from "@/components/native-shell";
 import { SITE_NAME, SITE_TAGLINE, SITE_TAGLINE_LONG, siteUrl } from "@/lib/site";
 
 import "./globals.css";
@@ -118,6 +119,14 @@ export const metadata: Metadata = {
  */
 export const viewport: Viewport = {
   themeColor: "#ffffff",
+  /*
+    `viewport-fit=cover` — то, без чего `env(safe-area-inset-*)` не работает.
+
+    В Android-приложении (Capacitor, RuStore) страница рисуется под системной строкой статуса и
+    под жестовой полосой снизу; без этого флага браузер оставляет чёрные поля по краям выреза, и
+    ни один из отступов ниже не срабатывает. В обычном мобильном браузере флаг безвреден.
+  */
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -126,7 +135,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="ru"
       className={`${inter.variable} ${lora.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col bg-paper text-ink">
+      {/*
+        Нижний безопасный отступ — на теле, а не на футере: так он работает для любой страницы,
+        включая те, что заканчиваются не подвалом, и ничего не сдвигает, когда выреза нет
+        (`env()` вне жестового режима даёт 0).
+      */}
+      <body className="flex min-h-full flex-col bg-paper text-ink pb-[env(safe-area-inset-bottom)]">
+        {/* В браузере не рисует ничего; в оболочке RuStore вешает кнопку «Назад» и статус-бар. */}
+        <NativeShell />
         {children}
       </body>
     </html>
