@@ -516,11 +516,11 @@ export type PlanOptions = {
 /**
  * The words the link wears instead of its address.
  *
- * Без стрелки: её ставит `readMoreLink`, и там же живёт адрес. Раньше эта константа была
- * видимой частью строки («👉 Читать полностью: https://…») и менялась вместе с оформлением;
- * теперь это только подпись анкора, и вид поста задаёт `readMoreLink` целиком.
+ * Одни и те же и в подписи обложки, и в подвале поста: читатель не должен гадать, что
+ * «читать полностью» и «читать полностью на сайте» — разные ссылки. Без стрелки: её ставит
+ * `readMoreLink`, и там же живёт адрес.
  */
-export const TELEGRAM_CAPTION_MORE = "Читать полностью";
+export const TELEGRAM_CAPTION_MORE = "Читать полностью на сайте";
 
 /**
  * What the caption aims for, headline and link included.
