@@ -115,14 +115,65 @@ check(
 );
 
 check(
-  "Push SDK: шаблон нативного сервиса на месте",
-  existsSync(
-    new URL("../android/app/src/main/java/ru/eartnews/app/RuStoreMessagingService.kt", import.meta.url),
-  ) &&
-    read("android/app/src/main/java/ru/eartnews/app/RuStoreMessagingService.kt").includes(
-      "override fun onNewToken",
-    ),
-  "RuStoreMessagingService.kt → onNewToken",
+  "Push SDK: ID проекта подставлен (не заглушка)",
+  /ru\.rustore\.sdk\.pushclient\.project_id"[^>]*android:value="(?!REPLACE_)[^"]+"/.test(manifest) &&
+    !manifest.includes("REPLACE_WITH_RUSTORE_PROJECT_ID"),
+  "project_id заполнен боевым значением",
+);
+
+const messagingService =
+  "android/app/src/main/java/ru/eartnews/app/RuStoreMessagingService.kt";
+const service = read(messagingService);
+check(
+  "Push: сервис регистрирует токен и рисует уведомление",
+  service.includes("override fun onNewToken") &&
+    service.includes("override fun onMessageReceived") &&
+    service.includes("override fun onError") &&
+    service.includes("registerToken("),
+  "onNewToken + onMessageReceived + onError",
+);
+check(
+  "Push: суперкласс службы взят из пакета messaging.service",
+  service.includes(
+    "ru.rustore.sdk.pushclient.messaging.service.RuStoreMessagingService()",
+  ) && !/ru\.rustore\.sdk\.pushclient\.messaging\.RuStoreMessagingService/.test(service),
+  "супертип messaging.service (проверено по классам pushclient)",
+);
+check(
+  "Push: уведомление идёт в свой канал, клик открывает статью",
+  service.includes("yo_news_urgent") &&
+    service.includes("NotificationChannel") &&
+    service.includes("PendingIntent.getActivity") &&
+    service.includes("Intent.ACTION_VIEW"),
+  "канал yo_news_urgent + PendingIntent → ACTION_VIEW",
+);
+check(
+  "Push: берётся иконка шторки, а не белый квадрат",
+  service.includes("R.drawable.ic_stat_push") &&
+    existsSync(new URL("../android/app/src/main/res/drawable/ic_stat_push.xml", import.meta.url)),
+  "ic_stat_push в сервисе и в ресурсах",
+);
+
+const mainActivity = read("android/app/src/main/java/ru/eartnews/app/MainActivity.java");
+check(
+  "Push: согласие на уведомления спрашивается у пользователя",
+  mainActivity.includes("POST_NOTIFICATIONS") &&
+    mainActivity.includes("requestPermissions") &&
+    mainActivity.includes("TIRAMISU"),
+  "MainActivity → runtime-запрос POST_NOTIFICATIONS",
+);
+
+check(
+  "Push: клик по уведомлению открывает статью внутри приложения",
+  nativeShell.includes('"appUrlOpen"') && nativeShell.includes("window.location.assign"),
+  "appUrlOpen → переход на адрес статьи",
+);
+
+check(
+  "Сборка: скрипт релизного APK для RuStore",
+  existsSync(new URL("../scripts/build-rustore.sh", import.meta.url)) &&
+    read("scripts/build-rustore.sh").includes("assembleRelease"),
+  "scripts/build-rustore.sh → assembleRelease",
 );
 
 for (const { name, ok, detail } of checks) {

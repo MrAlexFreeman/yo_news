@@ -25,7 +25,6 @@ import { automaticPlateAllowed, splitAroundReadAlso } from "@/lib/read-also";
 import { readingMinutes } from "@/lib/reading-time";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { formatDateTime } from "@/lib/date";
-import { forumSectionForArticle } from "@/lib/forum-rubric";
 import { sanitizeArticleHtml } from "@/lib/sanitize";
 import {
   getLoopFresh,

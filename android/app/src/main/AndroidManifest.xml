@@ -32,13 +32,12 @@
             android:resource="@drawable/ic_stat_push" />
 
         <!--
-          TODO: вписать ID проекта из RuStore Консоль (Push-уведомления → Проекты). Пока значение
-          — заглушка: без настоящего ID инициализация SDK не поднимет push-канал, и это первое, что
-          нужно заменить при настройке боевого проекта.
+          ID проекта из RuStore Консоль (Push-уведомления → Проекты). Без него SDK не поднимет
+          push-канал, поэтому значение боевое, а не заглушка.
         -->
         <meta-data
             android:name="ru.rustore.sdk.pushclient.project_id"
-            android:value="REPLACE_WITH_RUSTORE_PROJECT_ID" />
+            android:value="2351033463" />
 
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
