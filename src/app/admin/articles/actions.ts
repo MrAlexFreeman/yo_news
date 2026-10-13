@@ -237,6 +237,7 @@ export async function createArticleAction(
           dzenExperiment: true,
           vkPostId: true,
           maxPostId: true,
+          telegramPostId: true,
           tags: { select: { tag: { select: { slug: true } } } },
         },
       })
@@ -519,17 +520,49 @@ export async function createArticleAction(
     };
 
     if (article.isTelegram) {
-      try {
-        const telegram = await publishArticleToTelegram(shared);
-        messengerNotes.telegram = telegram.ok
-          ? (telegram.summary ?? "опубликовано.")
-          : `не ушло: ${telegram.error ?? "причина неизвестна"}`;
-        if (telegram.warning) console.warn(`[telegram] ${telegram.warning}`);
-      } catch (error) {
-        messengerNotes.telegram = `необработанная ошибка: ${
-          error instanceof Error ? error.message : "неизвестная ошибка"
-        }`;
-        console.error("[telegram] необработанная ошибка репоста:", error);
+      /*
+        The stored id is the guard, in the same spirit as `vkPostId` and `maxPostId`.
+
+        `enteringPublished` is a statement about this request, not about the story: take one
+        back to draft, publish it again, and the transition is crossed a second time. VK and MAX
+        have answered that from the row since they were written; Telegram answered it from hope,
+        which is why a story could land in the channel twice by that route.
+      */
+      const alreadyInTelegram = existing?.telegramPostId ?? null;
+
+      if (alreadyInTelegram) {
+        messengerNotes.telegram = "Уже было в Telegram — повторно не публикуем.";
+      } else {
+        try {
+          const telegram = await publishArticleToTelegram(shared);
+
+          /*
+            The id is written whenever there is one, and that includes a partial failure.
+
+            A post whose cover landed but whose text did not returns `ok: false` with the id of
+            what is already in the channel. Saving that id is the whole point: the next save must
+            not post a second picture while the operator decides what to do with the first one.
+            Nothing else about the failure changes — the editor still sees it in the note.
+          */
+          const messageId = telegram.messageId ?? null;
+
+          if (messageId) {
+            await prisma.article.update({
+              where: { id: article.id },
+              data: { telegramPostId: messageId },
+            });
+          }
+
+          messengerNotes.telegram = telegram.ok
+            ? (telegram.summary ?? "опубликовано.")
+            : `не ушло: ${telegram.error ?? "причина неизвестна"}`;
+          if (telegram.warning) console.warn(`[telegram] ${telegram.warning}`);
+        } catch (error) {
+          messengerNotes.telegram = `необработанная ошибка: ${
+            error instanceof Error ? error.message : "неизвестная ошибка"
+          }`;
+          console.error("[telegram] необработанная ошибка репоста:", error);
+        }
       }
     }
 

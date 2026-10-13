@@ -150,6 +150,22 @@ model Article {
   /// The last of a multi-message post is what is kept: it is the one whose chunk carries the
   /// source line and the rubric, so it identifies the post a reader would find.
   maxPostId   String?
+  /// The id Telegram returned for this story's first message, if any.
+  ///
+  /// The third of the three, and the last to arrive — which is the point. VK and MAX have
+  /// carried their ids since the day each was written, Telegram had none, and the gap was not
+  /// theoretical: `enteringPublished` stops a *save* of a published story from reposting, but it
+  /// is a statement about one request. Take a story back to draft, publish it again, and the
+  /// transition is crossed a second time with nothing in the row to say the channel already has
+  /// it. VK and MAX answer that from the database; Telegram answered it from hope.
+  ///
+  /// What is kept is the id of the first message. A long story goes out as several — the cover
+  /// with a caption, then the text — and the first is the one at the top of the channel, which
+  /// is what an operator looks for when the editor asks "did this one go out?".
+  ///
+  /// Appended at the end for the same SQLite reason as `maxPostId` above: a column inserted
+  /// among the others makes Prisma rebuild the whole Article table instead of adding one.
+  telegramPostId String?
   /// The poll attached to this story, if any. The foreign key lives on `ArticlePoll`, so this
   /// side adds no column and no table rebuild — see the note on where new columns may go.
   poll        ArticlePoll?

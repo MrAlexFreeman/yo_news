@@ -25,7 +25,7 @@ import {
   Underline as UnderlineIcon,
   Video,
 } from "lucide-react";
-import { useEffect, useId, useImperativeHandle, useRef, useState } from "react";
+import { memo, useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 
 import { editorExtensions } from "@/app/admin/articles/components/editor-extensions";
 import { editorBodyHtml } from "@/app/admin/articles/components/editor-output";
@@ -337,8 +337,19 @@ export type ContentEditorHandle = {
  * carries a video node and the table extension rather than relying on StarterKit
  * alone. `scripts/check-editor-ui.ts` round-trips the real corpus through the real
  * extensions and fails if anything shrinks.
+ *
+ * **`memo` — не украшение, а условие работы на слабом VPS.** Панель инструментов — это сорок
+ * кнопок с иконками и весь текст статьи под ними. Раньше любое изменение состояния формы —
+ * галочка синдикации, тег, строка статуса — перерисовывало это поддерево целиком, потому что
+ * редактор был обычным ребёнком формы. Теперь он перерисовывается только тогда, когда меняется
+ * что-то из его собственных пропов, — а ввод в заголовке и лиде, ради которого это делалось,
+ * до формы вообще не доходит (см. `useDraftValue`).
+ *
+ * Условие, без которого `memo` бесполезен: все функции-пропы должны быть стабильны. `onChange`
+ * в форме обёрнут в `useCallback` именно поэтому — новая стрелка на каждый рендер заставила бы
+ * React сравнивать пропы и всегда находить различие.
  */
-export function ContentEditor({
+export const ContentEditor = memo(function ContentEditor({
   value,
   onChange,
   error,
@@ -929,7 +940,7 @@ export function ContentEditor({
       ) : null}
     </div>
   );
-}
+});
 
 /**
  * The words the editor has highlighted, or an empty string at a bare caret.

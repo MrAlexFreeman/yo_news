@@ -13,6 +13,7 @@ import {
 import { useRouter } from "next/navigation";
 import {
   useActionState,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -27,6 +28,8 @@ import {
 import { ArticlePreview } from "@/app/admin/articles/components/article-preview";
 import { ArticleMediaPanel } from "@/app/admin/articles/components/article-media-panel";
 import { CharCounter } from "@/app/admin/articles/components/char-counter";
+import { LeadField, SubtitleField } from "@/app/admin/articles/components/draft-field";
+import { useUnsavedChangesWarning } from "@/app/admin/articles/components/unsaved-changes";
 import { ContentEditor } from "@/app/admin/articles/components/content-editor";
 import type { ContentEditorHandle } from "@/app/admin/articles/components/content-editor";
 import { PublishSidebar } from "@/app/admin/articles/components/publish-sidebar";
@@ -333,6 +336,46 @@ export function ArticleForm({
    * picture land and carries on from there.
    */
   const editorRef = useRef<ContentEditorHandle>(null);
+
+  /*
+    Скрытые двойники трёх текстовых полей.
+
+    Живут в корне формы, а не в панели вкладки: панель размонтируется, двойник — нет.
+  */
+  const titleMirror = useRef<HTMLInputElement>(null);
+  const subtitleMirror = useRef<HTMLInputElement>(null);
+  const leadMirror = useRef<HTMLInputElement>(null);
+
+  /**
+   * Запись набранного в двойник, по одному колбэку на поле.
+   *
+   * Стабильны (`useCallback`), потому что уезжают в поля пропом: новая функция на каждый рендер
+   * заставила бы поле пересоздавать свой обработчик ввода без всякой причины.
+   *
+   * Владеет записью форма, а не поле: двойник её, и менять чужое значение из компонента поля
+   * нельзя — это и по смыслу, и по правилу `react-hooks/immutability`.
+   */
+  const writeTitle = useCallback((value: string) => {
+    if (titleMirror.current) titleMirror.current.value = value;
+  }, []);
+  const writeSubtitle = useCallback((value: string) => {
+    if (subtitleMirror.current) subtitleMirror.current.value = value;
+  }, []);
+  const writeLead = useCallback((value: string) => {
+    if (leadMirror.current) leadMirror.current.value = value;
+  }, []);
+
+  /**
+   * Стабильная обёртка над `setContentHtml` для `ContentEditor`.
+   *
+   * `ContentEditor` обёрнут в `memo`, а `memo` сравнивает пропы по ссылке: стрелка, созданная
+   * в JSX, — новая на каждом рендере, и React всегда находил бы различие, то есть редактор
+   * перерисовывался бы ровно так же, как до оптимизации.
+   */
+  const handleContentChange = useCallback((value: string) => {
+    setContentHtml(value);
+  }, []);
+
   const [mediaNotice, setMediaNotice] = useState<string | null>(null);
   /**
    * Mirrors the editor's caret state for the sidebar hint. Held here rather than read
@@ -380,6 +423,20 @@ export function ArticleForm({
       : messengerDefaults.telegram || messengerDefaults.max
         ? "Репост уходит один раз — при первой публикации материала."
         : "Автопостинг в мессенджеры выключен в разделе «Настройки».";
+
+  /**
+   * Кнопка сохранения нажата и ответа ещё нет.
+   *
+   * Нужна ровно для одного: чтобы предупреждение о несохранённых изменениях не срабатывало на
+   * нашем собственном переходе. «Сохранить» на сервере заканчивается `redirect("/admin/articles")`
+   * — это настоящая выгрузка страницы, и без этой защёлки браузер спросил бы «уйти со страницы?»
+   * сразу после успешного сохранения, у редактора, который только что нажал «Сохранить».
+   *
+   * `state.ok` здесь не годится: при `redirect()` результат действия до клиента не доезжает —
+   * Next превращает ответ в навигацию, — поэтому признак ставится на самой отправке формы, а
+   * снимается неудачей или следующим удачным сохранением.
+   */
+  const [submitted, setSubmitted] = useState(false);
 
   /**
    * The last known-saved field state. A successful save adopts the current
@@ -490,6 +547,23 @@ export function ArticleForm({
         setDzenExperiment(state.dzenExperiment);
       }
       setDzenExperimentLockedByServer(Boolean(state.dzenExperimentLocked));
+      /*
+        Сохранение прошло — предупреждение снимается.
+
+        Так закрывается случай «сохранил и продолжил править»: поле снова становится несохранённым
+        от первой же следующей буквы, и предупреждение должно вернуться. Без этой строки оно
+        молчало бы до перезагрузки страницы.
+      */
+      setSubmitted(false);
+    } else if (state.message) {
+      /*
+        Сохранение не прошло — предупреждение возвращается.
+
+        Валидация отказала, текст остался в полях, и потерять его теперь так же легко, как до
+        нажатия кнопки. `state.message` в условии, потому что начальное состояние — тоже
+        `ok: false` с пустым сообщением, и разоружение на нём сняло бы защиту при первом рендере.
+      */
+      setSubmitted(false);
     }
   }
 
@@ -508,6 +582,15 @@ export function ArticleForm({
           media.length > 0 ||
           videoUrl,
       );
+
+  /*
+    Предупреждение при закрытии вкладки.
+
+    Условие из двух частей, и обе нужны: изменения должны быть (`dirty`), и это не должно быть
+    наше собственное сохранение (`submitted`) — «Сохранить» выгружает страницу на сервере, и
+    браузер, не различая эти случаи, спрашивал бы подтверждение сразу после успешной записи.
+  */
+  useUnsavedChangesWarning(dirty && !submitted);
 
   function applySnapshot(snapshot: Snapshot) {
     if (!snapshot) return;
@@ -681,7 +764,17 @@ export function ArticleForm({
   return (
     // One form wraps the whole editor so the sticky bar's submit buttons carry
     // every field, including the sidebar and the publication date.
-    <form action={formAction} className="flex flex-1 flex-col bg-neutral-100">
+    <form
+      action={formAction}
+      /*
+        Отметка «сохранение началось».
+
+        Ставится на самой отправке, а не на результате: при успешном сохранении сервер отвечает
+        `redirect`, и до клиента доезжает навигация, а не `state`. Подробнее — у `submitted`.
+      */
+      onSubmit={() => setSubmitted(true)}
+      className="flex flex-1 flex-col bg-neutral-100"
+    >
       {/*
         Once saved, the id makes subsequent submits updates instead of creates.
       */}
@@ -703,9 +796,21 @@ export function ArticleForm({
       {/* The wire item this draft came from, so the save can mark it taken. Only
           present when the form was opened from «Предложка». */}
       {feedId ? <input type="hidden" name="feedId" value={feedId} readOnly /> : null}
-      <input type="hidden" name="title" value={title} readOnly />
-      <input type="hidden" name="subtitle" value={subtitle} readOnly />
-      <input type="hidden" name="lead" value={lead} readOnly />
+      {/*
+        Скрытые двойники трёх текстовых полей, и они не «на всякий случай».
+
+        Панели вкладок размонтируются, а поле внутри размонтированной панели в форму не
+        попадает. Сохранение с вкладки «Медиа» без двойника отправило бы пустой заголовок и
+        упало бы на серверной проверке — ровно так уже было с `contentHtml`. Значение в двойник
+        пишет само поле, прямо в DOM (`useDraftValue`), поэтому здесь он неуправляемый: `value`
+        вернул бы набранное в состояние формы и перерисовал бы редактор на каждой букве.
+
+        `defaultValue` только задаёт стартовое значение при монтировании. Дальше двойник живёт
+        своей жизнью и вкладок не покидает — он в корне формы, а не в панели.
+      */}
+      <input type="hidden" name="title" ref={titleMirror} defaultValue={title} />
+      <input type="hidden" name="subtitle" ref={subtitleMirror} defaultValue={subtitle} />
+      <input type="hidden" name="lead" ref={leadMirror} defaultValue={lead} />
       <input type="hidden" name="contentHtml" value={contentHtml} readOnly />
       <input type="hidden" name="coverImage" value={coverImage} readOnly />
       <input type="hidden" name="photoAuthor" value={photoAuthor} readOnly />
@@ -946,6 +1051,7 @@ export function ArticleForm({
                 </div>
 
                 <TitleField
+                  onDraft={writeTitle}
                   value={title}
                   onChange={(value) => {
                     setTitle(value);
@@ -953,58 +1059,29 @@ export function ArticleForm({
                   error={errors.title}
                 />
 
-                <div className="space-y-1.5">
-                  <div className="flex items-baseline justify-between gap-4">
-                    <label
-                      htmlFor="subtitle"
-                      className="text-sm font-medium text-neutral-700"
-                    >
-                      Подзаголовок
-                    </label>
-                    <CharCounter value={subtitle} />
-                  </div>
-                  <input
-                    id="subtitle"
-                    type="text"
-                    value={subtitle}
-                    onChange={(event) => {
-                      setSubtitle(event.target.value);
-                    }}
-                    placeholder="Необязательно"
-                    className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
-                  />
-                  {errors.subtitle ? (
-                    <p className="text-sm text-red-600">{errors.subtitle}</p>
-                  ) : null}
-                </div>
+                <SubtitleField
+                  onDraft={writeSubtitle}
+                  value={subtitle}
+                  onCommit={setSubtitle}
+                  error={errors.subtitle}
+                />
 
-                <div className="space-y-1.5">
-                  <div className="flex items-baseline justify-between gap-4">
-                    <label
-                      htmlFor="lead"
-                      className="text-sm font-medium text-neutral-700"
-                    >
-                      Внутренний анонс (Лид)
-                    </label>
-                    <CharCounter value={lead} limit={LEAD_LIMIT} />
-                  </div>
-                  <textarea
-                    id="lead"
-                    value={lead}
-                    onChange={(event) => {
-                      setLead(event.target.value);
-                    }}
-                    rows={3}
-                    placeholder="Краткое описание материала для анонсов"
-                    className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200"
-                  />
-                </div>
+                <LeadField
+                  onDraft={writeLead}
+                  value={lead}
+                  onCommit={setLead}
+                  limit={LEAD_LIMIT}
+                />
 
                 <ContentEditor
                   value={contentHtml}
-                  onChange={(value) => {
-                    setContentHtml(value);
-                  }}
+                  /*
+                    Стабильная ссылка: `ContentEditor` обёрнут в `memo`, и новая стрелка на
+                    каждый рендер заставила бы его перерисовываться всегда — то есть ровно так,
+                    как было до оптимизации. `setContentHtml` от React стабилен, поэтому
+                    обёртка нужна только чтобы спрятать его в функцию нужной формы.
+                  */
+                  onChange={handleContentChange}
                   error={errors.contentHtml}
                   media={media}
                   coverImage={coverImage}

@@ -1390,6 +1390,8 @@ async function runRoundTrips() {
   checkPreviewFidelity();
   runCommands(make);
   await runMountedEditor();
+  await runDraftIsolation();
+  await runUnsavedWarning();
   await checkSidebarInsertion();
   await checkEntityPopover();
   report();
@@ -2619,6 +2621,357 @@ async function runMountedEditor() {
 
   root.unmount();
   await settle();
+  host.remove();
+}
+
+/**
+ * Набор заголовка не должен перерисовывать редактор.
+ *
+ * Это измерение, а не рассуждение, и измерить его можно только так: отрендерить настоящий
+ * `TitleField` рядом с настоящим мемоизированным соседом и посчитать его рендеры. Проверка
+ * исходного текста здесь не годится — она подтвердила бы, что `useState` написан, но не что
+ * форма действительно перестала перерисовываться.
+ *
+ * Три утверждения, и все три — про поведение:
+ *   1. набранное не поднимается наверх до потери фокуса (сосед не перерисовался);
+ *   2. FormData уже содержит набранное — иначе Enter в заголовке отправил бы пустую строку;
+ *   3. после потери фокуса значение приходит наверх ровно один раз.
+ */
+async function runDraftIsolation() {
+  const react = await import("react");
+  const { createElement, memo, useState } = react;
+  const { createRoot } = await import("react-dom/client");
+  const { TitleField } = await import(
+    "../src/app/admin/articles/components/title-field"
+  );
+
+  const act = typeof react.act === "function" ? react.act : null;
+  if (act) {
+    (globalThis as unknown as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+  }
+  const settle = async () => {
+    if (act) {
+      await act(async () => {});
+      return;
+    }
+    for (let turn = 0; turn < 5; turn += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+
+  /** Сколько раз перерисовался сосед. Число в `current` — это и есть измерение. */
+  const siblingRenders = { count: 0 };
+
+  /** Сосед, обёрнутый в `memo`: перерисовывается только при смене своих пропов. */
+  const Sibling = memo(function Sibling({ label }: { label: string }) {
+    siblingRenders.count += 1;
+    return createElement("span", { "data-probe": "sibling" }, label);
+  });
+
+  const commits: string[] = [];
+
+  const titleMirror = react.createRef<HTMLInputElement>();
+
+  /**
+   * Запись набранного в двойник — то же, что делает форма.
+   *
+   * Здесь это функция, а не изменение ссылки: правило `react-hooks/immutability` запрещает
+   * компоненту менять переданное ему значение, и в форме ровно поэтому запись тоже вынесена в
+   * колбэк.
+   */
+  const writeMirror = (value: string) => {
+    if (titleMirror.current) titleMirror.current.value = value;
+  };
+
+  function Harness({ showField = true }: { showField?: boolean }) {
+    const [title, setTitle] = useState("");
+    return createElement(
+      "form",
+      null,
+      /*
+        Двойник — в корне формы, а не рядом с полем: именно так он устроен в настоящей форме, и
+        именно это делает проверку осмысленной. Панель вкладки размонтируется, двойник — нет.
+      */
+      createElement("input", {
+        type: "hidden",
+        name: "title",
+        ref: titleMirror,
+        defaultValue: title,
+      }),
+      showField
+        ? createElement(TitleField, {
+            value: title,
+            onChange: (next: string) => {
+              commits.push(next);
+              setTitle(next);
+            },
+            onDraft: writeMirror,
+          })
+        : null,
+      /*
+        Сосед получает заголовок в пропе, и это делает проверку точнее, а не слабее.
+
+        Если бы проп был постоянным, сосед не перерисовывался бы даже после отправки наверх —
+        `memo` для того и нужен, — и проверка ничего не доказывала бы. С зависимым пропом
+        молчание соседа во время набора означает ровно то, что нужно: форма в этот момент не
+        перерисовывается вовсе, а не «перерисовывается, но сосед это переживает».
+      */
+      createElement(Sibling, { label: title || "пусто" }),
+    );
+  }
+
+  if (act) {
+    await act(async () => {
+      root.render(createElement(Harness));
+    });
+  } else {
+    root.render(createElement(Harness));
+    await settle();
+  }
+
+  const form = host.querySelector("form") as HTMLFormElement | null;
+  /*
+    Именно видимый ввод, а не `input` вообще: первым в форме теперь идёт скрытый двойник, и
+    проверка, взявшая его, мерила бы саму себя — она писала бы значение прямо в двойник и потом
+    находила бы его в FormData.
+  */
+  const input = host.querySelector("input[type='text']") as HTMLInputElement | null;
+
+  check(
+    "Изоляция: заголовок и сосед отрисованы",
+    Boolean(form && input),
+    form && input ? "форма и поле на месте" : "поля нет",
+  );
+
+  const rendersAtMount = siblingRenders.count;
+
+  /*
+    Набор текста. Значение ставится через нативный сеттер и событие `input` — так же, как это
+    делает браузер; прямое присваивание `input.value` React не увидит, и проверка прошла бы
+    вхолостую, ничего не набрав.
+  */
+  const setValue = (element: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  if (act) {
+    await act(async () => {
+      setValue(input!, "Заголовок");
+    });
+  } else {
+    setValue(input!, "Заголовок");
+    await settle();
+  }
+
+  check(
+    "Изоляция: набор в заголовке не перерисовывает соседа",
+    siblingRenders.count === rendersAtMount,
+    `рендеров соседа: было ${rendersAtMount}, стало ${siblingRenders.count}`,
+  );
+
+  check(
+    "Изоляция: набранное ещё не ушло наверх",
+    commits.length === 0,
+    commits.length === 0 ? "наверх ничего не отправлено" : `отправлено: ${commits.join(", ")}`,
+  );
+
+  /*
+    И то, ради чего `name` стоит на самом поле: Enter отправляет форму, не покидая поле, и в
+    FormData должно лежать набранное, а не то, что было до фокуса.
+
+    `window.FormData`, а не глобальный: в Node глобальный — это реализация undici, и она требует
+    свой DOM-элемент, а не jsdom-овский. Браузер использует ту же, что и `window`.
+  */
+  const JsdomFormData = (window as unknown as { FormData: typeof FormData }).FormData;
+  const data = new JsdomFormData(form!);
+  check(
+    "Изоляция: FormData видит набранное до потери фокуса",
+    data.get("title") === "Заголовок",
+    `title = ${JSON.stringify(data.get("title"))}`,
+  );
+
+  /*
+    `focusout`, а не `blur`: React подписывается на `onBlur` через делегирование `focusout` —
+    `blur` не всплывает, и синтетическое событие до обработчика не дошло бы. Здесь это проверено
+    на практике: с `blur` вызовов остаётся ноль.
+  */
+  const JsdomFocusEvent = (window as unknown as { FocusEvent: typeof FocusEvent }).FocusEvent;
+
+  if (act) {
+    await act(async () => {
+      input!.dispatchEvent(new JsdomFocusEvent("focusout", { bubbles: true }));
+    });
+  } else {
+    input!.dispatchEvent(new JsdomFocusEvent("focusout", { bubbles: true }));
+    await settle();
+  }
+
+  check(
+    "Изоляция: потеря фокуса отдаёт значение наверх ровно один раз",
+    commits.length === 1 && commits[0] === "Заголовок",
+    `вызовов: ${commits.length} (${commits.join(", ")})`,
+  );
+
+  check(
+    "Изоляция: после потери фокуса значение доходит до формы и сосед перерисовывается",
+    siblingRenders.count > rendersAtMount &&
+      host.querySelector('[data-probe="sibling"]')?.textContent === "Заголовок",
+    `рендеров соседа: ${siblingRenders.count}, текст: ${JSON.stringify(
+      host.querySelector('[data-probe="sibling"]')?.textContent ?? null,
+    )}`,
+  );
+
+  /*
+    Переключение вкладки: поле размонтируется, значение остаётся.
+
+    Это тот сценарий, ради которого скрытый двойник и существует, и та регрессия, которую легко
+    внести незаметно: редактор пишет заголовок, уходит на «Медиа» за обложкой, сохраняет — а
+    заголовка в форме уже нет.
+  */
+  if (act) {
+    await act(async () => {
+      root.render(createElement(Harness, { showField: false }));
+    });
+  } else {
+    root.render(createElement(Harness, { showField: false }));
+    await settle();
+  }
+
+  check(
+    "Изоляция: поле убрано вместе с вкладкой",
+    host.querySelector("input[type='text']") === null,
+    host.querySelector("input[type='text']") ? "поле ещё на месте" : "поля нет",
+  );
+
+  const afterTabSwitch = new JsdomFormData(host.querySelector("form")!);
+  check(
+    "Изоляция: после ухода на другую вкладку заголовок остаётся в форме",
+    afterTabSwitch.get("title") === "Заголовок",
+    `title = ${JSON.stringify(afterTabSwitch.get("title"))}`,
+  );
+
+  /*
+    Структурное утверждение о самом редакторе: он обёрнут в `memo`.
+
+    Без этого набор заголовка перестал бы перерисовывать форму, но галочка синдикации или
+    строка статуса всё ещё перерисовывали бы сорок кнопок панели. Проверяется форма экспорта,
+    потому что по поведению это видно только в браузере, а браузера на VPS нет.
+  */
+  const { ContentEditor } = await import(
+    "../src/app/admin/articles/components/content-editor"
+  );
+  const memoType = (ContentEditor as unknown as { $$typeof?: symbol })?.$$typeof;
+  check(
+    "Изоляция: редактор обёрнут в memo, а не отрисован как обычный ребёнок",
+    memoType === Symbol.for("react.memo"),
+    String(memoType ?? "не memo"),
+  );
+
+  root.unmount();
+  await settle();
+  host.remove();
+}
+
+/**
+ * Предупреждение о несохранённых изменениях, проверенное событием, а не чтением кода.
+ *
+ * Смысл проверки в том, что решение принимает браузер: страница лишь просит спросить. Поэтому
+ * утверждение формулируется как «событие помечено отменённым», а не «обработчик навешен» — второе
+ * прошло бы и при обработчике, который ничего не делает.
+ */
+async function runUnsavedWarning() {
+  const react = await import("react");
+  const { createElement } = react;
+  const { createRoot } = await import("react-dom/client");
+  const { useUnsavedChangesWarning } = await import(
+    "../src/app/admin/articles/components/unsaved-changes"
+  );
+
+  const act = typeof react.act === "function" ? react.act : null;
+  if (act) {
+    (globalThis as unknown as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+  }
+
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+
+  function Guarded({ active }: { active: boolean }) {
+    useUnsavedChangesWarning(active);
+    return createElement("span", null, "форма");
+  }
+
+  const JsdomEvent = (window as unknown as { Event: typeof Event }).Event;
+
+  /** Что браузер увидел бы: отменено ли событие выгрузки страницы. */
+  const wouldPrompt = () => {
+    const event = new JsdomEvent("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+
+  if (act) {
+    await act(async () => {
+      root.render(createElement(Guarded, { active: true }));
+    });
+  } else {
+    root.render(createElement(Guarded, { active: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  check(
+    "Потеря текста: с изменениями закрытие вкладки переспрашивает",
+    wouldPrompt(),
+    "событие beforeunload отменено",
+  );
+
+  /*
+    Без изменений спрашивать нечего: диалог на пустой форме — это ровно тот случай, из-за
+    которого предупреждения в интерфейсах перестают читать.
+  */
+  if (act) {
+    await act(async () => {
+      root.render(createElement(Guarded, { active: false }));
+    });
+  } else {
+    root.render(createElement(Guarded, { active: false }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  check(
+    "Потеря текста: без изменений закрытие вкладки не переспрашивает",
+    !wouldPrompt(),
+    "событие не отменено",
+  );
+
+  /*
+    И снятие обработчика при размонтировании: форма статьи размонтируется при уходе на список
+    материалов, и оставленный слушатель держал бы окно в памяти, а предупреждение — живым на
+    всех страницах админки.
+  */
+  if (act) {
+    await act(async () => {
+      root.unmount();
+    });
+  } else {
+    root.unmount();
+  }
+
+  check(
+    "Потеря текста: при размонтировании формы обработчик снят",
+    !wouldPrompt(),
+    "после размонтирования событие не отменено",
+  );
+
   host.remove();
 }
 

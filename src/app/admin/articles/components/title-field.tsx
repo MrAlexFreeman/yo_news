@@ -3,6 +3,7 @@
 import { useId } from "react";
 
 import { CharCounter } from "@/app/admin/articles/components/char-counter";
+import { useDraftValue } from "@/app/admin/articles/components/draft-field";
 import {
   DZEN_TITLE_LIMIT,
   TITLE_MAX_LENGTH,
@@ -12,8 +13,17 @@ import { cn } from "@/lib/utils";
 
 type TitleFieldProps = {
   value: string;
+  /**
+   * Вызывается, когда поле покидают, — а не на каждую букву.
+   *
+   * Имя пропа сохранено прежним (`onChange`) ради вызывающего кода, но смысл теперь в потере
+   * фокуса: заголовок живёт в этом компоненте, пока в нём пишут. Это то, что освобождает
+   * редактор материала от перерисовки на каждый знак — см. `useDraftValue`.
+   */
   onChange: (value: string) => void;
   error?: string;
+  /** Запись набранного в скрытый двойник — см. `useDraftValue`. */
+  onDraft?: (value: string) => void;
 };
 
 /**
@@ -24,9 +34,10 @@ type TitleFieldProps = {
  * Editors were previously blocked at 70 characters, which is shorter than plenty
  * of ordinary Russian headlines.
  */
-export function TitleField({ value, onChange, error }: TitleFieldProps) {
+export function TitleField({ value, onChange, error, onDraft }: TitleFieldProps) {
   const id = useId();
-  const length = value.trim().length;
+  const { draft, change, flush } = useDraftValue(value, onChange, onDraft);
+  const length = draft.trim().length;
   const over = length > TITLE_SOFT_LIMIT;
   const remaining = TITLE_SOFT_LIMIT - length;
   // A third state, distinct from both the editorial warning and the hard error:
@@ -43,7 +54,7 @@ export function TitleField({ value, onChange, error }: TitleFieldProps) {
           </span>
         </label>
         <CharCounter
-          value={value}
+          value={draft}
           limit={TITLE_SOFT_LIMIT}
           warnAt={DZEN_TITLE_LIMIT}
         />
@@ -54,8 +65,9 @@ export function TitleField({ value, onChange, error }: TitleFieldProps) {
         type="text"
         required
         maxLength={TITLE_MAX_LENGTH}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
+        value={draft}
+        onChange={(event) => change(event.target.value)}
+        onBlur={flush}
         placeholder="Заголовок материала"
         aria-invalid={over || Boolean(error)}
         aria-required="true"

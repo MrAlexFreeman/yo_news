@@ -71,6 +71,7 @@ import {
   telegramApiBase,
   telegramProxy,
 } from "../src/lib/telegram-publisher";
+import { resetSyndicationSleep, setSyndicationSleep } from "../src/lib/syndication/retry";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
@@ -1359,6 +1360,136 @@ try {
     allWarnings.some((line) => line.includes("can't parse entities")),
     allWarnings.find((line) => line.includes("can't parse entities"))?.slice(0, 140) ?? "нет строки",
   );
+
+  /*
+    6. Обложка ушла, текст — нет. Это и есть дыра, ради которой добавлен повтор.
+
+    Раньше шаг с текстом был голым `await`: ошибка уходила в общий catch, публикация объявлялась
+    несостоявшейся, и редактор видел «не ушло» — а обложка уже стояла в канале. Здесь проверяется
+    обе половины починки: результат несёт id того, что уже опубликовано (иначе повторная
+    публикация продублирует картинку), и причина названа.
+  */
+  calls.length = 0;
+  const partialWarnings: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    partialWarnings.push(args.map((value) => String(value)).join(" "));
+  };
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === COVER_URL) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    }
+    if (/\/sendPhoto$/.test(url)) {
+      calls.push({ method: "sendPhoto", form: init?.body as FormData, json: null });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 707 } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    // Текст отклоняется безвозвратно: 400 повтором не лечится.
+    calls.push({
+      method: "sendMessage",
+      form: null,
+      json: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+    });
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error_code: 400,
+        description: "Bad Request: message is too long",
+      }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const partial = await publishArticleToTelegram(longArticle);
+  console.warn = realWarn;
+
+  check(
+    "Мок: обложка ушла, текст упал — результат несёт id опубликованного",
+    partial.ok === false && partial.messageId === "707",
+    `ok=${partial.ok}, messageId=${partial.messageId ?? "нет"}`,
+  );
+
+  check(
+    "Мок: частичный отказ объясняет, что уже в канале",
+    (partial.error ?? "").includes("не принял текст") &&
+      (partial.warning ?? "").includes("707"),
+    partial.error ?? "нет ошибки",
+  );
+
+  /*
+    Шаг текста не повторяется на 400 — и это проверка экономии, а не формальности: повторять
+    неверный запрос значит заставлять редактора ждать публикацию, которая уже не состоится.
+  */
+  check(
+    "Мок: отказ текста с кодом 400 не повторяется",
+    calls.filter((call) => call.method === "sendMessage").length === 1,
+    `sendMessage вызван ${calls.filter((call) => call.method === "sendMessage").length} раз`,
+  );
+
+  /*
+    7. Лимит площадки (429) на тексте — лечится повтором. Это то, ради чего пауза вообще нужна:
+    Telegram просит подождать, и через секунду текст проходит.
+  */
+  calls.length = 0;
+  let textAttempts = 0;
+
+  // Пауза подменяется: проверка не должна спать полсекунды на ровном месте. Ставится здесь, а
+  // не в начале блока, чтобы проверки выше шли без подмены — они повторов не вызывают.
+  setSyndicationSleep(async () => {});
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === COVER_URL) {
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    }
+    if (/\/sendPhoto$/.test(url)) {
+      calls.push({ method: "sendPhoto", form: init?.body as FormData, json: null });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 708 } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    textAttempts += 1;
+    calls.push({
+      method: "sendMessage",
+      form: null,
+      json: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+    });
+    if (textAttempts === 1) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error_code: 429,
+          description: "Too Many Requests: retry after 1",
+        }),
+        { status: 429, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ ok: true, result: { message_id: 709 } }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const rateLimited = await publishArticleToTelegram(longArticle);
+
+  check(
+    "Мок: 429 на тексте лечится повтором, публикация доходит",
+    rateLimited.ok === true && textAttempts === 2,
+    `ok=${rateLimited.ok}, попыток текста: ${textAttempts}`,
+  );
+
+  /*
+    Пауза между попытками не должна превращаться в реальное ожидание: здесь она подменяется,
+    как и в наборе проверок самого повтора, — иначе этот блок спал бы полсекунды на ровном месте.
+  */
+  resetSyndicationSleep();
 } finally {
   globalThis.fetch = realFetch;
   resetTelegramConfigSource();

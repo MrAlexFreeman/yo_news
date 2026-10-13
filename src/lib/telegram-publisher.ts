@@ -23,6 +23,7 @@
 import { extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
 import { planTelegramPost, buildMessengerPost, cutForReading } from "@/lib/messenger-post";
 import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
+import { SyndicationHttpError, withRetry } from "@/lib/syndication/retry";
 
 /** The official root. Used when no alternative is configured. */
 export const DEFAULT_TELEGRAM_API_ROOT = "https://api.telegram.org";
@@ -313,10 +314,21 @@ async function callTelegram<T>(
         parsed.error_code ? ` (${parsed.error_code})` : ""
       } — ответ: ${text.slice(0, 500)}`,
     );
-    throw new Error(
+
+    /*
+      Код ответа едет вместе с ошибкой, а не тонет в тексте.
+
+      Без него решение «повторить» пришлось бы принимать по строке — а 429 «too many
+      requests» и 400 «can't parse entities» отличаются именно кодом, не формулировкой.
+      Телеграм присылает его в `error_code` и при HTTP 200, поэтому берём его в первую
+      очередь, а `response.status` — только когда своего кода нет.
+    */
+    const code = parsed.error_code ?? response.status;
+    throw new SyndicationHttpError(
       `Telegram ${method}: ${parsed.description ?? `HTTP ${response.status}`}${
         parsed.error_code ? ` (${parsed.error_code})` : ""
       }`,
+      code,
     );
   }
 
@@ -379,6 +391,29 @@ function notConfiguredError(config: TelegramConfig): string {
 }
 
 /**
+ * Строка в лог перед каждой паузой повтора.
+ *
+ * Без неё повтор молчит: пауза выглядит как зависшая публикация, а оператор, читающий
+ * `pm2 logs`, не отличает «ждём лимит платформы» от «процесс встал». Логируется метод,
+ * какая попытка и сколько ждать — этого хватает, чтобы понять, что происходит.
+ */
+function telegramRetryLog(method: string) {
+  return ({ attempt, attempts, delayMs, error }: {
+    attempt: number;
+    attempts: number;
+    delayMs: number;
+    error: unknown;
+  }): void => {
+    const code = (error as { error_code?: number })?.error_code;
+    console.warn(
+      `[telegram] ${method} не удался (попытка ${attempt}/${attempts}${
+        code ? `, код ${code}` : ""
+      }) — повтор через ${delayMs} мс`,
+    );
+  };
+}
+
+/**
  * Publishes an article to the configured channel.
  *
  * Never throws. Returns `ok: false` with a reason for every failure, including a
@@ -438,7 +473,9 @@ export async function publishArticleToTelegram(
             was never called, and the channel showed a picture with nothing under it.
             That is the reported fault, and it lived in one operator.
           */
-          const id = await sendPhoto(config, cover, step.caption);
+          const id = await withRetry(() => sendPhoto(config, cover, step.caption), {
+            onRetry: telegramRetryLog("sendPhoto"),
+          });
           firstMessageId ??= id;
           sent += 1;
           console.log(
@@ -453,7 +490,42 @@ export async function publishArticleToTelegram(
         continue;
       }
 
-      const id = await sendMessage(config, step.text);
+      /*
+        Шаг с текстом: повтор при 429 и 5xx, и отказ после повторов не роняет публикацию.
+
+        Это и есть дыра, ради которой всё делалось. Раньше строка была голым `await`: если
+        Telegram отклонял текст — «too many requests», таймаут, 5xx на его стороне, — исключение
+        уходило в общий catch внизу, публикация объявлялась несостоявшейся, и редактор видел
+        «не ушло». А обложка к этому моменту уже была в канале: читатель получил фотографию с
+        короткой подписью и без текста, и по логу понять это было нечем.
+
+        Теперь отказ приходит сюда и превращается в предупреждение с id того, что уже в канале.
+        Не «всё хорошо» — `ok: false`, потому что текста в канале нет, — но с id, по которому
+        видно: пост существует. `actions.ts` запишет этот id, и повторная публикация не
+        продублирует обложку. Обе половины нужны: без ошибки редактор не узнает, без id он
+        получит вторую фотографию, когда попробует снова.
+      */
+      let id: string | null = null;
+      try {
+        id = await withRetry(() => sendMessage(config, step.text), {
+          onRetry: telegramRetryLog("sendMessage"),
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "неизвестная ошибка";
+        console.warn(`[telegram] текст не отправлен: ${reason}`);
+
+        return {
+          ok: false,
+          messageId: firstMessageId,
+          error: `Telegram принял обложку, но не принял текст: ${reason}`,
+          ...(firstMessageId
+            ? {
+                warning: `В канале осталось сообщение ${firstMessageId} без текста — оно не удалено, потому что в нём может быть обложка.`,
+              }
+            : {}),
+        };
+      }
+
       firstMessageId ??= id;
       sent += 1;
       console.log(
@@ -470,7 +542,9 @@ export async function publishArticleToTelegram(
     if (sent === 0) {
       const fallback = plan.truncated ? cutForReading(post) : post.text;
       try {
-        firstMessageId = await sendMessage(config, fallback);
+        firstMessageId = await withRetry(() => sendMessage(config, fallback), {
+          onRetry: telegramRetryLog("sendMessage (без обложки)"),
+        });
         sent = 1;
       } catch (error) {
         return {
