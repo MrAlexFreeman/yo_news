@@ -23,12 +23,16 @@ import {
   TELEGRAM_MESSAGE_LIMIT,
   buildMessengerPost,
   buildPhotoCaption,
+  chunkForTelegram,
   cutForReading,
+  escapeAttribute,
   escapeHtml,
   htmlToPlainText,
   planMaxPost,
   planTelegramPost,
+  readMoreLink,
   readingNotice,
+  shortPhotoCaption,
   stripKickerLines,
   toHashtag,
   type MessengerPost,
@@ -274,15 +278,76 @@ check(
 );
 
 check(
-  "Пост: строка-источник в самом конце, перед хештегом",
-  simplePost.text.endsWith(`Ё-новости: ${SITE}/news/zagolovok-novosti\n#Происшествия`),
-  JSON.stringify(simplePost.text.slice(-70)),
+  "Пост: ссылка-словами в самом конце, перед хештегом",
+  // Прежде здесь было «Ё-новости: https://eartnews.ru/news/zagolovok-novosti» — три строки на
+  // телефоне. Теперь адрес спрятан за словами, а сам нигде в подписи не печатается.
+  simplePost.text.endsWith(
+    `👉 <a href="${SITE}/news/zagolovok-novosti">Читать полностью на сайте</a>\n#Происшествия`,
+  ),
+  JSON.stringify(simplePost.text.slice(-90)),
+);
+
+check(
+  "Пост: сырого адреса в тексте не осталось",
+  // Адрес есть только внутри `href`. Любое другое его появление — либо мусор в подписи,
+  // либо забытая строка кредита.
+  !simplePost.text.replace(/<a href="[^"]*">/g, "").includes(SITE),
+  simplePost.text.replace(/<a href="[^"]*">/g, "").slice(-60),
+);
+
+check(
+  "Пост: в href попадает именно адрес материала",
+  /<a href="https:\/\/eartnews\.ru\/news\/zagolovok-novosti">/.test(simplePost.text),
+  (/<a href="([^"]*)"/.exec(simplePost.text) ?? [])[1] ?? "(нет)",
 );
 
 check(
   "Пост: ссылка на материал совпадает с url",
   simplePost.url === `${SITE}/news/zagolovok-novosti`,
   simplePost.url,
+);
+
+check(
+  "Ссылка в подвале: анкор вместо адреса, и адрес не может вырваться из кавычек",
+  // Сырой адрес занимал три строки на телефоне. Теперь он спрятан за словами, и единственное,
+  // что его показывает — `href`.
+  //
+  // Кавычка в адресе закрыла бы атрибут и утащила в разметку остальную строку поста. Проверяется
+  // не наличие слова «onmouseover» — оно может остаться внутри значения как обычный текст, —
+  // а единственное, что важно: во всей строке ровно две кавычки, обе обрамляют `href`.
+  readMoreLink(`${SITE}/news/x`) ===
+    `👉 <a href="${SITE}/news/x">Читать полностью на сайте</a>` &&
+    (readMoreLink(`${SITE}/news/x" onmouseover="alert(1)`).match(/"/g) ?? []).length === 2,
+  readMoreLink(`${SITE}/news/x" onmouseover="a`).slice(0, 70),
+);
+
+check(
+  "Ссылка в подвале: кавычки в адресе экранируются",
+  escapeAttribute(`a"b'c&d<e`) === "a&quot;b&#39;c&amp;d&lt;e",
+  escapeAttribute(`a"b'c&d<e`),
+);
+
+check(
+  "Ссылка в подвале: обрезанный пост и подпись оборачивают адрес одинаково",
+  readingNotice(`${SITE}/news/x`).includes(`<a href="${SITE}/news/x">`) &&
+    shortPhotoCaption(simplePost)?.includes(`<a href="${SITE}/news/zagolovok-novosti">`) === true,
+  readingNotice(`${SITE}/news/x`).slice(-60),
+);
+
+check(
+  "Ссылка в подвале: обрезка не разрезает тег",
+  // Абзац длиннее лимита режется по символам, и разрез мог бы попасть внутрь `<a href>` в
+  // подвале. Непарный тег отклонил бы всё сообщение целиком, поэтому режущая функция
+  // откатывается до последней открывающей скобки.
+  chunkForTelegram(`<b>Заголовок</b>\n\n${"аб ".repeat(2000)}${readMoreLink(`${SITE}/news/x`)}`, 500)
+    .every((chunk) => {
+      const opened = (chunk.match(/<a\b/g) ?? []).length;
+      const closed = (chunk.match(/<\/a>/g) ?? []).length;
+      return opened === closed;
+    }),
+  chunkForTelegram(`<b>Заголовок</b>\n\n${"аб ".repeat(2000)}${readMoreLink(`${SITE}/news/x`)}`, 500)
+    .map((chunk) => `${chunk.length}${/<\/?a[ >]/.test(chunk.slice(-20)) ? "(в теге)" : ""}`)
+    .join(", "),
 );
 
 check(
@@ -388,17 +453,42 @@ check(
   JSON.stringify(prosePostText.slice(0, 120)),
 );
 
+/*
+  Указатель «Читайте также» вырезается, и остаётся ровно одна ссылка — наша.
+
+  Проверка раньше смотрела на весь текст поста и искала в нём `<a`, чего быть не должно было:
+  в теле ссылки должны стать текстом. Теперь в посте есть наш собственный `<a href>` в подвале,
+  поэтому «нет ни одной ссылки» больше не верное утверждение — верное: в теле поста нет ссылок
+  инструкции, а живая ссылка ровно одна.
+*/
+const POINTER_PHRASES = [
+  "Читайте также",
+  "Читать также",
+  "Читать далее",
+  "Смотрите также",
+  "Почитайте также",
+];
+
 check(
-  "Мессенджер: любая из фраз-указателей распознаётся",
-  ["Читайте также", "Читать также", "Читать далее", "Смотрите также", "Почитайте также"]
-    .map((phrase) => `<p>Текст.</p><p>${phrase}: <a href="/news/x">Материал</a></p>`)
-    .every((body) => !buildMessengerPost({ title: "T", contentHtml: body, slug: "s", siteUrl: SITE }).text.includes("<a"))
-    &&
+  "Мессенджер: указатель вырезается, а живая ссылка в посте ровно одна",
+  POINTER_PHRASES.every((phrase) => {
+    const post = buildMessengerPost({
+      title: "T",
+      contentHtml: `<p>Текст.</p><p>${phrase}: <a href="/news/x">Материал</a></p>`,
+      slug: "s",
+      siteUrl: SITE,
+    });
+    return (
+      !post.text.includes(phrase) &&
+      !post.text.includes("Материал") &&
+      (post.text.match(/<a href/g) ?? []).length === 1
+    );
+  }) &&
     ["Читайте также", "Читать далее"].every(
       (phrase) =>
         !stripKickerLines(`Абзац.\n\n${phrase}\n\nЕщё абзац`).includes(phrase),
     ),
-  "все распознаны",
+  `фраз: ${POINTER_PHRASES.length}, все распознаны`,
 );
 
 check(
@@ -1110,12 +1200,32 @@ try {
   );
 
   check(
-    "Мок: подпись к обложке короткая, в лимите и со ссылкой",
+    "Мок: подпись к обложке короткая, в лимите и со ссылкой-словами",
     longCaption.length > 0 &&
       longCaption.length <= TELEGRAM_CAPTION_LIMIT &&
       longCaption.includes(TELEGRAM_CAPTION_MORE) &&
-      longCaption.includes(`${SITE}/news/dlinnaia`),
-    `${longCaption.length} символов, хвост: ${JSON.stringify(longCaption.slice(-60))}`,
+      // Адрес есть только внутри `href` — иначе он снова занимает три строки.
+      longCaption.includes(`<a href="${SITE}/news/dlinnaia">`) &&
+      !longCaption.replace(/<a href="[^"]*">/g, "").includes(SITE),
+    `${longCaption.length} символов, хвост: ${JSON.stringify(longCaption.slice(-70))}`,
+  );
+
+  check(
+    "Мок: обе отправки Telegram несут parse_mode HTML",
+    // Разметка без parse_mode не работает: Telegram покажет `<a href="…">` как текст, а с
+    // `parse_mode` разберёт его в ссылку. Проверяются оба вызова — подпись и текст, — потому
+    // что формат задаётся в двух разных местах кода: multipart и JSON.
+    calls[0]?.method === "sendPhoto" &&
+      calls[0]?.form?.get("parse_mode") === "HTML" &&
+      calls[1]?.method === "sendMessage" &&
+      calls[1]?.json?.parse_mode === "HTML",
+    `sendPhoto=${calls[0]?.form?.get("parse_mode")}, sendMessage=${calls[1]?.json?.parse_mode}`,
+  );
+
+  check(
+    "Мок: текстовое сообщение несёт ту же ссылку-словами",
+    String(calls[1]?.json?.text ?? "").includes(`<a href="${SITE}/news/dlinnaia">`),
+    JSON.stringify(String(calls[1]?.json?.text ?? "").slice(-70)),
   );
 
   // 3. The escaping, end to end: this body is exactly what used to make Telegram refuse
@@ -1141,8 +1251,17 @@ try {
   );
 
   check(
-    "Мок: единственный живой тег — <b> заголовка",
-    (trickyText.match(/<[^>]*>/g) ?? []).join("") === "<b></b>",
+    "Мок: живые теги только те, что мы ставим сами: <b> и <a href>",
+    // Раньше проверка требовала, чтобы в тексте был ровно один тег — <b> заголовка. Теперь их
+    // два вида, и это проверка на то, что получатель не откажет текст целиком: Telegram
+    // разбирает только известное подмножество HTML и отвечает «can't parse entities» на всё,
+    // что в него не входит, а не на конкретный тег. Тег из статьи сюда попасть не может —
+    // тело экранировано, это проверяется отдельно.
+    (() => {
+      const tags = trickyText.match(/<[^>]*>/g) ?? [];
+      const allowed = new Set(["<b>", "</b>", `<a href="${SITE}/news/sravnenie">`, "</a>"]);
+      return tags.length > 0 && tags.every((tag) => allowed.has(tag));
+    })(),
     JSON.stringify(trickyText.match(/<[^>]*>/g) ?? []),
   );
 
@@ -1384,6 +1503,20 @@ try {
     "Мок MAX: текст помечен как html и адресован каналу",
     shortMessage.format === "html",
     JSON.stringify(shortMessage.format),
+  );
+
+  check(
+    "Мок MAX: ссылка в подвале — анкор, адрес не печатается",
+    // То же, что в Telegram: MAX разбирает `format: "html"` и показывает `<a href>` ссылкой с
+    // нашими словами. Адрес в теле сообщения больше не должен встречаться — иначе он снова
+    // занимает три строки в MAX точно так же, как занимал в Telegram.
+    /<a href="https:\/\/eartnews\.ru\/news\/[^"]+">Читать полностью на сайте<\/a>/.test(
+      String(shortMessage.text ?? ""),
+    ) &&
+      !String(shortMessage.text ?? "")
+        .replace(/<a href="[^"]*">/g, "")
+        .includes("eartnews.ru"),
+    JSON.stringify(String(shortMessage.text ?? "").slice(-70)),
   );
 
   check(

@@ -27,11 +27,36 @@ export const LONG_READING_BODY_LIMIT = 3500;
 /** MAX's documented `text` ceiling on `POST /messages`. */
 export const MAX_MESSAGE_LIMIT = 4000;
 
-/** The line that credits the site, as the editorial voice asks for. */
-const SOURCE_PREFIX = "Ё-новости";
+/**
+ * Прежняя строка кредита была «Ё-новости: <адрес>». Она ушла вместе с сырым адресом: канал
+ * называется «Ё-новости», и приписка перед ссылкой читалась как «Ё-новости: читать полностью
+ * на сайте». Само кредитование осталось — им стала ссылка с понятными словами.
+ */
 
 /** Appended after a cut, in place of the missing paragraphs. */
 const READING_NOTICE = "📖 Полный текст расследования читайте на сайте";
+
+/**
+ * Ссылка в подвале поста — словами, а не адресом.
+ *
+ * Сырой адрес занимал три строки на телефоне: «👉 Читать полностью:
+ * https://eartnews.ru/news/sverdlovchane-posle-anomalnyh-…». Читатель узнаёт из этого
+ * ровно одно — что ссылка длинная; что за материал и куда он ведёт, видно только после
+ * нажатия.
+ *
+ * Разметка не украшение, а требование площадки. Telegram принимает подпись и текст только с
+ * `parse_mode: "HTML"` и поддерживает подмножество тегов, где `<a href>` — штатный способ
+ * показать ссылку. MAX то же самое: в документации `format: "html"` и `<a href="…">Текст</a>`
+ * перечислены как способы отправки ссылки. Поэтому один и тот же текст годится обоим, и
+ * разбирать его получателю не нужно.
+ *
+ * Слово «Ё-новости» из прежней строки ушло: канал и так называется, а приписка перед ссылкой
+ * превращала фразу в «Ё-новости: читать полностью на сайте». Кто угодно печатающий наш адрес,
+ * получает теперь ссылку с понятным текстом и без лишнего префикса.
+ */
+export function readMoreLink(url: string, label = "Читать полностью на сайте"): string {
+  return `👉 <a href="${escapeAttribute(url)}">${escapeHtml(label)}</a>`;
+}
 
 /**
  * Block-level elements that end a paragraph.
@@ -285,6 +310,18 @@ export function escapeHtml(text: string): string {
 }
 
 /**
+ * Экранирование для значения HTML-атрибута.
+ *
+ * `escapeHtml` не трогает кавычки — они безопасны в тексте, но не внутри `href="…"`. Адрес
+ * берётся из настроек сайта и из слага, то есть из данных, которые редактор не пишет
+ * руками; всё равно, одна непарная кавычка в адресе закрыла бы атрибут и утащила в разметку
+ * остальную строку поста.
+ */
+export function escapeAttribute(text: string): string {
+  return escapeHtml(text).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/**
  * Turns a rubric name into a hashtag.
  *
  * A hashtag cannot contain whitespace, so the words are joined with underscores
@@ -358,14 +395,17 @@ export function buildMessengerPost(input: MessengerPostInput): MessengerPost {
   const hashtag = escapeHtml(toHashtag(input.categoryName));
 
   /*
-    The credit and the rubric tag share one block, joined by a single newline rather
+    The link and the rubric tag share one block, joined by a single newline rather
     than a blank line. They are one thought — where this came from and what it is
     filed under — and a blank line between them reads as the start of a new section in
     a post that is otherwise a wall of paragraphs.
+
+    The credit line became the link itself: it used to be «Ё-новости: https://…», which on a
+    phone wrapped over three lines and told the reader nothing except that the address was long.
+    Now it is one line with the address hidden behind the words — see `readMoreLink`.
   */
-  const footer = hashtag
-    ? `${SOURCE_PREFIX}: ${escapeHtml(url)}\n${hashtag}`
-    : `${SOURCE_PREFIX}: ${escapeHtml(url)}`;
+  const linkLine = readMoreLink(url);
+  const footer = hashtag ? `${linkLine}\n${hashtag}` : linkLine;
 
   const headline = `<b>${escapeHtml(input.title.trim())}</b>`;
   const blocks = [headline, body, footer].filter((block) => block.length > 0);
@@ -375,7 +415,7 @@ export function buildMessengerPost(input: MessengerPostInput): MessengerPost {
 
 /** The trailing block a cut ends with. */
 export function readingNotice(url: string): string {
-  return `${READING_NOTICE}: ${escapeHtml(url)}`;
+  return `${READING_NOTICE}: ${readMoreLink(url)}`;
 }
 
 /**
@@ -392,6 +432,22 @@ function cutWithoutSplittingEntity(text: string, limit: number): string {
   if (lastAmp !== -1 && !cut.slice(lastAmp).includes(";")) {
     cut = cut.slice(0, lastAmp);
   }
+
+  /*
+    И не разрезать тег.
+
+    В посте есть живые `<a href>` в подвале, и обрезка по символам иногда попадает внутрь него —
+    когда абзац не помещается в лимит сам по себе. Разрезанный `<a href="https://…` без
+    закрытия не «покажется как текст», а отклонит всё сообщение целиком: Telegram и MAX
+    разбирают только известное подмножество HTML и отвечают «can't parse entities» на непарный
+    тег, а не на конкретный. Откат до последней `<` перед точкой реза стоит нескольких
+    символов и превращает отказ сообщения в обычную потерю хвоста.
+  */
+  const lastOpen = cut.lastIndexOf("<");
+  if (lastOpen !== -1 && !cut.slice(lastOpen).includes(">")) {
+    cut = cut.slice(0, lastOpen);
+  }
+
   return cut.replace(/\s+$/, "");
 }
 
@@ -458,12 +514,13 @@ export type PlanOptions = {
 };
 
 /**
- * The line a cut caption ends with, so the reader knows where the rest of the story is.
+ * The words the link wears instead of its address.
  *
- * The brief names this wording, and it is also the shape the site's own posts use, so a
- * caption reads the same whether the reader is looking at the channel or the page.
+ * Без стрелки: её ставит `readMoreLink`, и там же живёт адрес. Раньше эта константа была
+ * видимой частью строки («👉 Читать полностью: https://…») и менялась вместе с оформлением;
+ * теперь это только подпись анкора, и вид поста задаёт `readMoreLink` целиком.
  */
-export const TELEGRAM_CAPTION_MORE = "👉 Читать полностью";
+export const TELEGRAM_CAPTION_MORE = "Читать полностью";
 
 /**
  * What the caption aims for, headline and link included.
@@ -564,7 +621,7 @@ function cutAtSentence(text: string, limit: number): string {
  * mangle — can still push the result over, where the headline is cut rather than the link.
  */
 export function buildPhotoCaption(post: MessengerPost): string {
-  const linkLine = `${TELEGRAM_CAPTION_MORE}: ${escapeHtml(post.url)}`;
+  const linkLine = readMoreLink(post.url, TELEGRAM_CAPTION_MORE);
   const tail = post.hashtag ? `${linkLine}\n${post.hashtag}` : linkLine;
 
   /* Two "\n\n" separators, counted once: they are present whenever a headline meets a lead. */
@@ -655,7 +712,7 @@ export function chunkForTelegram(text: string, limit = TELEGRAM_MESSAGE_LIMIT): 
  * rest, even if the second send is the thing that fails.
  */
 export function shortPhotoCaption(post: MessengerPost): string | null {
-  const link = `${TELEGRAM_CAPTION_MORE}: ${escapeHtml(post.url)}`;
+  const link = readMoreLink(post.url, TELEGRAM_CAPTION_MORE);
   // The headline when there is one, and the link alone otherwise: a picture with no caption at
   // all would be a post the reader cannot act on, and `buildMessengerPost` always sets a
   // headline — this branch is for a post assembled by hand.

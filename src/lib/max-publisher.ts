@@ -7,7 +7,12 @@
  *   - host `platform-api2.max.ru` (`platform-api.max.ru` is the retiring name),
  *   - the token in an `Authorization` header, and passing it in a query parameter
  *     is explicitly no longer supported,
- *   - `POST /messages` for a message or a channel post, with `format: "html"`,
+ *   - `POST /messages` for a message or a channel post, with `format: "html"`. MAX takes
+ *     either Markdown or HTML, and the same subset of tags as Telegram — `<b>`, `<a href>`,
+ *     `<i>`, `<s>`, `<code>` — so one post text serves both messengers unparsed. The docs
+ *     list `<a href="https://…">Docs</a>` as the way to send a link, which is what the
+ *     footer now uses: the same anchor that reads as words in Telegram reads as words here,
+ *     and the raw address that used to wrap over three lines is gone from MAX too.
  *   - media is *not* posted to the message endpoint: `POST /uploads?type=image`
  *     returns a one-shot URL and a token, the bytes go to that URL as multipart,
  *     and the token is then referenced as `attachments[].payload.token`,
