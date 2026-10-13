@@ -780,9 +780,16 @@ function checkNewShelves() {
   );
   check(
     "Мнения: круглая монограмма у каждой карточки",
-    occurrences(block, "rounded-full border border-rule") === 3 &&
+    occurrences(block, "rounded-full border") === 3 &&
       occurrences(block, 'aria-hidden=""') + occurrences(block, 'aria-hidden="true"') >= 3,
     "3 монограммы",
+  );
+  check(
+    "Мнения: монограммы окрашены тоном рубрики, а не серым штампом",
+    // Одна рубрика «society» у трёх фикстур → один и тот же тон три раза, и он не дефолтный серый.
+    /border-(yo|accent|yo-dot)\/25|border-(yo|accent|yo-dot)\/30/.test(block) ||
+      block.includes("border-ink/15"),
+    "палитра бренда на монограмме",
   );
   check(
     "Мнения: имя автора полужирным",
@@ -841,6 +848,29 @@ function checkNewShelves() {
     "Полоса: вне <header> — это контент, а не навигация сайта",
     headerSource.indexOf("</header>") < headerSource.indexOf("<TrendingBar"),
     "после </header>",
+  );
+
+  /*
+    Мачта: бегущая строка из живых данных, а не из зашитых цифр.
+
+    «Главные темы» дублировали полосу ниже, зашитые курсы «92,40» выглядели как биржа, но
+    биржей не были. Проверяется исходник шапки: статичные числа и дубль тем обязаны исчезнуть,
+    а данные обязаны приходить пропами.
+  */
+  check(
+    "Мачта: зашитый статичный массив тикера удалён",
+    // Раньше тикер был константой `TICKER_ITEMS` с «USD/RUB 92,40» и «Главные темы». Самого
+    // массива больше нет — комментарий в шапке объясняет, что было удалено, и в нём эти строки
+    // могут встречаться как цитата прошлого, поэтому проверяется именно отсутствие константы.
+    !headerSource.includes("TICKER_ITEMS"),
+    "TICKER_ITEMS удалён",
+  );
+  check(
+    "Мачта: тикер собирается из переданных погоды и курса",
+    /rates\??:\s*CbrRates/.test(headerSource) &&
+      /weather\??:\s*Weather/.test(headerSource) &&
+      headerSource.includes("tickerItems"),
+    "пропы rates + weather",
   );
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { Check } from "lucide-react";
 import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 
 import { votePollAction } from "@/app/(public)/polls/actions";
@@ -136,12 +137,14 @@ export function ArticlePoll({ poll }: { poll: PollView }) {
               >
                 {/* Полоса результата: видна только после голосования.
                     Лежит под текстом за счёт порядка в DOM: она стоит раньше, а текст — это
-                    `relative`, поэтому рисуется поверх. Отдельный z-index не нужен. */}
+                    `relative`, поэтому рисуется поверх. Отдельный z-index не нужен.
+                    Ширина анимируется: переход по `width` — это честная анимация результата,
+                    а не декорация, и она подчиняется prefers-reduced-motion на уровне Tailwind. */}
                 {showResults ? (
                   <span
                     aria-hidden
                     className={cn(
-                      "absolute inset-y-0 left-0",
+                      "absolute inset-y-0 left-0 transition-[width] duration-500 ease-out motion-reduce:transition-none",
                       chosen ? "bg-accent/20" : "bg-ink/10",
                     )}
                     style={{ width: `${percent}%` }}
@@ -149,8 +152,15 @@ export function ArticlePoll({ poll }: { poll: PollView }) {
                 ) : null}
 
                 <span className="relative flex items-baseline justify-between gap-3">
-                  <span className={cn("min-w-0", chosen && "font-medium text-ink")}>
-                    {option.text}
+                  <span className={cn("flex min-w-0 items-center gap-1.5", chosen && "font-medium text-ink")}>
+                    {chosen ? (
+                      /*
+                        Отметка выбранного варианта. Фоновая заливка теряется в монохромной
+                        печати и при слабом контрасте; галочка — это явное «вы ответили так».
+                      */
+                      <Check className="size-3.5 shrink-0 text-accent" aria-hidden />
+                    ) : null}
+                    <span className="min-w-0">{option.text}</span>
                   </span>
                   {showResults ? (
                     <span className="shrink-0 text-right tabular-nums">

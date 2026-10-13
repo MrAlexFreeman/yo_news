@@ -29,7 +29,7 @@ export function TrendingBar({ tags, heading = "В центре внимания"
       aria-label={heading}
       className="border-b border-rule/70 bg-paper-dim/30"
     >
-      <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2">
+      <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-1.5 sm:py-2">
         <span className="shrink-0 text-xs font-bold tracking-wider text-ink uppercase">
           {heading}
         </span>

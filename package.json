@@ -29,7 +29,7 @@
                     "ui:check":  "tsx --env-file=.env scripts/check-editor-ui.ts",
                     "forum:check":  "tsx --env-file=.env scripts/check-forum.ts",
                     "home:check":  "tsx --env-file=.env scripts/check-news-feed.ts",
-                    "check":  "npm run encoding:check \u0026\u0026 npm run typecheck \u0026\u0026 npm run lint \u0026\u0026 npm run feed:check \u0026\u0026 npm run vk:check \u0026\u0026 npm run vk:dedupe \u0026\u0026 npm run wiki:check \u0026\u0026 npm run checks:security \u0026\u0026 npm run messenger:check \u0026\u0026 npm run syndication:check \u0026\u0026 npm run suggest:check \u0026\u0026 npm run extract:check \u0026\u0026 npm run categories:check \u0026\u0026 npm run loop:check \u0026\u0026 npm run ui:check \u0026\u0026 npm run forum:check \u0026\u0026 npm run polls:check \u0026\u0026 npm run home:check \u0026\u0026 npm run mascot:check \u0026\u0026 npm run sticky:check \u0026\u0026 npm run popover:check \u0026\u0026 npm run trash:check \u0026\u0026 npm run article:media \u0026\u0026 npm run multipart:check",
+                    "check":  "npm run encoding:check \u0026\u0026 npm run typecheck \u0026\u0026 npm run lint \u0026\u0026 npm run feed:check \u0026\u0026 npm run vk:check \u0026\u0026 npm run vk:dedupe \u0026\u0026 npm run wiki:check \u0026\u0026 npm run checks:security \u0026\u0026 npm run messenger:check \u0026\u0026 npm run syndication:check \u0026\u0026 npm run suggest:check \u0026\u0026 npm run extract:check \u0026\u0026 npm run categories:check \u0026\u0026 npm run loop:check \u0026\u0026 npm run ui:check \u0026\u0026 npm run forum:check \u0026\u0026 npm run polls:check \u0026\u0026 npm run home:check \u0026\u0026 npm run mascot:check \u0026\u0026 npm run sticky:check \u0026\u0026 npm run popover:check \u0026\u0026 npm run ticker:check \u0026\u0026 npm run trash:check \u0026\u0026 npm run article:media \u0026\u0026 npm run multipart:check",
                     "postinstall":  "prisma generate",
                     "trash:check":  "tsx --env-file=.env scripts/check-trash.mts",
                     "article:media":  "tsx --env-file=.env scripts/check-article-media.mts",
@@ -43,6 +43,7 @@
                     "mascot:check":  "tsx scripts/check-mascot.mts",
                     "sticky:check":  "tsx scripts/check-sticky-header-logic.mts",
     "popover:check":  "tsx scripts/check-entity-popover.mts",
+    "ticker:check":  "tsx scripts/check-ticker.mts",
                     "wiki:check":  "tsx --env-file=.env scripts/check-wiki.mts",
                     "polls:check":  "tsx scripts/check-polls.mts"
                 },

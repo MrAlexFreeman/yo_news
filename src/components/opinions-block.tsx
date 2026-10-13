@@ -3,6 +3,7 @@ import Link from "next/link";
 import { formatRelative } from "@/lib/date";
 import type { ArticleListItem } from "@/lib/public-queries";
 import { SITE_NAME } from "@/lib/site";
+import { cn } from "@/lib/utils";
 
 /**
  * The opinion column: a name, a round portrait, a headline and when it appeared.
@@ -29,12 +30,39 @@ type OpinionsBlockProps = {
   now: Date;
 };
 
-/** One circle, one letter. */
-function Roundel({ letter }: { letter: string }) {
+/*
+  Мягкая палитра монограмм — оттенки бренда, а не случайные цвета.
+
+  Раньше все три круга были одинаково серыми, и колонка из «О», «Р», «Э» читалась штампом.
+  Тон берётся из рубрики материала: детерминированный хеш слага → индекс, поэтому одна рубрика
+  всегда одного цвета, и он переживает перестановку карточек. Это не фотографии авторов, которых
+  редакция сознательно избегает, — просто цвет, чтобы колонка дышала.
+*/
+const ROUNDEL_TONES = [
+  "border-yo/25 bg-yo/10 text-yo-ink",
+  "border-accent/25 bg-accent/10 text-accent-ink",
+  "border-yo-dot/30 bg-yo-dot/15 text-yo-ink",
+  "border-ink/15 bg-ink/5 text-ink-soft",
+] as const;
+
+/** Детерминированный тон рубрики: один слага — один цвет, всегда. */
+function toneFor(slug: string): string {
+  let hash = 0;
+  for (let index = 0; index < slug.length; index += 1) {
+    hash = (hash * 31 + slug.charCodeAt(index)) >>> 0;
+  }
+  return ROUNDEL_TONES[hash % ROUNDEL_TONES.length];
+}
+
+/** One circle, one letter, tinted by the story's rubric. */
+function Roundel({ letter, tone }: { letter: string; tone: string }) {
   return (
     <span
       aria-hidden
-      className="flex size-12 shrink-0 items-center justify-center rounded-full border border-rule bg-paper-dim font-[family-name:var(--font-lora)] text-lg font-bold text-ink-soft"
+      className={cn(
+        "flex size-12 shrink-0 items-center justify-center rounded-full border font-[family-name:var(--font-lora)] text-lg font-bold",
+        tone,
+      )}
     >
       {letter}
     </span>
@@ -78,6 +106,7 @@ export function OpinionsBlock({
               <Link href={`/news/${article.slug}`} className="flex items-start gap-3">
                 <Roundel
                   letter={(article.category?.name ?? SITE_NAME).trim().charAt(0).toUpperCase()}
+                  tone={toneFor(article.category?.slug ?? SITE_NAME)}
                 />
 
                 <span className="min-w-0 flex-1">

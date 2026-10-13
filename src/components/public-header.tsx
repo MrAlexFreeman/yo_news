@@ -9,14 +9,7 @@ import { TrendingBar } from "@/components/trending-bar";
 import { formatDateline } from "@/lib/date";
 import { LIVE_STREAM_OFF, type LiveStreamView } from "@/lib/live-stream";
 import { SITE_TAGLINE } from "@/lib/site";
-
-/** Static market strip — the spec asks for a fixed weather/rate line. */
-const TICKER_ITEMS = [
-  "Екатеринбург +16°C, переменная облачность",
-  "USD/RUB 92,40 ▲ 0,12",
-  "EUR/RUB 100,15 ▼ 0,08",
-  "Главные темы: транспорт, ЖКХ, образование, спорт",
-];
+import type { CbrRates, Weather } from "@/lib/ticker";
 
 type PublicHeaderProps = {
   /** Rubric links from the database, rendered as the scrollable nav row. */
@@ -34,6 +27,10 @@ type PublicHeaderProps = {
    * outcome — no badge — instead of an error or, worse, an unconditional one.
    */
   live?: LiveStreamView;
+  /** Живой курс ЦБ, либо null — тогда валютная строка не печатается. */
+  rates?: CbrRates | null;
+  /** Живая погода Екатеринбурга, либо null — тогда строка погоды не печатается. */
+  weather?: Weather | null;
   /** Frozen so a statically generated page keeps the build-time dateline. */
   now: Date;
 };
@@ -46,44 +43,68 @@ export function PublicHeader({
   categories,
   trendingTags,
   live = LIVE_STREAM_OFF,
+  rates = null,
+  weather = null,
   now,
 }: PublicHeaderProps) {
+  /*
+    Текст бегущей строки собран из живых данных, а не из зашитых цифр. Курс — с официального
+    сайта ЦБ, погода — с open-meteo; что не удалось прочитать, то просто отсутствует. Зашитый
+    «USD/RUB 92,40» выглядел как биржа, но биржей не был — полуправда в мачте хуже пустой строки.
+  */
+  const tickerItems = [
+    weather
+      ? `Екатеринбург ${weather.temp > 0 ? "+" : ""}${weather.temp}°C, ${weather.condition}`
+      : null,
+    rates ? `USD ${rates.usd.toFixed(2)} ₽` : null,
+    rates ? `EUR ${rates.eur.toFixed(2)} ₽` : null,
+  ].filter((item): item is string => item !== null);
+
   return (
     <>
       <header className="border-b border-rule bg-paper">
-      {/* Top strip: date and the ticker. */}
+      {/* Top strip: date and the live ticker. The ticker is hidden on a phone — the first
+          screen is for the masthead and the news, not for a market strip. */}
       <div className="border-b border-rule/70 bg-paper-dim text-[11px] text-ink-soft">
-        <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-1.5">
+        <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-1 sm:py-1.5">
           <LiveDateline
             initial={formatDateline(now)}
             initialIso={now.toISOString()}
           />
 
-          <span aria-hidden className="hidden h-3 w-px bg-rule sm:block" />
+          {tickerItems.length > 0 ? (
+            <>
+              <span aria-hidden className="hidden h-3 w-px bg-rule sm:block" />
 
-          <div
-            className="relative min-w-0 flex-1 overflow-hidden"
-            aria-label="Главные темы"
-          >
-            {/* The track holds the list twice so the loop has no visible seam. */}
-            <div className="ticker-track flex w-max gap-8 whitespace-nowrap">
-              {[...TICKER_ITEMS, ...TICKER_ITEMS].map((item, index) => (
-                <span key={`${item}-${index}`} className="text-ink-soft">
-                  • {item}
-                </span>
-              ))}
-            </div>
-          </div>
+              <div
+                className="relative hidden min-w-0 flex-1 overflow-hidden sm:block"
+                aria-label="Курсы и погода"
+              >
+                {/* The track holds the list twice so the loop has no visible seam. */}
+                <div className="ticker-track flex w-max gap-8 whitespace-nowrap">
+                  {[...tickerItems, ...tickerItems].map((item, index) => (
+                    <span key={`${item}-${index}`} className="text-ink-soft">
+                      • {item}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
 
-      {/* Wordmark row. */}
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4">
+      {/*
+        Wordmark row. `py-2.5 sm:py-4` and a tagline hidden on the phone: the first screen is
+        the product — the masthead has to say who this is and then get out of the way of the
+        lead headline.
+      */}
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 sm:py-4">
         {/* No aria-label: the accessible name then equals the visible lockup,
             which is what the label-in-name rule requires. */}
-        <Link href="/" className="group flex flex-col items-start gap-1.5">
+        <Link href="/" className="group flex flex-col items-start gap-1 sm:gap-1.5">
           <Logo />
-          <span className="text-[10px] font-medium tracking-[0.2em] text-ink-soft uppercase group-hover:text-yo-ink">
+          <span className="hidden text-[10px] font-medium tracking-[0.2em] text-ink-soft uppercase group-hover:text-yo-ink sm:block">
             {SITE_TAGLINE}
           </span>
         </Link>
@@ -122,7 +143,7 @@ export function PublicHeader({
           `shrink-0`, so the forum is reachable without a tap-to-open step. Adding a
           mobile menu just for one link would be a second navigation to keep in step. */}
       <nav aria-label="Рубрики" className="border-t border-rule">
-        <ul className="mx-auto flex max-w-7xl gap-1.5 overflow-x-auto px-4 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <ul className="mx-auto flex max-w-7xl gap-1.5 overflow-x-auto px-4 py-1.5 sm:py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <li className="shrink-0">
             <NavPill href="/" label="Все новости" />
           </li>

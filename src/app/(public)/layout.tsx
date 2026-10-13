@@ -5,6 +5,7 @@ import { PublicHeader } from "@/components/public-header";
 import { YandexMetrika } from "@/components/analytics/yandex-metrika";
 import { getLiveStreamView } from "@/lib/live-stream-server";
 import { getCategories, getTrendingTags } from "@/lib/public-queries";
+import { getCbrRates, getYekaterinburgWeather } from "@/lib/ticker";
 
 /**
  * How many topics the strip carries.
@@ -26,13 +27,15 @@ const TRENDING_TAGS_COUNT = 5;
  * reader. It also keeps session recording away from the admin's own forms.
  */
 export default async function PublicLayout({ children }: LayoutProps<"/">) {
-  // One round trip for both header shelves: the rubric pills and the topic strip beneath
-  // them, plus the live badge. Neither waits on the other, and `TrendingBar` renders nothing
-  // when the strip comes back empty, so an install with no tags pays nothing and shows no bar.
-  const [categories, trendingTags, live] = await Promise.all([
+  // One round trip for the header's shelves and its live data. The rubric pills, the topic
+  // strip, the live badge, the CBR rates and the weather are all independent, and each is
+  // optional — a failed or empty read simply omits that row rather than holding up the masthead.
+  const [categories, trendingTags, live, rates, weather] = await Promise.all([
     getCategories(),
     getTrendingTags(TRENDING_TAGS_COUNT),
     getLiveStreamView(),
+    getCbrRates(),
+    getYekaterinburgWeather(),
   ]);
   const now = new Date();
 
@@ -49,6 +52,8 @@ export default async function PublicLayout({ children }: LayoutProps<"/">) {
           categories={categories}
           trendingTags={trendingTags}
           live={live}
+          rates={rates}
+          weather={weather}
           now={now}
         />
       </HeaderShell>
