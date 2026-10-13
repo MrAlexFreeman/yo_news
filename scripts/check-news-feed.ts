@@ -698,6 +698,46 @@ function checkArticlePageChrome() {
     "ReadingRibbon + id=article",
   );
 
+  const ribbon = readFileSync(
+    new URL("../src/components/reading-ribbon.tsx", import.meta.url),
+    "utf8",
+  );
+
+  /*
+    Полоса наезжала на мачту: со `-translate-y-full` (сдвиг на собственную высоту, 39px) при
+    `top: 52px` она вставала на 13..52px экрана — ровно поверх строки даты, погоды и курса ЦБ
+    (0..29px). Замер до правки: `ribbonTop: 13, ribbonBottom: 52, overlapWithStrip: true` при
+    нулевом скролле. Скрывать нужно на собственную высоту ПЛЮС `top`, чтобы нижняя кромка встала
+    в 0. Ниже это и стережётся: сдвиг обязан вычитать `top`, а не только `100%`.
+  */
+  check(
+    "Статья: скрытая полоса чтения уходит за экран целиком, а не на свою высоту",
+    /calc\(-100% - /.test(ribbon) &&
+      ribbon.includes("env(safe-area-inset-top)") &&
+      !/"-translate-y-full"/.test(ribbon),
+    "translateY(calc(-100% - top))",
+  );
+
+  /*
+    Порог 300px при мачте 219px показывал полосу, пока мачта была на экране, и «450px» из
+    задания — то же самое число наугад: на телефоне мачта ниже, и оно срабатывает уже в теле
+    статьи. Порог обязан считаться по документу.
+  */
+  check(
+    "Статья: порог появления полосы читается со страницы, а не зашит числом",
+    /measureThreshold/.test(ribbon) &&
+      /getBoundingClientRect\(\)\.bottom \+ window\.scrollY/.test(ribbon) &&
+      !/SCROLL_THRESHOLD/.test(ribbon),
+    "measureThreshold() по шапке, полосе тем и заголовку",
+  );
+
+  check(
+    "Статья: скрытая полоса не ловит клики и не доступна с клавиатуры",
+    /pointer-events-none/.test(ribbon) &&
+      /inert=\{visible \? undefined : true\}/.test(ribbon),
+    "pointer-events-none + inert",
+  );
+
   check(
     "Статья: блок «Коротко о главном» стоит перед телом и показывает лид",
     /Главное за 30 секунд/.test(source) &&
