@@ -45,6 +45,7 @@
         "popover:check": "tsx scripts/check-entity-popover.mts",
         "ticker:check": "tsx scripts/check-ticker.mts",
     "native:check": "tsx scripts/check-native.mts",
+    "icons:build": "tsx scripts/build-icons.mts",
         "wiki:check": "tsx --env-file=.env scripts/check-wiki.mts",
         "polls:check": "tsx scripts/check-polls.mts"
     },

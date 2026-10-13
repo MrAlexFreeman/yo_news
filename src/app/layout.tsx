@@ -64,22 +64,19 @@ export const metadata: Metadata = {
   },
   icons: {
     /*
-      Three formats, deliberately, and the order is the preference order a browser reads.
+      The brand mark is a photograph-like render, so it is a raster file and there is no SVG
+      among these icons: a vector cannot carry the globe, the lighting or the 3D letter, and an
+      SVG wrapping the same bitmap would be the same bytes with an extra layer of indirection.
 
       `favicon.ico` is not listed here because it does not need to be: it lives at
       `src/app/favicon.ico`, and Next emits its own link for it with a content hash — so a
       changed icon reaches a reader who already has the old one cached, which a plain
       `/favicon.ico` cannot promise. Adding it here as well would print the same icon twice.
-
-      The SVG is what modern browsers use: one vector file that is crisp at every size and
-      costs 528 bytes. The PNG is the floor for anything that does not take SVG, and the
-      apple icon is what iOS puts on the home screen — iOS ignores SVG and ignores the
-      manifest, so without it a bookmark gets a screenshot of the page.
+      That file carries 16/32/48 px frames and is what a browser actually shows in the tab; the
+      PNG is the larger floor, and the apple icon is what iOS puts on the home screen — iOS
+      ignores SVG and ignores the manifest, so without it a bookmark gets a screenshot of the page.
     */
-    icon: [
-      { url: "/icon.svg", type: "image/svg+xml" },
-      { url: "/icon.png", sizes: "32x32", type: "image/png" },
-    ],
+    icon: [{ url: "/icon.png", sizes: "192x192", type: "image/png" }],
     apple: [{ url: "/apple-icon.png", sizes: "180x180", type: "image/png" }],
   },
   alternates: {
