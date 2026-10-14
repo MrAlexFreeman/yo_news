@@ -260,9 +260,9 @@ export function SyndicationSettings({ initial }: { initial: SyndicationState }) 
    *
    * "Проверить адрес" only reaches the endpoint — no token is sent, and a 404 counts as
    * success, because the question is whether this host can talk to that address at all.
-   * "Проверить токен" costs nothing and posts nothing. "Отправить в канал" really does
-   * publish a short test note, which is the only way to find out that the channel id is
-   * wrong — but it must be asked for explicitly, so it is a separate control.
+   * "Проверить токен" costs nothing and posts nothing. "Тестовая отправка" пускает в канал
+   * настоящий материал с обложкой: только так видно, что картинка доходит, — а ломалась в
+   * продакшене именно она. Кнопка отдельная, потому что пишет в канал по-настоящему.
    */
   async function test(messenger: Messenger, mode: "ping" | "token" | "message") {
     const key = `${messenger}:${mode}`;

@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 
+import { prisma } from "@/lib/prisma";
 import { getSetting } from "@/lib/settings";
 import { checkMaxToken, sendMaxTestMessage, type MaxConfig } from "@/lib/max-publisher";
 import {
   checkTelegramToken,
   pingTelegramEndpoint,
-  sendTelegramTestMessage,
+  publishArticleToTelegram,
   telegramProxy,
   type TelegramConfig,
 } from "@/lib/telegram-publisher";
@@ -29,14 +30,15 @@ export const runtime = "nodejs";
  *    chat id fails here and nowhere else — `getMe` is perfectly happy with a bot that
  *    has never been added to any channel.
  *
+ * **The Telegram half of `message` publishes a real article, cover and all.** It used to
+ * send a one-line service note, which answered "does the chat id work" and nothing else:
+ * the cover is the part that has actually broken in production, and a note has no cover to
+ * break. So the probe takes the latest published story with a picture, sends it exactly the
+ * way a publication will, and reports whether the photo went out — green only when it did.
+ *
  * The typed values win over the stored ones, which is the point of the button: check
  * what was just pasted, before saving it. Under /api/admin/, so Basic Auth applies;
  * `POST` requires JSON so a cross-origin form cannot drive this.
- *
- * Unlike the VK settings test, `message` really does publish something, because the
- * destination is a channel and there is no way to prove a chat id works without
- * writing to it. The text says so on its face and `mode` is explicit, so no button
- * fires it by accident.
  */
 
 type Messenger = "telegram" | "max";
@@ -153,13 +155,70 @@ export async function POST(request: Request) {
     that the credentials still work is doing exactly the right thing. Refusing would
     make the button useless in the one situation it is most likely to be used in.
   */
-  const outcome =
-    messenger === "telegram"
-      ? await sendTelegramTestMessage(config as TelegramConfig)
-      : await sendMaxTestMessage(config as MaxConfig);
+  if (messenger === "max") {
+    const outcome = await sendMaxTestMessage(config as MaxConfig);
+    return NextResponse.json({ ...outcome, mode, viaProxy: false });
+  }
 
-  // Reported so the UI can say whether the request left through a proxy — the answer
-  // changes the interpretation of a failure, and the proxy is env-only so the page
-  // cannot otherwise know.
-  return NextResponse.json({ ...outcome, mode, viaProxy: telegramProxy().length > 0 });
+  /*
+    Настоящий материал, а не служебная записка.
+
+    Служебная строка отвечала только на вопрос «работает ли chat_id», а ломается не он, а
+    обложка: пост без картинки в канале выглядит как пост, у которого картинка не дошла. Взять
+    для проверки настоящую статью — единственный способ увидеть то, что увидит читатель.
+  */
+  const article = await prisma.article.findFirst({
+    where: { status: "published", deletedAt: null, coverImage: { not: null } },
+    orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+    select: {
+      id: true,
+      title: true,
+      contentHtml: true,
+      slug: true,
+      coverImage: true,
+      category: { select: { name: true } },
+    },
+  });
+
+  if (!article?.coverImage) {
+    return NextResponse.json({
+      ok: false,
+      mode,
+      viaProxy: telegramProxy().length > 0,
+      error:
+        "Нет ни одного опубликованного материала с обложкой — тест нечего показать. Опубликуйте материал с картинкой и повторите.",
+    });
+  }
+
+  const outcome = await publishArticleToTelegram(
+    {
+      id: article.id,
+      title: article.title,
+      contentHtml: article.contentHtml,
+      slug: article.slug,
+      categoryName: article.category?.name ?? null,
+      coverImage: article.coverImage,
+    },
+    { config: config as TelegramConfig },
+  );
+
+  const lines = outcome.ok
+    ? [
+        outcome.photoSent
+          ? `Пост с обложкой отправлен, сообщение ${outcome.messageId ?? "?"}.`
+          : "Сообщение ушло, но БЕЗ обложки — смотрите логи: pm2 logs uartnews | grep telegram",
+        `Материал «${article.slug}» — настоящий пост в канале, а не служебная записка: удалите его, если он не нужен.`,
+      ]
+    : [`Отправка не удалась: ${outcome.error ?? "причина неизвестна"}`];
+  if (outcome.warning) lines.push(`Предупреждение: ${outcome.warning}`);
+
+  return NextResponse.json({
+    // Зелёный — только когда картинка действительно ушла, а не когда Telegram ответил ok.
+    ok: outcome.ok && outcome.photoSent === true,
+    mode,
+    viaProxy: telegramProxy().length > 0,
+    photoSent: outcome.photoSent ?? false,
+    messageId: outcome.messageId ?? null,
+    message: lines.join(" "),
+  });
 }

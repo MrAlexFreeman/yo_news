@@ -20,8 +20,8 @@
  * (a reverse proxy, a Cloudflare Worker) and an outbound proxy.
  */
 
-import { coverImageUrl, extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
-import { coverPreviewLink, planTelegramPost, buildMessengerPost } from "@/lib/messenger-post";
+import { extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
+import { planTelegramPost, buildMessengerPost } from "@/lib/messenger-post";
 import { DEFAULT_SYNDICATION_ENABLED, parseEnabled } from "@/lib/settings-keys";
 import { SyndicationHttpError, withRetry } from "@/lib/syndication/retry";
 
@@ -55,6 +55,8 @@ export type TelegramPublishResult = {
   summary?: string;
   /** Set when the post went out without something it should have had. */
   warning?: string;
+  /** Whether the cover really went as a photo. The whole point of the probe button. */
+  photoSent?: boolean;
   error?: string;
 };
 
@@ -361,41 +363,23 @@ async function sendPhoto(
 }
 
 /**
- * Sends the text, optionally with the cover as a large preview above it.
+ * Sends the text as a message.
  *
- * `previewUrl` is the cover's absolute address. It is prepended as an invisible zero-width
- * link (`coverPreviewLink`), so Telegram picks it as the first link and, with
- * `link_preview_options`, renders it as a full-size photo above the text. This is how a long
- * post keeps its cover without a second message.
+ * Web-page previews are always disabled: the post ends with its own credit line, and Telegram's
+ * automatic preview card would render that URL a second time, below it, as a separate block.
  *
- * Without a preview URL the post is sent with previews disabled, because the footer's own
- * credit link would otherwise get an automatic card rendered under the post.
+ * There is deliberately no way to attach the cover here. A picture asked for through
+ * `link_preview_options` is a picture Telegram fetches on its own schedule, and on the live channel
+ * that ended with the story arriving as a bare wall of text. A cover goes through `sendPhoto` or it
+ * does not go at all.
  */
-async function sendMessage(
-  config: TelegramConfig,
-  text: string,
-  options: { previewUrl?: string | null } = {},
-): Promise<string | null> {
-  const previewUrl = options.previewUrl?.trim() ?? null;
-  const body = previewUrl ? `${coverPreviewLink(previewUrl)}${text}` : text;
-
+async function sendMessage(config: TelegramConfig, text: string): Promise<string | null> {
   const payload: Record<string, unknown> = {
     chat_id: config.channelId,
-    text: body,
+    text,
     parse_mode: "HTML",
+    disable_web_page_preview: true,
   };
-
-  if (previewUrl) {
-    payload.link_preview_options = {
-      is_disabled: false,
-      prefer_large_media: true,
-      show_above_text: true,
-    };
-  } else {
-    // The post already ends with its own credit line. Telegram's automatic preview card would
-    // render that URL a second time, below it, as a separate block.
-    payload.disable_web_page_preview = true;
-  }
 
   const sent = await callTelegram<TelegramEnvelope>(
     config.token,
@@ -445,12 +429,18 @@ function telegramRetryLog(method: string) {
  * Never throws. Returns `ok: false` with a reason for every failure, including a
  * missing cover: the post is still worth publishing without the picture, exactly as
  * the VK path already does, so a broken image file costs a warning and not a post.
+ *
+ * `config` is an override for the settings lookup, used by the "Тестовая отправка" button on
+ * the settings page: the editor is testing the token and the channel they just typed in, and
+ * those values are not saved yet. Without it the button would test the stored values instead of
+ * the ones on screen, which is not what the button is for.
  */
 export async function publishArticleToTelegram(
   article: TelegramArticle,
+  options: { config?: TelegramConfig } = {},
 ): Promise<TelegramPublishResult> {
   try {
-    const config = await configSource();
+    const config = options.config ?? (await configSource());
 
     if (!config.token || !config.channelId || !config.enabled) {
       return { ok: false, error: notConfiguredError(config) };
@@ -464,10 +454,7 @@ export async function publishArticleToTelegram(
       siteUrl: siteUrl(),
     });
 
-    const plan = planTelegramPost(post, {
-      hasCover: Boolean(article.coverImage),
-      coverUrl: article.coverImage ? coverImageUrl(article.coverImage) : null,
-    });
+    const plan = planTelegramPost(post, { hasCover: Boolean(article.coverImage) });
 
     /*
       The line an operator reads when a channel post is wrong: which story, whether it had a
@@ -481,10 +468,12 @@ export async function publishArticleToTelegram(
       }, текста ${plan.length} символов, режим ${plan.mode}`,
     );
 
-    // План всегда из одного шага: либо фото с подписью, либо текст (с предпросмотром или без).
+    // План всегда из одного шага: либо фото с подписью, либо текст.
     const step = plan.steps[0];
     let warning: string | undefined;
     let firstMessageId: string | null = null;
+    /** Отдельно от `warning`: редактору нужно знать, ушла ли картинка, а не что пошло не так. */
+    let photoSent = false;
 
     if (step?.kind === "photo") {
       const cover = article.coverImage;
@@ -493,6 +482,8 @@ export async function publishArticleToTelegram(
           firstMessageId = await withRetry(() => sendPhoto(config, cover, step.caption), {
             onRetry: telegramRetryLog("sendPhoto"),
           });
+          // До последующей деградации: если фото ушло, это ответ на вопрос кнопки.
+          photoSent = firstMessageId !== null;
           console.log(
             `[telegram] sendPhoto → сообщение ${firstMessageId ?? "?"}, подпись ${step.caption?.length ?? 0} символов`,
           );
@@ -524,14 +515,11 @@ export async function publishArticleToTelegram(
       }
     } else if (step?.kind === "text") {
       try {
-        firstMessageId = await withRetry(
-          () => sendMessage(config, step.text, { previewUrl: step.previewUrl }),
-          { onRetry: telegramRetryLog("sendMessage") },
-        );
+        firstMessageId = await withRetry(() => sendMessage(config, step.text), {
+          onRetry: telegramRetryLog("sendMessage"),
+        });
         console.log(
-          `[telegram] sendMessage → сообщение ${firstMessageId ?? "?"}, ${step.text.length} символов${
-            step.previewUrl ? ", с предпросмотром обложки" : ""
-          }`,
+          `[telegram] sendMessage → сообщение ${firstMessageId ?? "?"}, ${step.text.length} символов`,
         );
       } catch (error) {
         return {
@@ -546,8 +534,8 @@ export async function publishArticleToTelegram(
     const summary =
       plan.mode === "caption"
         ? "Telegram: одно сообщение с обложкой."
-        : plan.mode === "preview"
-          ? "Telegram: одно сообщение, обложка предпросмотром сверху."
+        : plan.mode === "photo-teaser"
+          ? "Telegram: обложка и начало текста, ссылка на полный материал."
           : plan.mode === "truncated"
             ? "Telegram: текст со ссылкой на полный материал."
             : "Telegram: текст без обложки.";
@@ -560,36 +548,12 @@ export async function publishArticleToTelegram(
       ok: true,
       messageId: firstMessageId,
       summary,
+      photoSent,
       ...(warning ? { warning } : {}),
     };
   } catch (error) {
     const message = describeTelegramError(error, await safeApiBase());
     console.warn(`[telegram] публикация не выполнена: ${message}`);
-    return { ok: false, error: message };
-  }
-}
-
-/**
- * Sends a short note to the channel, to check a token without publishing a story.
- *
- * Does not go through `planTelegramPost`: there is no article, so there is nothing to
- * split, and a test that measured the limits would prove nothing about a token.
- */
-export async function sendTelegramTestMessage(
-  config: TelegramConfig,
-): Promise<{ ok: boolean; message?: string; error?: string }> {
-  if (!config.token) return { ok: false, error: "Токен бота не задан." };
-  if (!config.channelId) return { ok: false, error: "Канал не задан." };
-
-  try {
-    const id = await sendMessage(
-      config,
-      "Проверка связи: канал «Ё-новости» подключён. Это тестовое сообщение, новостей в нём нет.",
-    );
-    return { ok: true, message: id ? `Сообщение отправлено, id ${id}.` : "Сообщение отправлено." };
-  } catch (error) {
-    const message = describeTelegramError(error, telegramApiBase(config));
-    console.warn(`[telegram] тестовая отправка не удалась: ${message}`);
     return { ok: false, error: message };
   }
 }

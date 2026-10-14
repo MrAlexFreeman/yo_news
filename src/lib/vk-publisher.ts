@@ -14,6 +14,7 @@
 import type { getSetting as GetSetting } from "@/lib/settings";
 import { extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
 import {
+  fitToBudget,
   htmlToPlainText,
   stripKickerLines,
   toHashtag,
@@ -345,7 +346,7 @@ export function buildPostText(article: VkArticle): string {
   // по символу, и говорим читателю, что продолжение — на сайте.
   const shortened = closing(url, tags, true);
   const budget = Math.max(0, limit - BLOCK_GAP.length - shortened.length);
-  return `${fitToParagraphs(head, budget)}${BLOCK_GAP}${shortened}`;
+  return `${fitToBudget(head, budget)}${BLOCK_GAP}${shortened}`;
 }
 
 /** Лид как он есть, сжатый по пробелам: на сайте он напечатан ровно этим текстом. */
@@ -387,69 +388,6 @@ function vkHashtags(article: VkArticle): string {
   }
 
   return tags.join(" ");
-}
-
-/**
- * Укладывает текст в бюджет целыми абзацами.
- *
- * Первый абзац остаётся, даже не помещаясь: пустой зачин говорит читателю меньше, чем одна
- * длинная строка. Остальное уходит по границе абзаца, а единственный абзац длиннее бюджета
- * режется по концу предложения — оборванная на полуслове фраза читается как опечатка сайта,
- * а не как решение редакции.
- */
-function fitToParagraphs(text: string, budget: number): string {
-  const kept: string[] = [];
-  let used = 0;
-
-  for (const paragraph of text.split(BLOCK_GAP)) {
-    const cost = paragraph.length + (kept.length > 0 ? BLOCK_GAP.length : 0);
-    if (kept.length > 0 && used + cost > budget) break;
-    kept.push(paragraph);
-    used += cost;
-  }
-
-  /*
-    Висеть на подзаголовке пост не должен: текст раздела остался за потолком, и заголовок
-    обещает то, чего в посте нет. Измерено на живом корпусе: обе обрезки (2 поста из 64)
-    вставали ровно так — «6. Организуйте хранение и освободите столешницу» и «Главная традиция
-    Феофанова дня», 47 и 30 знаков, и оба без завершающей точки. Отступаем к предыдущему абзацу:
-    он кончается предложением.
-  */
-  while (kept.length > 1 && looksLikeHeading(kept[kept.length - 1])) {
-    kept.pop();
-  }
-
-  const body = kept.join(BLOCK_GAP);
-  return body.length <= budget ? body : cutAtSentence(body, budget);
-}
-
-/**
- * Признак подзаголовка: короткая строка без завершающего знака.
- *
- * Прозу редакция пишет предложениями и кончает их точкой; заголовок раздела — нет. Нужен именно
- * признак, а не разбор разметки: после `htmlToPlainText` от `<h3>` остаётся та же строка, что и
- * от абзаца, и отличить их можно только по виду. Порог в 60 знаков отделяет заголовок от фразы:
- * измеренные подзаголовки — 30 и 47 знаков.
- */
-const HEADING_MAX_LENGTH = 60;
-
-function looksLikeHeading(paragraph: string): boolean {
-  const line = paragraph.trim();
-  return line.length > 0 && line.length <= HEADING_MAX_LENGTH && !/[.!?…»"”)]$/u.test(line);
-}
-
-/** Обрезка по концу предложения, а если предложение не влезает — по последнему пробелу. */
-function cutAtSentence(text: string, limit: number): string {
-  const cut = text.slice(0, limit);
-
-  let stop = -1;
-  for (const marker of [". ", "! ", "? ", "… ", ".\n", "!\n", "?\n"]) {
-    stop = Math.max(stop, cut.lastIndexOf(marker));
-  }
-  if (stop > 0) return cut.slice(0, stop + 1).trimEnd();
-
-  const space = cut.lastIndexOf(" ");
-  return (space > 0 ? cut.slice(0, space) : cut).trimEnd();
 }
 
 /**

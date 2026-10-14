@@ -419,6 +419,42 @@ export function readingNotice(url: string): string {
 }
 
 /**
+ * Обрезка по концу предложения, а если предложение не влезает — по последнему пробелу.
+ *
+ * Разделители перебираются все, и берётся самый поздний: граница абзаца и конец предложения
+ * равноправны, а выигрывает тот, что стоит дальше, — так текст заполняет отпущенное место
+ * целиком. Результат проходит через `cutWithoutSplittingEntity`: текст к этому моменту
+ * экранирован, и половинка `&amp;` или незакрытый `<a href` отклоняют сообщение целиком, а не
+ * портят строку.
+ */
+export function cutAtSentence(text: string, limit: number): string {
+  const cut = text.slice(0, limit);
+
+  let stop = -1;
+  for (const marker of ["\n\n", ". ", "! ", "? ", "… ", ".\n", "!\n", "?\n"]) {
+    stop = Math.max(stop, cut.lastIndexOf(marker));
+  }
+  if (stop > 0) return cutWithoutSplittingEntity(cut.slice(0, stop + 1).trimEnd(), limit);
+
+  const space = cut.lastIndexOf(" ");
+  return cutWithoutSplittingEntity(space > 0 ? cut.slice(0, space) : cut, limit);
+}
+
+/**
+ * Укладывает текст в бюджет.
+ *
+ * Раньше здесь стояло «набрать целых абзацев, сколько влезет» — и на материале из одного
+ * длинного абзаца это давало подпись из одного заголовка: абзац не влезал целиком, отбрасывался
+ * весь, и семьсот свободных знаков пропадали. Теперь берётся начало текста ровно на бюджет и
+ * подрезается по ближайшей границе — абзаца, предложения или слова. Пустой огрызок при этом
+ * получить нельзя: `cutAtSentence` отступает к последнему разделителю, а если разделителя нет
+ * вовсе, режет по бюджету, и первое слово материала всё равно остаётся.
+ */
+export function fitToBudget(text: string, budget: number): string {
+  return text.length <= budget ? text : cutAtSentence(text, budget);
+}
+
+/**
  * Trims a string to `limit` without leaving half an entity behind.
  *
  * Only a paragraph longer than a whole message is ever cut mid-text, and the body is
@@ -491,26 +527,26 @@ export function cutForReading(post: MessengerPost): string {
 export type TelegramStep =
   /** `sendPhoto`. `caption` is the whole post, when it fits under the picture. */
   | { kind: "photo"; caption: string | null }
-  /**
-   * `sendMessage`. `previewUrl` is the cover's absolute address, embedded as an invisible
-   * zero-width link so Telegram renders it as a large preview above the text; null when there
-   * is no cover to preview.
-   */
-  | { kind: "text"; text: string; previewUrl: string | null };
+  /** `sendMessage`. */
+  | { kind: "text"; text: string };
 
 export type TelegramPlan = {
   /**
    * Why the plan has the shape it has. Read in logs and asserted in tests.
    *
-   * `caption` — the whole post fits under the photo, sent as one `sendPhoto`. `preview` — the
-   * post is one message long, sent as `sendMessage` with the cover as a link preview. `text-only`
-   * — no cover, one plain message. `truncated` — too long for one message, sent as a teaser
-   * pointing at the site.
+   * `caption` — the whole post fits under the photo (`TELEGRAM_CAPTION_LIMIT`), one `sendPhoto`.
+   * `photo-teaser` — longer than a caption, so the photo goes with the opening of the text cut to
+   * `TELEGRAM_PHOTO_CAPTION_TARGET`. `text-only` — no cover, one plain message. `truncated` — no
+   * cover and longer than one message, so a teaser pointing at the site.
    *
-   * There is no "two messages" shape. It used to exist — the cover first, then the text — and it
-   * read in the channel as a picture with a wall of text dropped after it. One story, one message.
+   * There is no "two messages" shape, and no "message with a preview" shape. The first read in the
+   * channel as a picture with a wall of text dropped after it. The second — a `sendMessage` with the
+   * cover hidden in an invisible zero-width link and `link_preview_options` asking for it above the
+   * text — was meant to keep the picture on a long post, and on the live channel it did not: the
+   * story arrived as a bare wall of text. A picture that is not sent as a picture is a picture
+   * Telegram may or may not fetch, and this channel cannot afford the "may not".
    */
-  mode: "caption" | "preview" | "text-only" | "truncated";
+  mode: "caption" | "photo-teaser" | "text-only" | "truncated";
   steps: TelegramStep[];
   /** Length of the assembled post, before any decision was taken. */
   length: number;
@@ -520,42 +556,65 @@ export type TelegramPlan = {
 export type PlanOptions = {
   /** False when the article has no cover, so there is no photo to send. */
   hasCover?: boolean;
-  /**
-   * The cover's absolute URL, for the link-preview message. Ignored unless `hasCover` is true.
-   */
-  coverUrl?: string | null;
 };
 
 /**
- * Невидимая ссылка на обложку, которую Telegram развернёт в полноразмерное фото сверху поста.
+ * Куда укладывается подпись к фото, когда весь пост в неё не влез.
  *
- * Текст ссылки — U+200B, нулевая ширина: в канале она не видна, но это первая ссылка в сообщении,
- * и именно её Telegram берёт для предпросмотра. Так длинный пост получает обложку без второго
- * сообщения: `sendMessage` с `link_preview_options` рисует фото над текстом, а не после него.
+ * `TELEGRAM_CAPTION_LIMIT` — это 1024 символа, которые принимает Bot API, и упираться в них
+ * вплотную нельзя: пост на 1023 знака с одним лишним пробелом отклоняется целиком, с кодом 400
+ * и без картинки в канале. Поэтому запас в сотню с лишним символов.
  */
-export function coverPreviewLink(url: string): string {
-  return `<a href="${escapeAttribute(url)}">&#8203;</a>`;
+export const TELEGRAM_PHOTO_CAPTION_TARGET = 900;
+
+/**
+ * Потолок, выше которого подпись подниматься не имеет права.
+ *
+ * Не то же самое, что цель: цель — насколько длинной подпись делают, потолок — то, что
+ * проверяется перед отправкой. Если собрать подпись в 900 не удалось (адрес материала и рубрика
+ * сами длиннее бюджета), план обязан уйти в текстовый режим, а не отправить заведомо отклоняемое.
+ */
+export const TELEGRAM_PHOTO_CAPTION_LIMIT = 1000;
+
+/**
+ * Подпись к фото для поста, который целиком в подпись не влезает.
+ *
+ * Заголовок, начало текста, ссылка и рубрика. Текст обрезается по границе абзаца или предложения
+ * — оборванная на полуслове фраза читается как опечатка сайта, а не как решение редакции.
+ * Заголовок при этом остаётся всегда: без него подпись перестаёт называть материал.
+ */
+export function photoCaption(
+  post: MessengerPost,
+  target = TELEGRAM_PHOTO_CAPTION_TARGET,
+): string {
+  const footer = post.hashtag ? `${readMoreLink(post.url)}\n${post.hashtag}` : readMoreLink(post.url);
+  const head = [post.headline, post.body].filter((block) => block.length > 0).join("\n\n");
+
+  const budget = Math.max(0, target - footer.length - 2);
+  const cut = budget > 0 ? fitToBudget(head, budget) : post.headline;
+
+  return `${cut}\n\n${footer}`;
 }
 
 /**
- * Decides how a post reaches Telegram. Always one message.
+ * Decides how a post reaches Telegram. Always one message, and a cover is always a real photo.
  *
- * The old two-message shape — the cover first, then the text — is gone. It read in the channel as
- * a picture with a wall of text dropped after it, and the editor asked for it back. Three shapes:
+ * Four shapes:
  *
- *  - **fits under the picture** (`TELEGRAM_CAPTION_LIMIT`): one `sendPhoto` with the whole post
- *    as its caption.
- *  - **one message long** (`TELEGRAM_MESSAGE_LIMIT`): one `sendMessage`. With a cover, its URL
- *    rides in `previewUrl`, so Telegram attaches a large preview above the text.
- *  - **longer than one message**: one `sendMessage` with the teaser and the link to the site. A
- *    story past 4096 characters is a wall; the honest end to it is the link.
+ *  - **fits under the picture** (`TELEGRAM_CAPTION_LIMIT`): one `sendPhoto` with the whole post as
+ *    its caption.
+ *  - **longer than a caption, with a cover**: one `sendPhoto` whose caption is the opening of the
+ *    text — the picture is attached, the reader is pointed at the site for the rest.
+ *  - **no cover, one message long** (`TELEGRAM_MESSAGE_LIMIT`): one `sendMessage` with the whole
+ *    text.
+ *  - **no cover, longer than one message**: one `sendMessage` with the teaser and the link. A story
+ *    past 4096 characters cannot be one message, and the honest end to it is the link.
  */
 export function planTelegramPost(
   post: MessengerPost,
-  { hasCover = true, coverUrl = null }: PlanOptions = {},
+  { hasCover = true }: PlanOptions = {},
 ): TelegramPlan {
   const length = post.text.length;
-  const preview = hasCover && coverUrl ? coverUrl : null;
 
   if (hasCover && length <= TELEGRAM_CAPTION_LIMIT) {
     return {
@@ -566,12 +625,30 @@ export function planTelegramPost(
     };
   }
 
+  if (hasCover) {
+    const caption = photoCaption(post);
+    /*
+      Проверка стоит здесь, а не в издателе: план — единственное место, которое знает, что
+      подпись собрана из обрезанного текста, и решение «подписью или сообщением» принимается
+      вместе с ней. Подпись длиннее потолка означает, что даже заголовок со ссылкой не влезли,
+      и тогда картинку придётся отдать отдельным сообщением — но текст уйдёт целиком.
+    */
+    if (caption.length <= TELEGRAM_PHOTO_CAPTION_LIMIT) {
+      return {
+        mode: "photo-teaser",
+        length,
+        truncated: true,
+        steps: [{ kind: "photo", caption }],
+      };
+    }
+  }
+
   if (length <= TELEGRAM_MESSAGE_LIMIT) {
     return {
-      mode: hasCover ? "preview" : "text-only",
+      mode: "text-only",
       length,
       truncated: false,
-      steps: [{ kind: "text", text: post.text, previewUrl: preview }],
+      steps: [{ kind: "text", text: post.text }],
     };
   }
 
@@ -579,7 +656,7 @@ export function planTelegramPost(
     mode: "truncated",
     length,
     truncated: true,
-    steps: [{ kind: "text", text: cutForReading(post), previewUrl: preview }],
+    steps: [{ kind: "text", text: cutForReading(post) }],
   };
 }
 
