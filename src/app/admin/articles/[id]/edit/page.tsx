@@ -83,6 +83,7 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         autoRelatedArticle: true,
         isTelegram: true,
         isMax: true,
+        isUrgent: true,
         isExclusive: true,
         is18plus: true,
         tags: { select: { tag: { select: { name: true } } } },
@@ -163,6 +164,13 @@ export default async function EditArticlePage({ params }: EditPageProps) {
         */
         isTelegram: article.status === "published" ? false : article.isTelegram,
         isMax: article.status === "published" ? false : article.isMax,
+        /*
+          «Молния» подчиняется тому же правилу, что и мессенджеры, и даже строже: пуш прерывает
+          человека, поэтому у опубликованного материала галочка показывается снятой, что бы ни
+          лежало в базе. Показать её включённой значило бы предложить сохранение, которое
+          отправило бы второй пуш тем же читателям.
+        */
+        isUrgent: article.status === "published" ? false : article.isUrgent,
         isExclusive: article.isExclusive,
         is18plus: article.is18plus,
       }}

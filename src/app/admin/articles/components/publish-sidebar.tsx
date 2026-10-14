@@ -25,6 +25,14 @@ type PublishSidebarProps = {
   isMax: boolean;
   onIsMaxChange: (value: boolean) => void;
   /**
+   * «Молния»: пуш читателям приложения при публикации.
+   *
+   * Отдельный флаг, а не ещё один мессенджер: канал читают, когда захотят, а пуш прерывает.
+   * Действует один раз — сервер снимает его после доставки.
+   */
+  isUrgent: boolean;
+  onIsUrgentChange: (value: boolean) => void;
+  /**
    * Why a messenger checkbox is off when the editor did not turn it off — shown as a
    * note under the pair, so an empty box reads as a decision rather than a fault.
    */
@@ -101,6 +109,8 @@ export function PublishSidebar({
   onIsTelegramChange,
   isMax,
   onIsMaxChange,
+  isUrgent,
+  onIsUrgentChange,
   messengerHint,
   isExclusive,
   onIsExclusiveChange,
@@ -150,6 +160,23 @@ export function PublishSidebar({
               checked={isMax}
               onChange={onIsMaxChange}
             />
+            {/*
+              Сказано словами, потому что этот флаг ведёт себя не как соседние: остальные —
+              свойство материала («репостить всегда»), а «Молния» — разовое действие. Она
+              срабатывает только на переходе в «Опубликован» и снимается после доставки, поэтому
+              второе сохранение того же материала никого не разбудит.
+            */}
+            <Checkbox
+              id="isUrgent"
+              label="Молния: пуш читателям приложения"
+              checked={isUrgent}
+              onChange={onIsUrgentChange}
+            />
+            <p className="pl-6 pt-1 text-[11px] leading-snug text-neutral-400">
+              {isUrgent
+                ? "При публикации уйдёт пуш на устройства с приложением. После отправки галочка снимется сама."
+                : "Пуш читателям приложения не уйдёт."}
+            </p>
             {/*
               A single note for both messengers rather than one each: they are
               configured together, and two notes saying the same thing in two places is

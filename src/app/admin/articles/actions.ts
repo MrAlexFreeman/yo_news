@@ -39,6 +39,7 @@ import {
   setTelegramConfigSource,
 } from "@/lib/telegram-publisher";
 import { publishArticleToMax, setMaxConfigSource } from "@/lib/max-publisher";
+import { sendArticlePush } from "@/lib/rustore-push-sender";
 
 /** Absolute base for links handed to a third party, e.g. the VK video description. */
 function siteUrl(): string {
@@ -305,6 +306,9 @@ export async function createArticleAction(
     autoRelatedArticle: checkbox(formData, "autoRelatedArticle"),
     isTelegram: checkbox(formData, "isTelegram"),
     isMax: checkbox(formData, "isMax"),
+    // «Молния»: пуш читателям приложения. Отдельный от мессенджеров флаг, потому что пуш
+    // прерывает человека, а пост в канале — нет: канал читают, когда захотят.
+    isUrgent: checkbox(formData, "isUrgent"),
     isExclusive: checkbox(formData, "isExclusive"),
     is18plus: checkbox(formData, "is18plus"),
     videoUrl,
@@ -626,6 +630,47 @@ export async function createArticleAction(
     }
   }
 
+  /*
+    Пуш читателям приложения — «молния».
+
+    Отдельно от мессенджеров и по другой причине: канал читают, когда захотят, а пуш прерывает
+    человека, поэтому решение «будить всех» принимается редактором отдельной галочкой, а не
+    следует из факта публикации. Подписки на рубрики у приложения нет вовсе, так что выбор
+    «кому» здесь пока один — всем, кто установил приложение.
+
+    Условие то же, что у мессенджеров, — переход в «published». Пересохранение уже опубликованной
+    новости пуш не отправит, поэтому исправление опечатки никого не разбудит.
+  */
+  let pushNote: string | null = null;
+
+  if (enteringPublished && article.isUrgent) {
+    try {
+      const push = await sendArticlePush({
+        id: article.id,
+        title: article.title,
+        lead: article.lead,
+        slug: article.slug,
+      });
+
+      pushNote = push.summary;
+
+      /*
+        Галочка снимается после доставки: «молния» — событие, а не свойство материала. Оставь её
+        включённой — и снятие с публикации с повторной публикацией отправили бы тем же читателям
+        второй пуш. Это ровно та ошибка, от которой строки `vkPostId` и `telegramPostId` берегут
+        свои каналы, и здесь её закрывает сам флаг.
+      */
+      if (push.ok) {
+        await prisma.article.update({ where: { id: article.id }, data: { isUrgent: false } });
+      }
+    } catch (error) {
+      pushNote = `необработанная ошибка: ${
+        error instanceof Error ? error.message : "неизвестная ошибка"
+      }`;
+      console.error("[push] необработанная ошибка рассылки:", error);
+    }
+  }
+
   // Renaming a VK video is a nice-to-have on top of a publish that has already
   // happened, so it can only ever report. Wrapped twice: the helper never throws,
   // and this catch also covers a programming error in it, because losing the
@@ -712,6 +757,7 @@ export async function createArticleAction(
     vkError,
     vkSkipNote,
     messengerNotes,
+    pushNote,
   };
 }
 

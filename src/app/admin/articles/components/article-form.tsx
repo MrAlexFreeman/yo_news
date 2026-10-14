@@ -276,6 +276,11 @@ export function ArticleForm({
     initial?.isTelegram ?? messengerDefaults.telegram,
   );
   const [isMax, setIsMax] = useState(initial?.isMax ?? messengerDefaults.max);
+  /*
+    «Молния» — не свойство материала, а разовое действие, поэтому состояние по умолчанию всегда
+    `false` и от `messengerDefaults` не зависит: будить читателей приложения по умолчанию нельзя.
+  */
+  const [isUrgent, setIsUrgent] = useState(initial?.isUrgent ?? false);
   const [isExclusive, setIsExclusive] = useState(initial?.isExclusive ?? false);
   const [is18plus, setIs18plus] = useState(initial?.is18plus ?? false);
   const [dzenExperiment, setDzenExperiment] = useState(initial?.dzenExperiment ?? false);
@@ -465,6 +470,7 @@ export function ArticleForm({
   autoRelatedArticle: initial.autoRelatedArticle,
           isTelegram: initial.isTelegram,
           isMax: initial.isMax,
+          isUrgent: initial.isUrgent,
           isExclusive: initial.isExclusive,
           is18plus: initial.is18plus,
           seoTitle: initial.seoTitle,
@@ -510,6 +516,7 @@ export function ArticleForm({
     autoRelatedArticle,
     isTelegram,
     isMax,
+    isUrgent,
     isExclusive,
     is18plus,
     seoTitle,
@@ -622,6 +629,7 @@ export function ArticleForm({
   setAutoRelatedArticle(snapshot.autoRelatedArticle);
     setIsTelegram(snapshot.isTelegram);
     setIsMax(snapshot.isMax);
+    setIsUrgent(snapshot.isUrgent);
     setIsExclusive(snapshot.isExclusive);
     setIs18plus(snapshot.is18plus);
     setUploadError(null);
@@ -883,6 +891,12 @@ export function ArticleForm({
         readOnly
       />
       <input type="hidden" name="isMax" value={isMax ? "on" : ""} readOnly />
+      {/*
+        «Молния» уходит на сервер как обычный чекбокс: поле есть — значит включено. Снимает
+        галочку сервер после успешной рассылки, поэтому следующее открытие материала показывает
+        её выключенной — и материал больше никого не будит.
+      */}
+      <input type="hidden" name="isUrgent" value={isUrgent ? "on" : ""} readOnly />
       {/* Gallery travels as JSON for the same reason the mirror exists: the
           MediaEditor lives on the "Медиа" tab and unmounts with it. */}
       <input type="hidden" name="media" value={serializeMedia(media)} readOnly />
@@ -965,6 +979,17 @@ export function ArticleForm({
                 </p>
               ))
           : null}
+
+        {/*
+          Исход рассылки пушей — отдельной строкой, а не в списке мессенджеров: это не мессенджер,
+          и провал здесь означает, что «молнию» никто не увидел. Молчание было бы худшим ответом:
+          публикация сохранена, сайт обновлён, а устройства промолчали.
+        */}
+        {state.ok && state.pushNote ? (
+          <p role="status" className="text-sm text-neutral-500">
+            Читателям приложения: {state.pushNote}
+          </p>
+        ) : null}
       </header>
 
       {/* Editorial grid: form ~75%, attribute sidebar ~25%. */}
@@ -1508,6 +1533,10 @@ export function ArticleForm({
             isMax={isMax}
             onIsMaxChange={(value) => {
               setIsMax(value);
+            }}
+            isUrgent={isUrgent}
+            onIsUrgentChange={(value) => {
+              setIsUrgent(value);
             }}
             messengerHint={messengerHint}
             isExclusive={isExclusive}

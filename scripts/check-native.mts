@@ -141,17 +141,45 @@ check(
 );
 check(
   "Push: уведомление идёт в свой канал, клик открывает статью",
-  service.includes("yo_news_urgent") &&
-    service.includes("NotificationChannel") &&
+  service.includes("PushNotifications.CHANNEL_ID") &&
     service.includes("PendingIntent.getActivity") &&
     service.includes("Intent.ACTION_VIEW"),
-  "канал yo_news_urgent + PendingIntent → ACTION_VIEW",
+  "канал из PushNotifications + PendingIntent → ACTION_VIEW",
 );
 check(
   "Push: берётся иконка шторки, а не белый квадрат",
   service.includes("R.drawable.ic_stat_push") &&
     existsSync(new URL("../android/app/src/main/res/drawable/ic_stat_push.xml", import.meta.url)),
   "ic_stat_push в сервисе и в ресурсах",
+);
+
+/*
+  Канал объявлен в трёх местах — строкой в манифесте, идентификатором в Kotlin и вызовом из Java, —
+  и разъехаться они могут молча: компилятор не сверяет строку манифеста с константой. Между тем
+  расхождение означает, что SDK отправит уведомление в несуществующий канал, а Android отбросит
+  его без единой строки в логе приложения.
+*/
+const notifications = read("android/app/src/main/java/ru/eartnews/app/PushNotifications.kt");
+check(
+  "Push: канал объявлен один раз и тот же в манифесте и в Kotlin",
+  manifest.includes('ru.rustore.sdk.pushclient.default_notification_channel_id"') &&
+    manifest.includes('android:value="yo_news_urgent"') &&
+    notifications.includes('CHANNEL_ID = "yo_news_urgent"') &&
+    notifications.includes("IMPORTANCE_HIGH") &&
+    notifications.includes('CHANNEL_NAME = "Срочные новости"'),
+  "yo_news_urgent + «Срочные новости» + IMPORTANCE_HIGH",
+);
+check(
+  "Push: канал создаётся при запуске, а не только при показе",
+  notifications.includes("fun ensureChannel"),
+  "PushNotifications.ensureChannel объявлен",
+);
+check(
+  "Push: служба берёт идентификатор канала из общего объекта",
+  service.includes("PushNotifications.CHANNEL_ID") &&
+    service.includes("PushNotifications.ensureChannel") &&
+    !service.includes('"yo_news_urgent"'),
+  "один источник идентификатора",
 );
 
 const mainActivity = read("android/app/src/main/java/ru/eartnews/app/MainActivity.java");
@@ -161,6 +189,11 @@ check(
     mainActivity.includes("requestPermissions") &&
     mainActivity.includes("TIRAMISU"),
   "MainActivity → runtime-запрос POST_NOTIFICATIONS",
+);
+check(
+  "Push: канал создаётся при запуске приложения, а не при первом показе",
+  mainActivity.includes("PushNotifications.ensureChannel"),
+  "MainActivity.onCreate → PushNotifications.ensureChannel",
 );
 
 check(

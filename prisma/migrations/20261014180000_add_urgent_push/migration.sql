@@ -1,0 +1,11 @@
+-- AlterTable
+--
+-- Написано вручную, а не сгенерировано `prisma migrate dev`.
+--
+-- Генератор на этой правке предложил перестроение таблицы: CREATE new_Article, INSERT…SELECT,
+-- DROP TABLE "Article", RENAME. На боевой базе это пересоздание таблицы статей со всеми связями
+-- — ровно то, чего правила проекта не разрешают. Соседние одиночные добавления колонок
+-- (telegramPostId, maxPostId, vkPostId, deletedAt) сделаны так же вручную и выглядят как одна
+-- строка ADD COLUMN, которой здесь и достаточно: колонка необязательная по смыслу, но с
+-- константным значением по умолчанию, а такое SQLite добавляет на месте, не трогая данные.
+ALTER TABLE "Article" ADD COLUMN "isUrgent" BOOLEAN NOT NULL DEFAULT false;

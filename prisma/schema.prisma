@@ -166,6 +166,17 @@ model Article {
   /// Appended at the end for the same SQLite reason as `maxPostId` above: a column inserted
   /// among the others makes Prisma rebuild the whole Article table instead of adding one.
   telegramPostId String?
+  /// «Молния»: пуш читателям приложения в момент первой публикации.
+  ///
+  /// Редактор ставит галочку в сайдбаре публикации, и материал уходит подписчикам приложения
+  /// отдельно от мессенджеров: мессенджеры постят каждую новость, а пуш — только то, что стоит
+  /// прерывать человека. Один пуш на материал: значение читается в момент перехода в «published»
+  /// и записывается обратно в false после отправки, поэтому повторное сохранение уже
+  /// опубликованной новости второй раз никого не разбудит.
+  ///
+  /// Appended at the end for the same SQLite reason as `telegramPostId` above: a column inserted
+  /// among the others makes Prisma rebuild the whole Article table instead of adding one.
+  isUrgent Boolean @default(false)
   /// The poll attached to this story, if any. The foreign key lives on `ArticlePoll`, so this
   /// side adds no column and no table rebuild — see the note on where new columns may go.
   poll        ArticlePoll?

@@ -34,7 +34,22 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        createNotificationChannel();
         askForNotificationPermission();
+    }
+
+    /**
+     * Создаёт канал «Срочные новости» до того, как придёт первое уведомление.
+     *
+     * Это не то же самое, что создать канал при показе: уведомление рисует не только наша служба,
+     * но и сам SDK RuStore — когда пуш приходит с готовым объектом `notification` (так устроен, в
+     * частности, тестовый пуш из консоли RuStore). SDK берёт идентификатор канала из манифеста и
+     * в несуществующий канал отправить не может: Android отбрасывает такое уведомление молча,
+     * без ошибки в логе приложения. На свежей установке, где служба ещё ни разу не сработала,
+     * тестовый пуш пропал бы именно так.
+     */
+    private void createNotificationChannel() {
+        PushNotifications.ensureChannel(this);
     }
 
     private void askForNotificationPermission() {

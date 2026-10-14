@@ -1,12 +1,8 @@
 package ru.eartnews.app
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -94,7 +90,8 @@ class RuStoreMessagingService : ru.rustore.sdk.pushclient.messaging.service.RuSt
      * открывается сайт целиком — уведомление без действия хуже, чем переход на главную.
      */
     private fun showNotification(title: String, body: String, url: String) {
-        createChannel(this)
+        // Канал создаётся тем же кодом, что и при запуске приложения, — см. PushNotifications.
+        PushNotifications.ensureChannel(this)
 
         val open = Intent(this, MainActivity::class.java).apply {
             action = Intent.ACTION_VIEW
@@ -109,7 +106,7 @@ class RuStoreMessagingService : ru.rustore.sdk.pushclient.messaging.service.RuSt
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, PushNotifications.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_push)
             .setContentTitle(title)
             .setContentText(body)
@@ -129,25 +126,6 @@ class RuStoreMessagingService : ru.rustore.sdk.pushclient.messaging.service.RuSt
             // — его право, а не обязанность, и падать из-за отказа нельзя.
             Log.w(TAG, "Показ уведомлений запрещён пользователем: ${error.message}")
         }
-    }
-
-    /** Канал нужен с Android 8; повторное создание уже существующего канала безвредно. */
-    private fun createChannel(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
-
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Срочные новости",
-            NotificationManager.IMPORTANCE_HIGH,
-        ).apply {
-            description = "Важные новости Ё-новостей"
-            enableVibration(true)
-        }
-
-        manager.createNotificationChannel(channel)
     }
 
     /** Адрес статьи из пейлоада: `url`, иначе собранный из `slug`, иначе главная. */
@@ -203,9 +181,6 @@ class RuStoreMessagingService : ru.rustore.sdk.pushclient.messaging.service.RuSt
 
     private companion object {
         const val TAG = "EartnewsPush"
-
-        /** Канал срочных новостей: высокий приоритет, чтобы уведомление всплывало, а не ждало. */
-        const val CHANNEL_ID = "yo_news_urgent"
 
         /** Боевой адрес сайта: и токен регистрируется на нём, и статьи открываются с него. */
         const val SITE = "https://eartnews.ru"

@@ -67,6 +67,13 @@ export type SaveArticleResult = {
    * server says which. Keyed by messenger so one does not overwrite the other.
    */
   messengerNotes?: Record<"telegram" | "max", string | null>;
+  /**
+   * Что вышло из рассылки пушей читателям приложения, одной строкой.
+   *
+   * Отдельно от `messengerNotes`, потому что пуш — не мессенджер: провал здесь означает, что
+   * «молнию» никто не увидел, и узнать об этом редактор должен из формы, а не из лога.
+   */
+  pushNote?: string | null;
 };
 
 /** Form state mirrored between the client inputs and the action payload. */
@@ -115,6 +122,13 @@ export type ArticleFormValues = {
   isTelegram: boolean;
   /** Repost into MAX on first publication. */
   isMax: boolean;
+  /**
+   * «Молния»: пуш читателям приложения.
+   *
+   * Разовое действие, а не свойство материала: сервер снимает флаг после доставки, поэтому
+   * повторная публикация того же материала никого не будит дважды.
+   */
+  isUrgent: boolean;
   isExclusive: boolean;
   is18plus: boolean;
   /** Editorial metadata overrides; empty means "derive it on the page". */
