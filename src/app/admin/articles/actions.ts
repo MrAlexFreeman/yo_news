@@ -367,9 +367,15 @@ export async function createArticleAction(
 
   // The tag pages that changed: the ones this story now carries, plus the ones it
   // used to carry and no longer does.
+  //
+  // `name` читается той же выборкой, что `slug`, и не для этой задачи: имя нужно посту в ВК
+  // хештегом. Второй запрос за тем же списком был бы вторым обращением к базе ради строки,
+  // которая уже в руках. Порядок задан явно — иначе набор хештегов под постом менялся бы от
+  // публикации к публикации.
   const attachedTags = await prisma.tag.findMany({
     where: { articles: { some: { articleId: article.id } } },
-    select: { slug: true },
+    select: { slug: true, name: true },
+    orderBy: { name: "asc" },
   });
 
   const tagSlugs = new Set(attachedTags.map((tag) => tag.slug));
@@ -465,6 +471,12 @@ export async function createArticleAction(
         const vk = await publishArticleToVk({
           title: article.title,
           lead: article.lead,
+          // Тело, рубрика и ключевые слова — то, из чего собирается пост на стене. Без них
+          // в ВК уходил один заголовок со ссылкой, и о материале нельзя было ничего понять,
+          // не перейдя на сайт.
+          contentHtml: article.contentHtml,
+          categoryName: category?.name ?? null,
+          tagNames: attachedTags.map((tag) => tag.name),
           slug: article.slug,
           coverImage: article.coverImage,
         });

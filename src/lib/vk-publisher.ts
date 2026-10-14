@@ -13,6 +13,11 @@
 
 import type { getSetting as GetSetting } from "@/lib/settings";
 import { extensionFor, readCoverImage, siteUrl } from "@/lib/cover-image";
+import {
+  htmlToPlainText,
+  stripKickerLines,
+  toHashtag,
+} from "@/lib/messenger-post";
 
 /**
  * Re-exported from its new home so `scripts/check-vk-publisher.ts` and any future
@@ -30,6 +35,18 @@ export type VkArticle = {
   title: string;
   lead?: string | null;
   slug: string;
+  /**
+   * Тело статьи как оно лежит в базе, вместе с разметкой.
+   *
+   * Необязательно, и это не вежливость к старым вызовам: пост обязан собраться и без тела —
+   * заголовок со ссылкой лучше пустой стены. Но когда тело есть, оно уходит на стену целиком:
+   * раньше ВК получал один заголовок, и читатель в ленте не понимал, о чём материал.
+   */
+  contentHtml?: string | null;
+  /** Название рубрики — первый хештег в подвале поста. */
+  categoryName?: string | null;
+  /** Ключевые слова материала: остальные хештеги. */
+  tagNames?: readonly string[] | null;
   coverImage?: string | null;
 };
 
@@ -202,14 +219,28 @@ async function callVk<T>(
   params: Record<string, string | number>,
   token?: string,
 ): Promise<T> {
-  const url = new URL(`${VK_API_BASE}/${method}`);
-  url.searchParams.set("access_token", token ?? (await resolveToken()));
-  url.searchParams.set("v", VK_API_VERSION);
+  const query = new URLSearchParams();
+  query.set("access_token", token ?? (await resolveToken()));
+  query.set("v", VK_API_VERSION);
   for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, String(value));
+    query.set(key, String(value));
   }
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  /*
+    Параметры уходят телом POST, а не строкой запроса, и это не стилистика.
+
+    `wall.post` шлёт текст записи в `message`, а кириллица в URL-кодировке занимает по шесть
+    символов на букву: пост на 4000 знаков превращается в строку запроса длиной около 20 273
+    символов (измерено). Прокси и nginx роняют такой запрос раньше, чем он дойдёт до ВК, —
+    то есть ровно тот лонгрид, ради которого всё делалось, не уехал бы вовсе. Телом длина
+    запроса не ограничена.
+  */
+  const response = await fetch(`${VK_API_BASE}/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
+    body: query.toString(),
+    signal: AbortSignal.timeout(15_000),
+  });
   const raw = await response.text().catch(() => "");
 
   if (!response.ok) {
@@ -249,52 +280,150 @@ async function callVk<T>(
 }
 
 /**
- * Title, blank line, the first sentences of the lead, then the link.
+ * Потолок текста записи на стене — то число, которое называет задание: 15 895 символов.
  *
- * The lead is cut to two sentences rather than pasted whole. A wall post is a teaser: the
- * lead is written for the site, where the reader has the rest of the story one click away,
- * and a five-sentence lead on a wall pushes the link below the fold of a phone screen —
- * where VK truncates the post with an ellipsis and the reader never sees the URL at all.
+ * **В документации метода его нет.** Страница `wall.post` (проверена 14.10.2026) описывает типы
+ * вложений, ограничения на медиа и коды ошибок, но длину `message` не называет вовсе. Поэтому
+ * число держится как заявленное, а фактическим пределом поста служит `VK_TEXT_LIMIT` ниже. Роль
+ * потолка — страховка: он участвует в `Math.min` и в проверке `vk:check`, чтобы ни одна будущая
+ * правка не отправила в ВК пост длиннее заявленного предела.
  */
-export function buildPostText(article: VkArticle): string {
-  const link = `${siteUrl()}/news/${article.slug}`;
-  const lead = leadSummary(article.lead);
-
-  return lead
-    ? `${article.title}\n\n${lead}\n\n👉 Читать полностью: ${link}`
-    : `${article.title}\n\n👉 Читать полностью: ${link}`;
-}
-
-/** How much of the lead a wall post carries. */
-export const VK_LEAD_SENTENCES = 2;
-
-/** Ceiling on the lead in characters, so a single very long sentence cannot take over. */
-export const VK_LEAD_MAX = 320;
+export const VK_MESSAGE_LIMIT = 15_895;
 
 /**
- * The first sentences of the lead.
+ * Длина, после которой пост перестаёт читаться.
  *
- * Cuts on sentence-ending punctuation, and stops mid-word if the ceiling lands inside one
- * — an ellipsis is honest about that, where a hard slice would end on a truncated stem that
- * reads as a typo.
- *
- * Returns "" rather than a fragment when there is nothing usable, so `buildPostText` can
- * leave the paragraph out instead of posting an empty gap.
+ * Предел ВК почти вчетверо больше, но запись на 16 000 знаков в ленте никто не читает: это
+ * стена, за которой ссылка уезжает на десятый экран. Поэтому потолок поста — 4000, и всё, что
+ * длиннее, уходит зачином со ссылкой на продолжение.
  */
-export function leadSummary(lead: string | null | undefined): string {
-  const trimmed = (lead ?? "").trim().replace(/\s+/g, " ");
-  if (!trimmed) return "";
+export const VK_TEXT_LIMIT = 4_000;
 
-  const sentences = trimmed.split(/(?<=[.!?…])\s+/u).filter(Boolean);
-  let summary = sentences.slice(0, VK_LEAD_SENTENCES).join(" ").trim();
+/** Сколько хештегов уходит в пост, считая рубрику. */
+export const VK_MAX_TAGS = 4;
 
-  if (summary.length > VK_LEAD_MAX) {
-    const cut = summary.slice(0, VK_LEAD_MAX);
-    const lastSpace = cut.lastIndexOf(" ");
-    summary = `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+/** Разделитель между блоками поста. */
+const BLOCK_GAP = "\n\n";
+
+/**
+ * Текст записи на стене: заголовок, лид, тело статьи, ссылка и хештеги.
+ *
+ * **ВК получает текст, а не анонс.** Раньше на стену уходил заголовок и две фразы лида, и это
+ * читалось как «заголовок со ссылкой»: о чём материал, из ленты видно не было. Теперь тело
+ * идёт целиком, а длину решает не желание сократить, а читаемость — `VK_TEXT_LIMIT`.
+ *
+ * **Почему не `buildMessengerPost`.** У Telegram и MAX общая сборка поста, но она отдаёт
+ * разметку (`<b>`, `<a href>`) для `parse_mode: HTML`, а ВК разметки в записи не понимает и
+ * показал бы теги текстом. Общими поэтому остаются только чистка разметки, снятие строк-отсылок
+ * и хештеги (`htmlToPlainText`, `stripKickerLines`, `toHashtag`), а склейка здесь своя, на
+ * чистом тексте.
+ *
+ * Лид намеренно не прогоняется через чистку HTML: он хранится простым текстом и печатается на
+ * сайте текстовым узлом, а «чистка тегов» съела бы «5 < 6» вместе с половиной фразы.
+ */
+export function buildPostText(article: VkArticle): string {
+  const base = siteUrl().replace(/\/+$/, "");
+  const url = `${base}/news/${article.slug}`;
+
+  const head = [
+    article.title.trim(),
+    wholeLead(article.lead),
+    bodyText(article.contentHtml),
+  ]
+    .filter((block) => block.length > 0)
+    .join(BLOCK_GAP);
+
+  const tags = vkHashtags(article);
+  const limit = Math.min(VK_TEXT_LIMIT, VK_MESSAGE_LIMIT);
+
+  const full = closing(url, tags, false);
+  if (head.length + BLOCK_GAP.length + full.length <= limit) {
+    return `${head}${BLOCK_GAP}${full}`;
   }
 
-  return summary;
+  // Есть куда отступать и без потолка: текст длиннее, чем читают. Режем по границе абзаца, а не
+  // по символу, и говорим читателю, что продолжение — на сайте.
+  const shortened = closing(url, tags, true);
+  const budget = Math.max(0, limit - BLOCK_GAP.length - shortened.length);
+  return `${fitToParagraphs(head, budget)}${BLOCK_GAP}${shortened}`;
+}
+
+/** Лид как он есть, сжатый по пробелам: на сайте он напечатан ровно этим текстом. */
+function wholeLead(lead: string | null | undefined): string {
+  return (lead ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** Тело статьи: разметка снята, отсылки «читайте также» убраны, абзацы сохранены. */
+function bodyText(contentHtml: string | null | undefined): string {
+  return stripKickerLines(htmlToPlainText(contentHtml ?? ""));
+}
+
+/** Подвал записи: ссылка словами, хештеги строкой ниже. */
+function closing(url: string, tags: string, continued: boolean): string {
+  const label = continued ? "👉 Читать продолжение на сайте" : "👉 Читать на сайте";
+  const link = `${label}: ${url}`;
+  return tags ? `${link}\n${tags}` : link;
+}
+
+/**
+ * Хештеги поста: рубрика первой, дальше ключевые слова материала.
+ *
+ * `toHashtag` оставляет кириллицу и заменяет пробелы подчёркиваниями, поэтому «Здоровье и стиль»
+ * становится одним тегом, а не тремя. Повторы снимаются без учёта регистра, число ограничено:
+ * десяток тегов под постом читается как спам и мешает найти сам текст.
+ */
+function vkHashtags(article: VkArticle): string {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+
+  for (const name of [article.categoryName, ...(article.tagNames ?? [])]) {
+    const tag = toHashtag(name);
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+    if (tags.length >= VK_MAX_TAGS) break;
+  }
+
+  return tags.join(" ");
+}
+
+/**
+ * Укладывает текст в бюджет целыми абзацами.
+ *
+ * Первый абзац остаётся, даже не помещаясь: пустой зачин говорит читателю меньше, чем одна
+ * длинная строка. Остальное уходит по границе абзаца, а единственный абзац длиннее бюджета
+ * режется по концу предложения — оборванная на полуслове фраза читается как опечатка сайта,
+ * а не как решение редакции.
+ */
+function fitToParagraphs(text: string, budget: number): string {
+  const kept: string[] = [];
+  let used = 0;
+
+  for (const paragraph of text.split(BLOCK_GAP)) {
+    const cost = paragraph.length + (kept.length > 0 ? BLOCK_GAP.length : 0);
+    if (kept.length > 0 && used + cost > budget) break;
+    kept.push(paragraph);
+    used += cost;
+  }
+
+  const body = kept.join(BLOCK_GAP);
+  return body.length <= budget ? body : cutAtSentence(body, budget);
+}
+
+/** Обрезка по концу предложения, а если предложение не влезает — по последнему пробелу. */
+function cutAtSentence(text: string, limit: number): string {
+  const cut = text.slice(0, limit);
+
+  let stop = -1;
+  for (const marker of [". ", "! ", "? ", "… ", ".\n", "!\n", "?\n"]) {
+    stop = Math.max(stop, cut.lastIndexOf(marker));
+  }
+  if (stop > 0) return cut.slice(0, stop + 1).trimEnd();
+
+  const space = cut.lastIndexOf(" ");
+  return (space > 0 ? cut.slice(0, space) : cut).trimEnd();
 }
 
 /**

@@ -80,11 +80,24 @@ export async function POST(request: Request) {
     The path that was broken is the disk read — `/uploads/<name>` is not a URL, and the code
     once handed it to `fetch()` and got "Failed to parse URL" on every publish. Testing with
     anything else would not exercise it.
+
+    Тело, рубрика и ключевые слова берутся у той же статьи: пост, который уходит на стену,
+    должен быть тем же, что уйдёт при настоящей публикации, — иначе кнопка проверяет обложку,
+    но ничего не говорит о тексте, а именно текст и был сломан.
   */
   const article = await prisma.article.findFirst({
     where: { status: "published", coverImage: { not: null } },
     orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
-    select: { id: true, title: true, lead: true, slug: true, coverImage: true },
+    select: {
+      id: true,
+      title: true,
+      lead: true,
+      slug: true,
+      coverImage: true,
+      contentHtml: true,
+      category: { select: { name: true } },
+      tags: { select: { tag: { select: { name: true } } }, orderBy: { tag: { name: "asc" } } },
+    },
   });
 
   if (!article?.coverImage) {
@@ -107,9 +120,13 @@ export async function POST(request: Request) {
 
   const result = await publishArticleToVk({
     id: article.id,
+    // Заголовок помечен как проверочный: если пост остаётся на стене (`keep`), его видно и
+    // можно найти. Всё остальное — настоящее, включая лид, тело и хештеги.
     title: `Проверка репоста: ${article.title}`,
-    lead:
-      "Служебная проверка прикрепления обложки из админки. Пост удаляется автоматически, если не отмечено «оставить на стене».",
+    lead: article.lead,
+    contentHtml: article.contentHtml,
+    categoryName: article.category?.name ?? null,
+    tagNames: article.tags.map((link) => link.tag.name),
     slug: article.slug,
     coverImage: article.coverImage,
   });

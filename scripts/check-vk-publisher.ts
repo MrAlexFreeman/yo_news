@@ -8,7 +8,6 @@ import {
   deleteWallPost,
   editWallPostAttachments,
   extractArticleSlug,
-  leadSummary,
   listWallPosts,
   padVerticalCover,
   parseVkUploadResult,
@@ -17,8 +16,10 @@ import {
   readWallPostAttachments,
   resetVkRetrySleep,
   setVkRetrySleep,
-  VK_LEAD_MAX,
   UPLOAD_ATTEMPTS,
+  VK_MAX_TAGS,
+  VK_MESSAGE_LIMIT,
+  VK_TEXT_LIMIT,
   vkCommunityGroupId,
   vkPhotoAttachmentId,
 } from "../src/lib/vk-publisher";
@@ -63,7 +64,7 @@ function stubVk(options: {
   /** Refuse the repair, so the warning path is exercised. */
   editFails?: boolean;
 }) {
-  const calls: { method: string; params: Record<string, string> }[] = [];
+  const calls: { method: string; params: Record<string, string>; httpMethod: string }[] = [];
   /** One entry per attempt on the upload endpoint, so retry behaviour is assertable. */
   const uploads: {
     status: number;
@@ -137,8 +138,14 @@ function stubVk(options: {
     }
 
     const method = url.pathname.split("/").pop() ?? "";
-    const params = Object.fromEntries(url.searchParams.entries());
-    calls.push({ method, params });
+    /*
+      Параметры читаются из тела POST, потому что так их теперь и отправляют: строкой запроса
+      пост на 4000 знаков не проходит (см. `callVk`). Строка запроса остаётся запасным
+      источником, чтобы заглушка не разошлась с кодом, если вызов когда-нибудь вернут на GET.
+    */
+    const payload = typeof init?.body === "string" ? init.body : url.search;
+    const params = Object.fromEntries(new URLSearchParams(payload).entries());
+    calls.push({ method, params, httpMethod: init?.method ?? "GET" });
 
     const respond = (body: unknown) =>
       new Response(JSON.stringify({ response: body }), {
@@ -230,64 +237,126 @@ async function main() {
   setVkRetrySleep(async () => {});
 
   // --- post text ---------------------------------------------------------
-  const withLead = buildPostText({
+  /*
+    Пост на стене — это текст статьи, а не анонс.
+
+    Раньше в ВК уходил заголовок и две фразы лида: в ленте это читалось как «заголовок со
+    ссылкой», и о чём материал, видно не было. Проверки ниже стерегут именно полноту — тело,
+    лид, ссылку и хештеги, — а не факт, что строка собралась.
+  */
+  const withBody = buildPostText({
     title: "Заголовок",
     lead: "Лид материала",
+    contentHtml: "<p>Первый абзац тела.</p><p>Второй абзац тела.</p>",
+    categoryName: "Общество",
+    tagNames: ["Екатеринбург"],
     slug: "my-slug",
   });
   check(
-    "Текст поста: заголовок, лид, ссылка",
-    withLead.includes("Заголовок") &&
-      withLead.includes("Лид материала") &&
-      withLead.endsWith("👉 Читать полностью: http://localhost:3000/news/my-slug"),
-    JSON.stringify(withLead),
+    "Текст поста: заголовок, лид, тело, ссылка и хештеги",
+    withBody.startsWith(
+      "Заголовок\n\nЛид материала\n\nПервый абзац тела.\n\nВторой абзац тела.",
+    ) &&
+      withBody.endsWith(
+        "👉 Читать на сайте: http://localhost:3000/news/my-slug\n#Общество #Екатеринбург",
+      ),
+    JSON.stringify(withBody),
   );
 
-  const noLead = buildPostText({ title: "Только заголовок", slug: "only-title" });
+  const minimumPost = buildPostText({ title: "Только заголовок", slug: "only-title" });
   check(
-    "Текст поста без лида",
-    !noLead.includes("undefined") &&
-      noLead.endsWith("👉 Читать полностью: http://localhost:3000/news/only-title"),
-    JSON.stringify(noLead),
+    "Текст поста: без лида и тела пустых абзацев нет",
+    minimumPost ===
+      "Только заголовок\n\n👉 Читать на сайте: http://localhost:3000/news/only-title",
+    JSON.stringify(minimumPost),
+  );
+  check(
+    "Текст поста: без рубрики и слов строки хештегов нет",
+    !(minimumPost.split("\n").at(-1) ?? "").startsWith("#"),
+    JSON.stringify(minimumPost.split("\n").at(-1) ?? ""),
   );
 
   /*
-    A wall post is a teaser and the lead is written for the page, where the rest of the
-    story is one click away. Pasted whole it pushes the link below a phone's fold, where VK
-    truncates the post with an ellipsis and the URL never appears at all.
+    Тело приходит из редактора как HTML. На стену оно должно уйти текстом: ВК разметку в записи
+    не понимает, и `&laquo;` или `<b>` показались бы читателю как есть. Строка-отсылка «Читайте
+    также» уходит вместе с разметкой: в ВК из неё не остаётся ни ссылки, ни названия, только
+    обещание чего-то, чего в посте нет.
   */
-  const longLead = buildPostText({
-    title: "Длинный лид",
-    lead:
-      "Первое предложение лида достаточно длинное и содержит запятую. Второе предложение тоже есть. " +
-      "Третье предложение, которого быть не должно в посте на стене сообщества. Четвёртое и подавно.",
-    slug: "long-lead",
+  const cleaned = buildPostText({
+    title: "Разметка",
+    contentHtml:
+      '<p>Первый &laquo;абзац&raquo; с <b>жирным</b> и <a href="https://example.com">ссылкой</a>.</p>' +
+      "<blockquote><p>Цитата целиком.</p></blockquote>" +
+      "<p>Читайте также: другое название</p>" +
+      "<p>Хвост материала.</p>",
+    slug: "markup",
   });
   check(
-    "Текст поста: лид обрезан до двух предложений",
-    longLead.includes("Первое предложение лида") &&
-      longLead.includes("Второе предложение тоже есть") &&
-      !longLead.includes("Третье предложение"),
-    JSON.stringify(longLead),
+    "Тело: разметка снята, абзацы и цитата сохранены, отсылка убрана",
+    cleaned.includes("Первый «абзац» с жирным и ссылкой.") &&
+      cleaned.includes("„ Цитата целиком.") &&
+      cleaned.includes("Хвост материала.") &&
+      !cleaned.includes("Читайте также") &&
+      !/<\/?[a-z]/i.test(cleaned),
+    JSON.stringify(cleaned),
   );
 
   /*
-    A single very long sentence has no sentence boundary to cut at, so the ceiling has to
-    land somewhere. An ellipsis says the lead was trimmed; a hard slice ends mid-stem and
-    reads as a typo.
+    Лонгрид длиннее потолка уходит зачином: 4000 символов выбраны не из предела ВК (тот почти
+    вчетверо больше), а из читаемости — за десятками абзацев ссылку не находит никто. Обрезка
+    обязана встать на границу абзаца или предложения: оборванная на полуслове фраза читается
+    как опечатка сайта, а не как решение редакции.
   */
-  const oneHugeSentence = leadSummary("а".repeat(500));
+  const longParagraphs = Array.from(
+    { length: 40 },
+    (_, index) => `<p>Абзац ${index + 1}. ${"Текст предложения. ".repeat(6)}</p>`,
+  ).join("");
+  const huge = buildPostText({
+    title: "Очень длинный материал",
+    lead: "Короткий лид длинного материала.",
+    contentHtml: longParagraphs,
+    categoryName: "Общество",
+    slug: "huge",
+  });
+  const hugeBody = huge.split("\n\n👉 Читать продолжение")[0];
   check(
-    "Лид: одна огромная фраза обрезается с многоточием, а не по слогам",
-    oneHugeSentence.length <= VK_LEAD_MAX + 1 &&
-      oneHugeSentence.endsWith("…") &&
-      !/\sа…$/.test(oneHugeSentence),
-    `len=${oneHugeSentence.length}, хвост=${JSON.stringify(oneHugeSentence.slice(-6))}`,
+    "Длинный текст: зовёт на продолжение, а не обрывается",
+    huge.includes("👉 Читать продолжение на сайте: http://localhost:3000/news/huge") &&
+      !huge.includes("👉 Читать на сайте:") &&
+      huge.includes("Абзац 1.") &&
+      !huge.includes("Абзац 40."),
+    `len=${huge.length}`,
   );
   check(
-    "Лид: пустой лид не даёт пустого абзаца",
-    leadSummary("") === "" && leadSummary(null) === "" && leadSummary("   ") === "",
-    "пусто",
+    "Длинный текст: обрезка встала на конец предложения, а не в середину слова",
+    /[.!?…]$/.test(hugeBody.trimEnd()),
+    JSON.stringify(hugeBody.trimEnd().slice(-46)),
+  );
+  check(
+    "Длинный текст: предел записи ВК не превышен",
+    huge.length <= VK_TEXT_LIMIT && huge.length <= VK_MESSAGE_LIMIT,
+    `len=${huge.length} <= ${VK_TEXT_LIMIT} <= ${VK_MESSAGE_LIMIT}`,
+  );
+
+  /*
+    Хештеги: рубрика первой, дальше ключевые слова материала. Повтор, отличающийся только
+    регистром, — тот же тег; число ограничено, иначе под постом получается список тегов, за
+    которым не видно самого текста.
+  */
+  const manyTags = buildPostText({
+    title: "Хештеги",
+    categoryName: "Здоровье и стиль",
+    tagNames: ["Екатеринбург", "екатеринбург", "Город", "Медицина", "Лишний"],
+    slug: "tags",
+  });
+  const tagLine = manyTags.split("\n").at(-1) ?? "";
+  check(
+    "Хештеги: рубрика первой, регистр не даёт повторов, число ограничено",
+    tagLine.startsWith("#Здоровье_и_стиль #Екатеринбург #Город") &&
+      !/#екатеринбург/.test(tagLine) &&
+      (tagLine.match(/#/g) ?? []).length === VK_MAX_TAGS &&
+      !tagLine.includes("#Лишний"),
+    JSON.stringify(tagLine),
   );
 
   // --- attachments --------------------------------------------------------
@@ -365,7 +434,14 @@ async function main() {
 
   // --- text-only post ----------------------------------------------------
   let { calls, uploads } = stubVk({});
-  const textOnly = await publishArticleToVk({ title: "Текстовый пост", slug: "text-post" });
+  const textOnly = await publishArticleToVk({
+    title: "Текстовый пост",
+    lead: "Лид текстового поста.",
+    contentHtml: "<p>Тело текстового поста.</p>",
+    categoryName: "Общество",
+    tagNames: ["Екатеринбург"],
+    slug: "text-post",
+  });
   check("Текстовый пост: ok", textOnly.ok === true, JSON.stringify(textOnly));
   check(
     "Текстовый пост: только wall.post",
@@ -399,7 +475,7 @@ async function main() {
   check(
     "wall.post: ссылка на example.com",
     Boolean(post?.params.message?.includes("https://example.com/news/text-post")),
-    post?.params.message?.split("\n").slice(-1)[0] ?? "",
+    post?.params.message?.split("\n").find((line) => line.includes("Читать")) ?? "",
   );
 
   /*
@@ -418,12 +494,42 @@ async function main() {
     `${buildAttachments("ph_9", "both")} / ${buildAttachments(null, "both")}`,
   );
   check(
-    "Текст поста: ссылка помечена «Читать полностью»",
-    post?.params.message?.includes("👉 Читать полностью: https://example.com/news/text-post") ??
-      false,
+    "Текст поста на стене: тело, лид, ссылка и хештеги доехали целиком",
+    post?.params.message ===
+      "Текстовый пост\n\nЛид текстового поста.\n\nТело текстового поста.\n\n" +
+        "👉 Читать на сайте: https://example.com/news/text-post\n#Общество #Екатеринбург",
     JSON.stringify(post?.params.message),
   );
   check("Текстовый пост: загрузок не было", uploads.length === 0, `uploads=${uploads.length}`);
+  check(
+    "wall.post: параметры уходят телом POST, а не строкой запроса",
+    post?.httpMethod === "POST" && calls.every((call) => call.httpMethod === "POST"),
+    `httpMethod=${post?.httpMethod}`,
+  );
+
+  /*
+    Длинный пост и транспорт — одна проверка, потому что порознь они и были причиной поломки:
+    текст, который не влезает в строку запроса, до ВК не доезжает вообще, и «мы умеем длинные
+    посты» остаётся словами. Здесь сообщение проходит через настоящий `wall.post` (заглушку)
+    и сравнивается символ в символ.
+  */
+  ({ calls, uploads } = stubVk({}));
+  const longPost = await publishArticleToVk({
+    title: "Лонгрид",
+    contentHtml: longParagraphs,
+    slug: "long-post",
+  });
+  const longExpected = buildPostText({
+    title: "Лонгрид",
+    contentHtml: longParagraphs,
+    slug: "long-post",
+  });
+  const longSent = calls.find((call) => call.method === "wall.post")?.params.message ?? "";
+  check(
+    "Длинный пост доезжает целиком и без потерь",
+    longPost.ok === true && longSent === longExpected && longSent.length > 3000,
+    `len=${longSent.length}, совпадает=${longSent === longExpected}`,
+  );
 
   // --- owner_id accepts the id without a minus --------------------------
   process.env.VK_COMMUNITY_ID = "123456";
