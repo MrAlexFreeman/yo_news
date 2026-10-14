@@ -441,6 +441,20 @@ export function cutAtSentence(text: string, limit: number): string {
 }
 
 /**
+ * Признак подзаголовка: короткая строка без завершающего знака.
+ *
+ * Прозу редакция пишет предложениями и кончает их точкой; заголовок раздела — нет. Нужен именно
+ * признак, а не разбор разметки: после `htmlToPlainText` от `<h3>` остаётся та же строка, что и
+ * от абзаца, и отличить их можно только по виду.
+ */
+const HEADING_MAX_LENGTH = 60;
+
+function looksLikeHeading(paragraph: string): boolean {
+  const line = paragraph.trim();
+  return line.length > 0 && line.length <= HEADING_MAX_LENGTH && !/[.!?…»"”)]$/u.test(line);
+}
+
+/**
  * Укладывает текст в бюджет.
  *
  * Раньше здесь стояло «набрать целых абзацев, сколько влезет» — и на материале из одного
@@ -449,9 +463,21 @@ export function cutAtSentence(text: string, limit: number): string {
  * подрезается по ближайшей границе — абзаца, предложения или слова. Пустой огрызок при этом
  * получить нельзя: `cutAtSentence` отступает к последнему разделителю, а если разделителя нет
  * вовсе, режет по бюджету, и первое слово материала всё равно остаётся.
+ *
+ * Оставшийся в хвосте подзаголовок снимается: текст раздела ушёл за бюджет, и заголовок обещает
+ * то, чего в посте нет. Получается это не редко — границей реза оказывается перевод строки перед
+ * следующим абзацем, — и измерено на живом корпусе: «Главная традиция Феофанова дня» и
+ * «6. Организуйте хранение и освободите столешницу» вставали в хвост именно так.
  */
 export function fitToBudget(text: string, budget: number): string {
-  return text.length <= budget ? text : cutAtSentence(text, budget);
+  if (text.length <= budget) return text;
+
+  const blocks = cutAtSentence(text, budget).split("\n\n");
+  while (blocks.length > 1 && looksLikeHeading(blocks[blocks.length - 1] ?? "")) {
+    blocks.pop();
+  }
+
+  return blocks.join("\n\n").trimEnd();
 }
 
 /**
