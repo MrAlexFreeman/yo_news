@@ -10,6 +10,8 @@ import {
   Building2,
   Camera,
   Code,
+  Columns2,
+  Hash,
   Heading2,
   Heading3,
   Image as ImageIcon,
@@ -38,6 +40,7 @@ import {
   stockCaptionNodes,
 } from "@/app/admin/articles/components/article-figure-node";
 import { insertQuoteSourceAtCaret } from "@/app/admin/articles/components/article-quote";
+import { compareContent, factContent } from "@/app/admin/articles/components/special-blocks";
 import { EntityCardPicker } from "@/app/admin/articles/components/entity-card-picker";
 import { ReadAlsoPicker } from "@/app/admin/articles/components/read-also-picker";
 import { StockPhotoPicker } from "@/app/admin/articles/components/stock-photo-picker";
@@ -206,6 +209,29 @@ const toolbarGroups = (autoRelated: boolean): ToolbarAction[][] => [
             cols: 3,
             withHeaderRow: true,
           }).run(),
+      },
+    },
+  ],
+  /*
+    Спецврезки. Не «toggle»: вставка ставит блок целиком, а повторное нажатие ставит второй
+    такой же — у врезки нет выключенного состояния, как у жирного. Поэтому `isActive` всегда
+    false и кнопка никогда не выглядит нажатой.
+  */
+  [
+    {
+      label: "Акцентная цифра / Факт",
+      icon: Hash,
+      command: {
+        isActive: () => false,
+        run: (editor) => editor.chain().focus().insertContent(factContent()).run(),
+      },
+    },
+    {
+      label: "Было / Стало",
+      icon: Columns2,
+      command: {
+        isActive: () => false,
+        run: (editor) => editor.chain().focus().insertContent(compareContent()).run(),
       },
     },
   ],

@@ -61,6 +61,7 @@ import { appendFigureHtml } from "@/lib/article-figure";
 import { siteDateToWallClock, siteWallClockToDate } from "@/lib/date";
 import { AI_GENERATED_SOURCE } from "@/lib/photo-sources";
 import { RewritePanel } from "@/app/admin/articles/components/rewrite-panel";
+import { QualityChecklist } from "@/app/admin/articles/components/quality-checklist";
 import { canSetDzenExperiment } from "@/lib/dzen-experiment";
 import {
   DZEN_MIN_CARD_WIDTH,
@@ -1558,6 +1559,14 @@ export function ArticleForm({
             dzenExperimentLocked={dzenExperimentLocked}
             categoryError={errors.categoryId}
           >
+            <QualityChecklist
+              title={title}
+              lead={lead}
+              contentHtml={contentHtml}
+              coverImage={coverImage}
+              photoSource={photoSource}
+            />
+
             <ArticleMediaPanel
               items={media}
               onChange={setMedia}

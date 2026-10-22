@@ -14,6 +14,11 @@ import {
 import { Cite } from "@/app/admin/articles/components/article-quote";
 import { EntityCardLink } from "@/app/admin/articles/components/entity-card-node";
 import { ReadAlsoBlockNode } from "@/app/admin/articles/components/read-also-node";
+import {
+  ArticleCompare,
+  ArticleFact,
+  CompareCell,
+} from "@/app/admin/articles/components/special-blocks";
 
 /**
  * How a link looks in the editor.
@@ -121,5 +126,17 @@ export function editorExtensions() {
       without this ordering a plate opened as an empty figure with the anchor lost.
     */
     ReadAlsoBlockNode,
+    /*
+      Спецблоки визуального сторителлинга. Порядок внутри пары важен: колонка сравнения должна
+      существовать в схеме, когда разрешается содержимое `articleCompare` («compareCell
+      compareCell»), — иначе построение схемы падает так же, как у таблицы без TableKit.
+
+      Без этих двух узлов вставленный блок исчезал бы при первом открытии материала: схема
+      удаляет незнакомую разметку, и заметить это можно было бы только по пропавшей врезке на
+      уже опубликованной странице.
+    */
+    CompareCell,
+    ArticleCompare,
+    ArticleFact,
   ];
 }

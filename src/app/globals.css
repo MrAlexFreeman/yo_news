@@ -213,6 +213,55 @@ body {
   margin-bottom: 0;
 }
 
+/* --- Спецврезки визуального сторителлинга ------------------------------------
+   Сами блоки — узлы TipTap, их Tailwind-классы приходят из `special-blocks.ts`.
+   Здесь только то, чего утилитами не выразить: первый абзац врезки играет роль
+   крупной цифры (или метки «Было»/«Стало»), а утилита не умеет обратиться к
+   «первому ребёнку». Цвета берутся из темы, а не из чисел, чтобы тёмная тема и
+   смена бренд-оранжевого не оставили врезку с чужим оттенком. */
+.article-fact > p,
+.article-compare__cell > p {
+  margin-bottom: 0;
+}
+
+.article-fact > p:first-child {
+  font-size: 1.875rem;
+  line-height: 1;
+  font-weight: 800;
+  color: var(--color-yo);
+  /* Цифра не должна переноситься по разрядам, но длинное слово в подписи — должно. */
+  white-space: nowrap;
+}
+
+.article-fact > p + p,
+.article-compare__cell > p + p {
+  font-size: 0.875rem;
+  color: var(--color-ink-soft);
+}
+
+.article-compare__cell > p:first-child {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.25rem;
+}
+
+.article-compare__cell--before > p:first-child {
+  color: #dc2626;
+}
+
+.article-compare__cell--after > p:first-child {
+  color: #059669;
+}
+
+/* В редакторе врезка стоит в потоке текста, и у первого абзаца не должно быть
+   отступа, который на витрине снимается `.article-body > *:last-child`. */
+.tiptap .article-fact > p,
+.tiptap .article-compare__cell > p {
+  margin-bottom: 0;
+}
+
 /* Quotes: brand rule, light wash, italic. Defined once, in the rule further down that
    already carried the serif face — two rules for one selector means the later one
    silently wins and the result depends on source order rather than on intent. */
