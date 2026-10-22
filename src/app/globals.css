@@ -182,8 +182,15 @@ body {
    `::first-letter` inside a contenteditable both looked wrong and fought the caret:
    the first line's box starts under the float, so clicking at the start of the
    paragraph did not put the cursor where it was clicked. The storefront and the
-   preview ask for the drop cap by name; the editing surface does not. */
-.article-body.drop-cap p:first-of-type::first-letter {
+   preview ask for the drop cap by name; the editing surface does not.
+
+   **Прямой ребёнок, а не `p:first-of-type`.** Без `>` селектор находил первый абзац
+   внутри ЛЮБОГО контейнера: первая строка цитаты, подпись под фото и первый абзац
+   спецврезки получали буквицу. На врезке «акцентная цифра» это выглядело как «1»
+   в четыре раза крупнее «4»: скриншот поймал то, чего не видели ни вычисленные
+   стили, ни проверки. Буквица — про первый абзац статьи, и он лежит прямо в
+   `.article-body`. */
+.article-body.drop-cap > p:first-of-type::first-letter {
   float: left;
   font-family: var(--font-lora), Georgia, serif;
   font-size: 3.4em;
