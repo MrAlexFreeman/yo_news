@@ -1,16 +1,37 @@
 "use client";
 
-import { AlertCircle, CheckCircle2, Loader2, Video } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Smartphone, Video } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
+/** What a successful upload gives the form: the address and the VK attachment id. */
+export type UploadedVideo = {
+  /** Public page, stored in `Article.videoUrl`. */
+  url: string;
+  /** `video{owner}_{id}`, stored in `Article.vkVideoId` for the wall post. */
+  vkVideoId: string;
+};
+
 type VkVideoDropProps = {
   /**
-   * Called with the public VK address. The parent owns `videoUrl`, so a failed or
-   * discarded upload cannot leave the field pointing at a video that never landed.
+   * Called with the public VK address and the attachment id. The parent owns both fields,
+   * so a failed or discarded upload cannot leave the form pointing at a video that never
+   * landed.
    */
-  onUploaded: (url: string) => void;
+  onUploaded: (video: UploadedVideo) => void;
+  /**
+   * Готовый заголовок материала — он же имя ролика на ВК. Пусто у нового материала:
+   * сервер тогда поставит имя по дате, а публикация всё равно переименует ролик.
+   */
+  title?: string;
+  /** Лид материала — описание ролика. Необязательно. */
+  description?: string;
+  /**
+   * Вставить плеер в текст статьи. Возвращает место вставки, чтобы зона сказала, куда он
+   * попал, или null, если редактор ещё не готов. Без этого пропа кнопки вставки нет.
+   */
+  onInsertPlayer?: (url: string) => "caret" | "end" | null;
 };
 
 /** What VK's own limits and a sensible newsroom upload converge on. */
@@ -23,26 +44,46 @@ function looksLikeVideo(file: File): boolean {
   return VIDEO_EXTENSIONS.some((extension) => file.name.toLowerCase().endsWith(extension));
 }
 
+type UploadAnswer = {
+  ok?: boolean;
+  vkVideoId?: string;
+  playerUrl?: string;
+  error?: string;
+};
+
 /**
- * Drop zone that uploads a video to VK Video and hands back the public link.
+ * Drop zone that uploads a video to VK Video and hands back the public link and attachment id.
  *
  * Progress comes from XMLHttpRequest rather than fetch: `fetch` still has no
  * portable upload-progress event, and the alternative — an indeterminate spinner
  * through a multi-hundred-megabyte upload — leaves the editor unable to tell a
  * slow transfer from a hung one.
+ *
+ * `title` and `description` go into the body **before** the file. The server streams the
+ * body instead of parsing it into memory, and that parser returns as soon as the file is on
+ * disk; fields behind the file would never be read. Losing them is not fatal — VK then keeps
+ * a timestamped name — which is why this ordering is a note and not a comment shouting.
  */
-export function VkVideoDrop({ onUploaded }: VkVideoDropProps) {
+export function VkVideoDrop({
+  onUploaded,
+  title = "",
+  description = "",
+  onInsertPlayer,
+}: VkVideoDropProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   /** 0–100, or null while the request is still being prepared. */
   const [percent, setPercent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const [done, setDone] = useState<UploadedVideo | null>(null);
+  /** Where the player went, after the editor pressed the insert button. */
+  const [inserted, setInserted] = useState<"caret" | "end" | null>(null);
 
   async function upload(file: File) {
     setError(null);
     setDone(null);
+    setInserted(null);
 
     if (!looksLikeVideo(file)) {
       setError("Ожидается видеофайл: .mp4, .mov, .webm или .mkv.");
@@ -63,63 +104,69 @@ export function VkVideoDrop({ onUploaded }: VkVideoDropProps) {
     setPercent(0);
 
     const body = new FormData();
+    if (title.trim()) body.append("title", title.trim());
+    if (description.trim()) body.append("description", description.trim());
+    // The file is appended last on purpose — see the note above the component.
     body.append("file", file);
 
     try {
       // XHR rather than fetch: upload progress is the reason for this component.
-      const result = await new Promise<{ ok: boolean; message: string; url?: string }>(
-        (resolve) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", "/api/admin/upload-video-vk");
-          // The endpoint reads the body as a stream; without this the browser
-          // refuses to send the request at all.
-          xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+      const result = await new Promise<{
+        ok: boolean;
+        message: string;
+        video?: UploadedVideo;
+      }>((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/admin/upload-video-vk");
+        // The endpoint reads the body as a stream; without this the browser
+        // refuses to send the request at all.
+        xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
 
-          xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-              setPercent(Math.round((event.loaded / event.total) * 100));
-            }
-          };
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            setPercent(Math.round((event.loaded / event.total) * 100));
+          }
+        };
 
-          xhr.onload = () => {
-            let payload: {
-              success?: boolean;
-              videoUrl?: string;
-              error?: string;
-            } = {};
-            try {
-              payload = JSON.parse(xhr.responseText);
-            } catch {
-              // A non-JSON body here is an nginx or proxy error page.
-            }
+        xhr.onload = () => {
+          let payload: UploadAnswer = {};
+          try {
+            payload = JSON.parse(xhr.responseText) as UploadAnswer;
+          } catch {
+            // A non-JSON body here is an nginx or proxy error page.
+          }
 
-            resolve({
-              ok: xhr.status === 200 && Boolean(payload.success) && Boolean(payload.videoUrl),
-              message: payload.error ?? `Сервер ответил ${xhr.status}.`,
-              url: payload.videoUrl,
-            });
-          };
+          const video =
+            payload.ok && payload.playerUrl && payload.vkVideoId
+              ? { url: payload.playerUrl, vkVideoId: payload.vkVideoId }
+              : undefined;
 
-          xhr.onerror = () =>
-            resolve({ ok: false, message: "Сеть недоступна или загрузка прервана." });
-          xhr.onabort = () => resolve({ ok: false, message: "Загрузка отменена." });
-          // A hung connection must not leave the editor on a permanent spinner.
-          xhr.timeout = 30 * 60 * 1000;
-          xhr.ontimeout = () =>
-            resolve({ ok: false, message: "Превышено время ожидания." });
+          resolve({
+            ok: xhr.status === 200 && Boolean(video),
+            message: payload.error ?? `Сервер ответил ${xhr.status}.`,
+            video,
+          });
+        };
 
-          xhr.send(body);
-        },
-      );
+        xhr.onerror = () =>
+          resolve({ ok: false, message: "Сеть недоступна или загрузка прервана." });
+        xhr.onabort = () => resolve({ ok: false, message: "Загрузка отменена." });
+        // A hung connection must not leave the editor on a permanent spinner.
+        xhr.timeout = 30 * 60 * 1000;
+        xhr.ontimeout = () =>
+          resolve({ ok: false, message: "Превышено время ожидания." });
 
-      if (!result.ok || !result.url) {
+        xhr.send(body);
+      });
+
+      if (!result.ok || !result.video) {
         setError(result.message);
         setPercent(null);
         return;
       }
 
-      setDone(result.url);
-      onUploaded(result.url);
+      setDone(result.video);
+      onUploaded(result.video);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Загрузка не удалась.");
       setPercent(null);
@@ -146,16 +193,14 @@ export function VkVideoDrop({ onUploaded }: VkVideoDropProps) {
         onDrop={handleDrop}
         className={cn(
           "rounded-md border-2 border-dashed px-4 py-5 text-center transition-colors",
-          busy ? "cursor-wait border-neutral-300 bg-neutral-100" : "cursor-pointer",
-          dragging
-            ? "border-blue-500 bg-blue-50"
-            : "border-neutral-300 bg-neutral-50 hover:border-neutral-400",
+          busy ? "cursor-wait border-neutral-300 bg-neutral-100" : "border-neutral-300",
+          dragging ? "border-blue-500 bg-blue-50" : "bg-neutral-50",
         )}
       >
         <input
           ref={inputRef}
           type="file"
-          accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv"
+          accept="video/*,.mp4,.mov,.m4v,.webm,.mkv"
           className="hidden"
           disabled={busy}
           onChange={(event) => {
@@ -192,19 +237,21 @@ export function VkVideoDrop({ onUploaded }: VkVideoDropProps) {
         ) : (
           <>
             <Video className="mx-auto size-5 text-neutral-400" aria-hidden />
-            <p className="mt-2 text-sm text-neutral-700">
-              Перетащите видеофайл сюда для автозагрузки в VK Видео
-            </p>
-            <p className="mt-1 text-xs text-neutral-400">
-              или{" "}
-              <button
-                type="button"
-                onClick={() => inputRef.current?.click()}
-                className="font-medium text-blue-700 underline hover:text-blue-900"
-              >
-                выберите файл
-              </button>{" "}
-              — до 500 МБ. Ролик получит имя материала при публикации.
+            {/*
+              The button is the phone path: a newsroom films on a phone, and a tap on a
+              44-pixel target is the difference between uploading from the field and waiting
+              to get back to a laptop. Drag-and-drop stays for the desktop.
+            */}
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              className="mt-2 inline-flex items-center gap-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-700 active:bg-neutral-800"
+            >
+              <Smartphone className="size-4" aria-hidden />
+              Выбрать видео с телефона
+            </button>
+            <p className="mt-2 text-xs text-neutral-400">
+              или перетащите файл сюда — до 500 МБ
             </p>
           </>
         )}
@@ -218,10 +265,41 @@ export function VkVideoDrop({ onUploaded }: VkVideoDropProps) {
       ) : null}
 
       {done ? (
-        <p role="status" className="flex items-start gap-1.5 break-all text-xs text-green-700">
-          <CheckCircle2 className="mt-px size-3.5 shrink-0" aria-hidden />
-          Загружено: {done}
-        </p>
+        <div className="space-y-1 rounded-md border border-green-200 bg-green-50 px-3 py-2">
+          <p className="flex items-start gap-1.5 break-all text-xs text-green-800">
+            <CheckCircle2 className="mt-px size-3.5 shrink-0" aria-hidden />
+            <span>
+              Загружено: {done.url}
+              <span className="mt-0.5 block font-mono text-[11px] text-green-700">
+                {done.vkVideoId}
+              </span>
+            </span>
+          </p>
+
+          {onInsertPlayer ? (
+            <button
+              type="button"
+              onClick={() => {
+                const placement = onInsertPlayer(done.url);
+                setInserted(placement);
+              }}
+              className="text-xs font-medium text-green-900 underline hover:text-green-700"
+            >
+              Вставить плеер в текст
+            </button>
+          ) : null}
+
+          {inserted === "caret" ? (
+            <p role="status" className="text-xs text-green-700">
+              Плеер вставлен по курсору.
+            </p>
+          ) : null}
+          {inserted === "end" ? (
+            <p role="status" className="text-xs text-green-700">
+              Плеер добавлен в конец текста: курсор не стоял в статье.
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

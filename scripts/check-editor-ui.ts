@@ -1091,11 +1091,15 @@ for (const label of TOOLBAR_LABELS) {
 // storefront's markup is assembled in a server component that needs a whole article
 // and its relations, and the rule under test is a selector. jsdom does not resolve
 // pseudo-element styles at all, so a computed-style check would prove nothing.
-const DROP_CAP_RULE = /\.article-body\.drop-cap\s+p:first-of-type::first-letter\s*\{/;
+// Правило стало `.article-body.drop-cap > p:first-of-type::first-letter`, чтобы буквица не
+// задевала первый абзац врезки, — и проверка, написанная под пробел вместо `>`, начала
+// краснеть на верном CSS. Дочерний комбинатор допускается, класс `.drop-cap` по-прежнему
+// обязателен, а необёрнутое правило ловится в обеих формах.
+const DROP_CAP_RULE = /\.article-body\.drop-cap\s*>?\s*p:first-of-type::first-letter\s*\{/;
 check(
   "Оформление: буквица включается только явным классом",
   DROP_CAP_RULE.test(globalCss) &&
-    !/\.article-body\s+p:first-of-type::first-letter/.test(globalCss),
+    !/\.article-body\s*>?\s*p:first-of-type::first-letter/.test(globalCss),
   DROP_CAP_RULE.test(globalCss)
     ? "селектор требует .drop-cap"
     : "правило буквицы не найдено или не требует класса",

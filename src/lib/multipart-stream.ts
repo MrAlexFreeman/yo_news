@@ -27,7 +27,22 @@ export type ParsedUpload = {
   /** Content-Type declared for the part, if any. */
   contentType: string;
   size: number;
+  /**
+   * Short text fields that arrived **before** the file part, by name.
+   *
+   * Only the fields seen until the file is written: the parser returns the moment the file's
+   * closing boundary is read, which is the point of it — the request stops being drained as
+   * soon as the bytes are on disk. So a client that wants `title` and `description` must send
+   * them ahead of the file, and that is said in the route too.
+   *
+   * Each value is capped at `FIELD_MAX_BYTES`; a field larger than that is truncated rather
+   * than trusted, because these are names, not payloads.
+   */
+  fields: Record<string, string>;
 };
+
+/** How much of a text field is kept. Titles and descriptions are short by nature. */
+const FIELD_MAX_BYTES = 4 * 1024;
 
 /** Anything a browser plausibly calls a video. */
 const VIDEO_EXTENSIONS = new Set([
@@ -88,12 +103,16 @@ export async function streamFirstFileToDisk(
   const delimiter = Buffer.from(`--${boundary}`);
   const CRLF = Buffer.from("\r\n");
 
-  let state: "preamble" | "headers" | "body" = "preamble";
+  let state: "preamble" | "headers" | "body" | "field" = "preamble";
   let carry: Buffer = Buffer.alloc(0);
   let size = 0;
   let filename = "";
   let contentType = "";
   let wroteFile = false;
+  const fields: Record<string, string> = {};
+  /** Name and accumulated value of the plain field being read, if any. */
+  let fieldName = "";
+  let fieldValue: Buffer = Buffer.alloc(0);
 
   const out = createWriteStream(filePath);
   const finish = async () => {
@@ -160,15 +179,64 @@ export async function streamFirstFileToDisk(
 
           chunk = chunk.subarray(end + skip);
 
-          // A part without a filename is a plain field. Keep scanning for the one
-          // that does have one rather than writing a text field to disk.
+          /*
+            A part without a filename is a plain field. Its value is collected — `title` and
+            `description` ride ahead of the file — but only up to `FIELD_MAX_BYTES`, and a part
+            with no name at all is skipped exactly as before.
+          */
           if (!filename) {
-            state = "preamble";
+            const name = rawHeaders.match(/\bname="([^"]+)"/i)?.[1]?.trim() ?? "";
+            if (name) {
+              fieldName = name;
+              fieldValue = Buffer.alloc(0);
+              state = "field";
+            } else {
+              state = "preamble";
+            }
             continue;
           }
 
           state = "body";
           continue;
+        }
+
+        if (state === "field") {
+          /*
+            The same boundary handling as the file body, with two differences: the value is held
+            in memory (it is a name, not a payload), and reaching the cap truncates it rather than
+            failing the request.
+          */
+          const closingField = chunk.indexOf(delimiter);
+          if (closingField !== -1) {
+            let end = closingField;
+            if (end >= 2 && chunk.subarray(end - 2, end).equals(CRLF)) end -= 2;
+            else if (end >= 1 && chunk[end - 1] === 0x0a) end -= 1;
+
+            if (fieldValue.length < FIELD_MAX_BYTES) {
+              fieldValue = Buffer.concat([fieldValue, chunk.subarray(0, end)]);
+            }
+            fields[fieldName] = fieldValue.subarray(0, FIELD_MAX_BYTES).toString("utf8");
+            fieldName = "";
+            fieldValue = Buffer.alloc(0);
+
+            chunk = chunk.subarray(closingField + delimiter.length);
+            state = "headers";
+            continue;
+          }
+
+          const keepField = delimiter.length + 2;
+          if (chunk.length <= keepField) {
+            carry = chunk;
+            chunk = Buffer.alloc(0);
+            break;
+          }
+
+          if (fieldValue.length < FIELD_MAX_BYTES) {
+            fieldValue = Buffer.concat([fieldValue, chunk.subarray(0, chunk.length - keepField)]);
+          }
+          carry = chunk.subarray(chunk.length - keepField);
+          chunk = Buffer.alloc(0);
+          break;
         }
 
         // state === "body"
@@ -183,7 +251,7 @@ export async function streamFirstFileToDisk(
 
           wroteFile = true;
           await finish();
-          return { filePath, filename, contentType, size };
+          return { filePath, filename, contentType, size, fields: { ...fields } };
         }
 
         // Everything except a possible trailing partial delimiter is file data.
@@ -223,7 +291,7 @@ export async function streamFirstFileToDisk(
   }
 
   const info = await stat(filePath);
-  return { filePath, filename, contentType, size: info.size };
+  return { filePath, filename, contentType, size: info.size, fields: { ...fields } };
 }
 
 /** Best-effort cleanup; the caller may be handling an error already. */

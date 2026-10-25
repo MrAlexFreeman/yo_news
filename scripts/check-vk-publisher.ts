@@ -23,6 +23,7 @@ import {
   vkCommunityGroupId,
   vkPhotoAttachmentId,
 } from "../src/lib/vk-publisher";
+import { normaliseVkVideoId } from "../src/lib/vk-video-format";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
@@ -61,6 +62,8 @@ function stubVk(options: {
    * and `wall.edit` is what repairs it.
    */
   dropAttachmentOnce?: boolean;
+  /** Report a post that carries the uploaded video, for the read-back of a video post. */
+  videoOnPost?: boolean;
   /** Refuse the repair, so the warning path is exercised. */
   editFails?: boolean;
 }) {
@@ -184,7 +187,11 @@ function stubVk(options: {
         items: [
           {
             id: 555,
-            attachments: attachmentOnPost ? [{ type: "photo" }] : [],
+            attachments: options.videoOnPost
+              ? [{ type: "video" }]
+              : attachmentOnPost
+                ? [{ type: "photo" }]
+                : [],
           },
         ],
       });
@@ -392,6 +399,45 @@ async function main() {
     buildAttachments("photo276313599_457240126", "both") === "photo276313599_457240126",
     buildAttachments("photo276313599_457240126", "both"),
   );
+  check(
+    "Вложения: ролик без фото — одно видео",
+    buildAttachments(null, "video-only", "video-241944021_456239017") ===
+      "video-241944021_456239017",
+    buildAttachments(null, "video-only", "video-241944021_456239017"),
+  );
+  check(
+    "Вложения: фото и ролик — через запятую, фото первым",
+    buildAttachments("photo276313599_457240126", "both", "video-241944021_456239017") ===
+      "photo276313599_457240126,video-241944021_456239017",
+    buildAttachments("photo276313599_457240126", "both", "video-241944021_456239017"),
+  );
+  check(
+    "Вложения: пустой ролик не оставляет запятую",
+    buildAttachments("photo276313599_457240126", "both", "") ===
+      "photo276313599_457240126" &&
+      buildAttachments(null, "both", null) === "",
+    `${buildAttachments("photo276313599_457240126", "both", "")} / ${buildAttachments(null, "both", null)}`,
+  );
+
+  // --- the attachment id that arrives from the form ------------------------
+  check(
+    "ID ролика: корректный принимается как есть",
+    normaliseVkVideoId("video-241944021_456239017") === "video-241944021_456239017" &&
+      normaliseVkVideoId("  video241944021_456239017  ") === "video241944021_456239017",
+    `${normaliseVkVideoId("video-241944021_456239017")} / ${normaliseVkVideoId("  video241944021_456239017  ")}`,
+  );
+  check(
+    "ID ролика: мусор и пустое поле означают «нет видео»",
+    normaliseVkVideoId("") === null &&
+      normaliseVkVideoId(null) === null &&
+      normaliseVkVideoId(undefined) === null &&
+      normaliseVkVideoId("video") === null &&
+      normaliseVkVideoId("photo1_2") === null &&
+      // Запятая в значении — попытка подмешать второе вложение: ВК на такое отвечает
+      // ошибкой 100 и не публикует пост вообще.
+      normaliseVkVideoId("video-1_2,photo3_4") === null,
+    "все null",
+  );
 
   // --- the upload answer VK actually sends ---------------------------------
   const okPhoto = JSON.stringify([{ markers_restarted: true, photo: "9bce4ffabc:w", sizes: [] }]);
@@ -514,6 +560,32 @@ async function main() {
     "wall.post: с обложкой вложение — ровно одно фото",
     buildAttachments("ph_9", "both") === "ph_9" && buildAttachments(null, "both") === "",
     `${buildAttachments("ph_9", "both")} / ${buildAttachments(null, "both")}`,
+  );
+
+  // --- a story with an uploaded video ------------------------------------
+  /*
+    The read-back is the half that matters: `wall.post` returning an id says nothing about the
+    attachment being there (see the repair above), so the stub reports the video as present and
+    the check asserts two things at once — the id reached the request, and nothing tried to
+    "repair" an attachment that had arrived.
+  */
+  ({ calls, uploads } = stubVk({ videoOnPost: true }));
+  const withVideo = await publishArticleToVk({
+    title: "С видео",
+    slug: "with-video",
+    vkVideoId: "video-241944021_456239017",
+  });
+  const videoPost = calls.find((call) => call.method === "wall.post");
+  check(
+    "wall.post: ролик без обложки уходит одним вложением",
+    withVideo.ok === true && videoPost?.params.attachments === "video-241944021_456239017",
+    `ok=${withVideo.ok}, attachments=${videoPost?.params.attachments ?? "нет"}`,
+  );
+  check(
+    "wall.post: ролик на месте — правка не нужна",
+    calls.filter((call) => call.method === "wall.edit").length === 0,
+    `edit=${calls.filter((call) => call.method === "wall.edit").length}, ` +
+      `warning=${withVideo.warning ?? "нет"}`,
   );
   check(
     "Текст поста на стене: тело, лид, ссылка и хештеги доехали целиком",

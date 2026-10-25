@@ -95,6 +95,7 @@ export async function POST(request: Request) {
       slug: true,
       coverImage: true,
       contentHtml: true,
+      vkVideoId: true,
       category: { select: { name: true } },
       tags: { select: { tag: { select: { name: true } } }, orderBy: { tag: { name: "asc" } } },
     },
@@ -129,6 +130,9 @@ export async function POST(request: Request) {
     tagNames: article.tags.map((link) => link.tag.name),
     slug: article.slug,
     coverImage: article.coverImage,
+    // Если у материала есть загруженный ролик, тест проверяет и его вложение: пост с
+    // обложкой и без видео выглядит успешным, а редактор ждал на стене оба.
+    vkVideoId: article.vkVideoId,
   });
 
   if (!result.ok) {
@@ -149,6 +153,10 @@ export async function POST(request: Request) {
     ? await readWallPostAttachments(result.postId)
     : null;
   const photoAttached = attachments?.includes("photo") ?? false;
+  /** null when this story has no uploaded video, so «нет» is not reported as a failure. */
+  const videoAttached = article.vkVideoId
+    ? (attachments?.includes("video") ?? false)
+    : null;
 
   const deleted = keep || !result.postId ? false : await deleteWallPost(result.postId);
 
@@ -161,6 +169,13 @@ export async function POST(request: Request) {
       ? "Фото обложки прикреплено — проверка пройдена."
       : "Фото к посту НЕ прикреплено. Смотрите логи: pm2 logs uartnews | grep vk",
   ];
+  if (videoAttached === true) {
+    lines.push(`Видео ${article.vkVideoId} прикреплено.`);
+  } else if (videoAttached === false) {
+    lines.push(
+      `Видео ${article.vkVideoId} к посту НЕ прикреплено — проверьте, что ролик принадлежит сообществу.`,
+    );
+  }
   if (result.warning) lines.push(`Предупреждение: ${result.warning}`);
   if (keep && result.postId) {
     // `vkOwnerId()` already carries the minus, so the address is the same shape VK prints.
@@ -173,9 +188,12 @@ export async function POST(request: Request) {
 
   return NextResponse.json(
     {
-      // Green only when the photo is genuinely on the post, not merely when the API said yes.
-      ok: photoAttached,
+      // Green only when the photo is genuinely on the post, not merely when the API said yes,
+      // and when an expected video is there too.
+      ok: photoAttached && videoAttached !== false,
       photoAttached,
+      videoAttached,
+      videoExpected: article.vkVideoId,
       postId: result.postId,
       photoId: result.photoId,
       attachments,

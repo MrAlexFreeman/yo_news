@@ -148,6 +148,13 @@ export type ArticleFormValues = {
   media: MediaItem[];
   /** Link to the main video; empty when the story has none. */
   videoUrl: string;
+  /**
+   * Идентификатор ролика ВК для вложения в пост: `video{owner}_{id}`.
+   *
+   * Заполняется загрузкой из формы, а не выводится из `videoUrl`: адрес и id живут по
+   * разным правилам, и разбор адреса — догадка, которая молча оставляет пост без видео.
+   */
+  vkVideoId: string;
 };
 
 /** Search-engine lengths above which the field is usually truncated anyway. */

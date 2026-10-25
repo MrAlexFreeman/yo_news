@@ -108,10 +108,33 @@ async function main() {
       tmpDir: dir,
     });
     check(
-      "текстовое поле пропущено, файл взят",
-      parsedField.filename === "clip.mp4" &&
+      "текстовое поле перед файлом прочитано, файл взят",
+      parsedField.fields.caption === "подпись к ролику" &&
+        parsedField.filename === "clip.mp4" &&
         readFileSync(parsedField.filePath).equals(payload),
-      `${parsedField.filename}, ${parsedField.size} байт`,
+      `${JSON.stringify(parsedField.fields)}, ${parsedField.size} байт`,
+    );
+
+    // --- two fields, as the video route sends them -------------------------
+    // `title` and `description` ride ahead of the file on purpose: the parser stops at the
+    // file, so anything behind it would never be read. Chunked at 5 bytes to push nearly
+    // every field delimiter across a chunk boundary.
+    const twoFields = buildMultipart(boundary, [
+      { name: "title", body: Buffer.from("Заголовок: с двоеточием") },
+      { name: "description", body: Buffer.from("Лид материала.") },
+      { name: "file", filename: "clip.mp4", type: "video/mp4", body: payload },
+    ]);
+    const parsedTwo = await streamFirstFileToDisk(requestFor(twoFields, boundary, 5), {
+      maxBytes: 10 * 1024 * 1024,
+      tmpDir: dir,
+    });
+    check(
+      "два поля до файла прочитаны при дроблении по 5 байт",
+      parsedTwo.fields.title === "Заголовок: с двоеточием" &&
+        parsedTwo.fields.description === "Лид материала." &&
+        parsedTwo.filename === "clip.mp4" &&
+        readFileSync(parsedTwo.filePath).equals(payload),
+      JSON.stringify(parsedTwo.fields),
     );
 
     // --- chunk boundaries that straddle a delimiter ------------------------
@@ -124,8 +147,9 @@ async function main() {
       check(
         `файл собран при chunk=${chunkSize}`,
         parsedChunks.filename === "clip.mp4" &&
-          readFileSync(parsedChunks.filePath).equals(payload),
-        `${parsedChunks.size} байт`,
+          readFileSync(parsedChunks.filePath).equals(payload) &&
+          parsedChunks.fields.caption === "подпись к ролику",
+        `${parsedChunks.size} байт, поля: ${JSON.stringify(parsedChunks.fields)}`,
       );
     }
 

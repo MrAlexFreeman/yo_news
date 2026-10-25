@@ -246,6 +246,14 @@ export function ArticleForm({
   const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
   const [media, setMedia] = useState<MediaItem[]>(initial?.media ?? []);
   const [videoUrl, setVideoUrl] = useState(initial?.videoUrl ?? "");
+  /*
+    Идентификатор ролика ВК (`video{owner}_{id}`), который пришёл из загрузки.
+
+    Отдельно от `videoUrl`, потому что это разные вещи: адрес открывает страницу, а id нужен
+    ВК, чтобы прикрепить ролик к посту на стене. Из адреса он не выводится — разбор чужого
+    формата ссылки молча оставил бы пост без видео.
+  */
+  const [vkVideoId, setVkVideoId] = useState(initial?.vkVideoId ?? "");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   /** Non-blocking note about the cover, e.g. it is narrower than Dzen wants. */
@@ -483,6 +491,7 @@ export function ArticleForm({
           tags: initial.tags.join(","),
           media: serializeMedia(initial.media),
           videoUrl: initial.videoUrl,
+          vkVideoId: initial.vkVideoId,
         }
       : null,
   );
@@ -530,6 +539,7 @@ export function ArticleForm({
     tags: tags.join(","),
     media: serializeMedia(media),
     videoUrl,
+    vkVideoId,
   };
 
   /**
@@ -588,7 +598,8 @@ export function ArticleForm({
           photoAuthor ||
           photoSource ||
           media.length > 0 ||
-          videoUrl,
+          videoUrl ||
+          vkVideoId,
       );
 
   /*
@@ -622,6 +633,7 @@ export function ArticleForm({
     setTags(snapshot.tags ? snapshot.tags.split(",").filter(Boolean) : []);
     setMedia(parseMediaField(snapshot.media));
     setVideoUrl(snapshot.videoUrl);
+    setVkVideoId(snapshot.vkVideoId);
     setCategoryId(snapshot.categoryId);
     setStatus(snapshot.status);
     setPublishedAt(snapshot.publishedAt);
@@ -725,6 +737,7 @@ export function ArticleForm({
       setTags([]);
       setMedia([]);
       setVideoUrl("");
+      setVkVideoId("");
       setPublishedAt(siteNow());
       setUploadError(null);
       setUploadWarning(null);
@@ -902,6 +915,11 @@ export function ArticleForm({
           MediaEditor lives on the "Медиа" tab and unmounts with it. */}
       <input type="hidden" name="media" value={serializeMedia(media)} readOnly />
       <input type="hidden" name="videoUrl" value={videoUrl} readOnly />
+      {/*
+        Идентификатор ролика для вложения в пост ВК. Без него на стену уйдёт статья без
+        видео, хотя ролик уже лежит на ВК.
+      */}
+      <input type="hidden" name="vkVideoId" value={vkVideoId} readOnly />
 
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-300 bg-white px-6 py-3">
         <div>
@@ -1384,15 +1402,20 @@ export function ArticleForm({
                   </p>
 
                   {/*
-                    The drop zone writes straight into the same field a pasted
-                    link would occupy, so nothing needs translating afterwards and
-                    "Отменить" reverts the upload along with everything else.
+                    The drop zone writes the address into the field a pasted link would
+                    occupy and the attachment id into its own hidden field, so nothing
+                    needs translating afterwards and "Отменить" reverts the upload along
+                    with everything else.
                   */}
                   <VkVideoDrop
-                    onUploaded={(url) => {
-                      setVideoUrl(url);
+                    title={title}
+                    description={lead}
+                    onUploaded={(video) => {
+                      setVideoUrl(video.url);
+                      setVkVideoId(video.vkVideoId);
                       setUploadWarning(null);
                     }}
+                    onInsertPlayer={(url) => editorRef.current?.insertVideo(url) ?? null}
                   />
                 </div>
 

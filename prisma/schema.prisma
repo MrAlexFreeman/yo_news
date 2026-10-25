@@ -177,6 +177,16 @@ model Article {
   /// Appended at the end for the same SQLite reason as `telegramPostId` above: a column inserted
   /// among the others makes Prisma rebuild the whole Article table instead of adding one.
   isUrgent Boolean @default(false)
+  /// Идентификатор видео для вложений ВК: `video{owner_id}_{video_id}`.
+  ///
+  /// Хранится рядом с `videoUrl`, а не выводится из него при публикации: разбор id из
+  /// публичного адреса — это догадка о том, как ВК составляет ссылки, и неверная догадка молча
+  /// оставляет пост на стене без ролика. Значение приходит из загрузки, где ВК сам вернул
+  /// owner_id и video_id.
+  ///
+  /// Appended at the end for the same SQLite reason as `telegramPostId` above: a column inserted
+  /// among the others makes Prisma rebuild the whole Article table instead of adding one.
+  vkVideoId String?
   /// The poll attached to this story, if any. The foreign key lives on `ArticlePoll`, so this
   /// side adds no column and no table rebuild — see the note on where new columns may go.
   poll        ArticlePoll?

@@ -272,6 +272,18 @@ const toolbarGroups = (autoRelated: boolean): ToolbarAction[][] => [
 ];
 
 /**
+ * The iframe address inside a vetted embed, or undefined when the host is not one of ours.
+ *
+ * The toolbar, the Mail.ru import and the imperative handle all insert a player the same
+ * way; one copy of the regular expression means they cannot drift apart, and the provider
+ * list stays the single authority on what counts as a video address.
+ */
+function embedSource(url: string): string | undefined {
+  const embed = buildVideoEmbed(url);
+  return embed ? new RegExp(`<iframe[^>]*\\ssrc="([^"]+)"`).exec(embed)?.[1] : undefined;
+}
+
+/**
  * Attributes for the editable element itself.
  *
  * A function, not a constant, because `setOptions` replaces the whole `attributes`
@@ -344,6 +356,14 @@ export type ContentEditorHandle = {
    * to the stored HTML instead".
    */
   insertPhoto: (src: string, caption: string) => PhotoPlacement | null;
+  /**
+   * Puts a video player into the body, at the caret or at the end.
+   *
+   * Takes the public address — the same one an editor would paste — and converts it
+   * through the vetted provider list, so the node can only carry a source this site
+   * already trusts. Null when the editor is not ready or the address is not one of ours.
+   */
+  insertVideo: (url: string) => PhotoPlacement | null;
   /** True once the writer has put the cursor in the text at least once. */
   hasCaret: () => boolean;
 };
@@ -494,6 +514,23 @@ export const ContentEditor = memo(function ContentEditor({
         insertFigureAtCaret(editor, src, caption, caption);
         return "caret";
       },
+      insertVideo(url) {
+        if (!editor) return null;
+
+        // Same provider list the toolbar uses: an address that is not one of ours never
+        // becomes a node, so a vetted iframe is the only thing that can land in the body.
+        const src = embedSource(url);
+        if (!src) return null;
+
+        const placement: PhotoPlacement = caretPlaced ? "caret" : "end";
+        if (!caretPlaced) {
+          const end = editor.state.doc.content.size;
+          editor.chain().focus().setTextSelection(end).run();
+        }
+
+        editor.chain().focus().insertContent({ type: "videoEmbed", attrs: { src } }).run();
+        return placement;
+      },
     }),
     [editor, caretPlaced],
   );
@@ -613,10 +650,7 @@ export const ContentEditor = memo(function ContentEditor({
 
     // Built through the vetted provider list rather than interpolated into a src:
     // buildVideoEmbed is what decides a host is one of ours.
-    const embed = buildVideoEmbed(answer);
-    const src = embed
-      ? new RegExp(`<iframe[^>]*\\ssrc="([^"]+)"`).exec(embed)?.[1]
-      : undefined;
+    const src = embedSource(answer);
 
     if (!src) {
       setToolbarError(unsupportedVideoMessage(answer));
@@ -665,10 +699,7 @@ export const ContentEditor = memo(function ContentEditor({
 
       // The address VK returned goes through the same provider list as a pasted one, so the
       // node can only ever carry a src this site already trusts.
-      const embed = buildVideoEmbed(payload.videoUrl);
-      const src = embed
-        ? new RegExp(`<iframe[^>]*\\ssrc="([^"]+)"`).exec(embed)?.[1]
-        : undefined;
+      const src = embedSource(payload.videoUrl);
 
       if (!src) {
         setToolbarError(

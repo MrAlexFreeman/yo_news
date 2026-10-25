@@ -30,6 +30,7 @@ import { stockCreditColumns } from "@/lib/stock-credit";
 import { parseTagsField, syncArticleTags } from "@/lib/tags";
 import { normalisePollInput, parsePollOptions } from "@/lib/polls";
 import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
+import { normaliseVkVideoId } from "@/lib/vk-video-format";
 import { publishArticleToVk, setVkTokenSource } from "@/lib/vk-publisher";
 import { decideVkRepost } from "@/lib/vk-dedupe";
 import { claimVkPost, finishVkPost, releaseVkPost } from "@/lib/vk-claim";
@@ -312,6 +313,15 @@ export async function createArticleAction(
     isExclusive: checkbox(formData, "isExclusive"),
     is18plus: checkbox(formData, "is18plus"),
     videoUrl,
+    /*
+      Идентификатор ролика для вложения в пост ВК.
+
+      Приходит скрытым полем из формы, куда его записала загрузка (ВК вернул owner_id и
+      video_id). Проверяется на форму, потому что испорченное вложение ВК не игнорирует:
+      `wall.post` отвечает ошибкой 100 и не публикует вообще ничего — ни текста, ни ролика.
+      Пустое поле и мусор одинаково означают «ролика нет».
+    */
+    vkVideoId: normaliseVkVideoId(str(formData, "vkVideoId")),
     media: mediaColumn(str(formData, "media")),
     // Maintained on every write, not backfilled once: the editor's search box is the
     // only reader, and a stale index would quietly return the wrong story.
@@ -483,6 +493,8 @@ export async function createArticleAction(
           tagNames: attachedTags.map((tag) => tag.name),
           slug: article.slug,
           coverImage: article.coverImage,
+          // Ролик, загруженный из формы: без него пост на стене остаётся без видео.
+          vkVideoId: article.vkVideoId,
         });
 
         if (vk.ok) {

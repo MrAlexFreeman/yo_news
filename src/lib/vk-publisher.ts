@@ -49,6 +49,14 @@ export type VkArticle = {
   /** Ключевые слова материала: остальные хештеги. */
   tagNames?: readonly string[] | null;
   coverImage?: string | null;
+  /**
+   * Идентификатор ролика ВК для вложения: `video{owner_id}_{video_id}`.
+   *
+   * Приходит из загрузки в форме, где ВК сам вернул owner_id и video_id, и хранится в
+   * `Article.vkVideoId`. Здесь он только передаётся в `attachments`: без него пост уходит
+   * без ролика, а сам ролик остаётся на ВК, не связанный со статьёй.
+   */
+  vkVideoId?: string | null;
 };
 
 /**
@@ -391,7 +399,7 @@ function vkHashtags(article: VkArticle): string {
 }
 
 /**
- * The `attachments` value: the wall photo, or nothing.
+ * The `attachments` value: the wall photo and the video, each only when present.
  *
  * **The brief asked for the link here as well** — `photo{owner_id}_{id},https://…/news/{slug}`.
  * It is deliberately not passed, and the reason is a set of measurements taken against the
@@ -417,12 +425,25 @@ function vkHashtags(article: VkArticle): string {
  * about the combination. The conclusion happened to be right and the reason was wrong, which
  * is the more dangerous half to leave in a comment.
  */
-export function buildAttachments(photoId: string | null, slug: string): string {
+export function buildAttachments(
+  photoId: string | null,
+  slug: string,
+  vkVideoId?: string | null,
+): string {
   // `slug` is unused on purpose — see above. Kept in the signature so the caller keeps
   // passing the story it is posting about, and so restoring a link attachment later is a
   // one-line change rather than a search.
   void slug;
-  return photoId ?? "";
+
+  /*
+    A missing part is left out of the list rather than passed as an empty element.
+
+    VK reads `photo123_456,` as a malformed attachment and refuses the whole post, so a story
+    with a video but no cover (or the reverse) must send exactly the parts that exist.
+  */
+  return [photoId, vkVideoId]
+    .filter((value): value is string => Boolean(value))
+    .join(",");
 }
 
 /**
@@ -851,7 +872,7 @@ export async function publishArticleToVk(
   log(
     `публикация: статья ${article.id ?? "без id"} «${article.slug}», обложка: ${
       article.coverImage ?? "нет"
-    }, owner_id=${communityId}`,
+    }, видео: ${article.vkVideoId ?? "нет"}, owner_id=${communityId}`,
   );
 
   if (article.coverImage) {
@@ -868,14 +889,23 @@ export async function publishArticleToVk(
     log("обложки нет — пост уйдёт только текстом со ссылкой");
   }
 
+  /*
+    Одно значение на оба запроса — `wall.post` и восстановление через `wall.edit`.
+
+    `wall.edit` заменяет вложения целиком, а не дополняет их. Если бы правка отправляла только
+    обложку, ролик, который ВК принял с первого раза, исчез бы из поста именно в момент
+    починки обложки — то есть восстановление одного вложения ломало бы другое.
+  */
+  const attachments = buildAttachments(photoId, article.slug, article.vkVideoId);
+
   try {
     const posted = await callVk<{ post_id?: number | string }>("wall.post", {
       owner_id: communityId,
       from_group: 1,
       message,
-      // Present whenever a cover made it up; omitted otherwise, because VK treats an empty
-      // string as a malformed attachment and rejects the whole post.
-      ...(photoId ? { attachments: photoId } : {}),
+      // Present whenever at least one attachment made it up; omitted otherwise, because VK
+      // treats an empty string as a malformed attachment and rejects the whole post.
+      ...(attachments ? { attachments } : {}),
     });
 
     /*
@@ -889,14 +919,30 @@ export async function publishArticleToVk(
       The repair is `wall.edit`, not a second post: the post already exists, and editing its
       attachments mutates it in place with no window in which the wall has two copies.
     */
-    if (photoId && posted?.post_id != null) {
+    if (attachments && posted?.post_id != null) {
       const postId = String(posted.post_id);
       const landed = await readWallPostAttachments(postId);
 
-      // `null` means the read failed, which is not evidence of anything; only a post that was
-      // read and has nothing on it is worth repairing.
-      if (landed && landed.length === 0) {
-        logError(`пост ${postId} создан без вложения — дописываю обложку через wall.edit`);
+      /*
+        What this code sent, by the names VK prints in `attachments`: `photo` and `video`.
+
+        Comparing types rather than counting: a post that kept the video and lost the cover has
+        one attachment and is still broken, so "not empty" is not the same as "complete".
+      */
+      const expected = [photoId ? "photo" : null, article.vkVideoId ? "video" : null].filter(
+        (type): type is string => Boolean(type),
+      );
+
+      /*
+        `null` means the read failed, which is not evidence of anything; only a post that was
+        read is worth comparing.
+      */
+      const missing = landed ? expected.filter((type) => !landed.includes(type)) : [];
+
+      if (missing.length > 0) {
+        logError(
+          `пост ${postId} создан без вложения (${missing.join(", ")}) — дописываю через wall.edit`,
+        );
         try {
           /*
             `message` is passed again, and that is not redundancy.
@@ -911,22 +957,30 @@ export async function publishArticleToVk(
             owner_id: communityId,
             post_id: postId,
             message,
-            attachments: photoId,
+            // Both parts, not only the missing one — `wall.edit` replaces the list. See the
+            // note where `attachments` is built.
+            attachments,
           });
 
           const repaired = await readWallPostAttachments(postId);
-          if (repaired && repaired.length === 0) {
+          const stillMissing = repaired
+            ? expected.filter((type) => !repaired.includes(type))
+            : [];
+
+          if (repaired === null) {
+            log(`правка отправлена к посту ${postId}, проверить вложения не удалось`);
+          } else if (stillMissing.length > 0) {
             warning = joinWarning(
               warning,
-              "ВК принял пост без обложки и не прикрепил её даже после правки",
+              `ВК принял пост без вложения (${stillMissing.join(", ")}) и не прикрепил его даже после правки`,
             );
           } else {
-            log(`обложка дописана к посту ${postId}`);
+            log(`вложения дописаны к посту ${postId}`);
           }
         } catch (error) {
           warning = joinWarning(
             warning,
-            `ВК создал пост без обложки, дописать не удалось: ${
+            `ВК создал пост без вложения (${missing.join(", ")}), дописать не удалось: ${
               error instanceof Error ? error.message : "неизвестная ошибка"
             }`,
           );
@@ -935,7 +989,7 @@ export async function publishArticleToVk(
     }
 
     log(
-      `готово: пост ${posted?.post_id ?? "?"}, вложение: ${photoId ?? "нет"}${
+      `готово: пост ${posted?.post_id ?? "?"}, вложения: ${attachments || "нет"}${
         warning ? `, предупреждение: ${warning}` : ""
       }`,
     );

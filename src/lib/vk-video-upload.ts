@@ -5,6 +5,7 @@ import {
   extractUploadUrl,
   extractVideoIds,
   publicVideoUrl,
+  videoAttachmentId,
 } from "@/lib/vk-video-format";
 import { videoUploadBody } from "@/lib/multipart-stream";
 import { vkCommunityId, vkOwnerId } from "@/lib/vk-publisher";
@@ -32,6 +33,8 @@ export type VkUploadResult = {
   videoUrl: string;
   videoId: string;
   ownerId: string;
+  /** The id VK wants in `attachments`: `video{owner}_{video}`. */
+  vkVideoId: string;
 };
 
 /** The token, or a throw the caller turns into a configuration message. */
@@ -66,16 +69,26 @@ export async function uploadVideoFileToVk(input: {
   /** Only for the log line. */
   label: string;
   name?: string;
+  /**
+   * Short description for the video record. Optional: the upload route takes it from the
+   * editor, the Mail.ru import has nothing to say beyond the filename.
+   */
+  description?: string;
 }): Promise<VkUploadResult> {
   // Step 1: reserve the record. VK answers with a one-off upload address.
   const saved = await callVkApi<unknown>("video.save", input.token, {
     group_id: input.community,
     name: input.name ?? buildUploadName(),
+    // VK trims this itself; sending an empty string instead is rejected as an empty field.
+    ...(input.description?.trim()
+      ? { description: input.description.trim().slice(0, 1_000) }
+      : {}),
     is_private: 0,
     // No wall post on upload: the video is attached to an article, and a bare video on the
     // community wall is not the announcement anybody wants.
     wallpost: 0,
-    // No description here — video.edit fills it in when the article publishes.
+    // Comments off on the upload: a video attached to an article is discussed on the site,
+    // and the wall post that carries it is where the conversation belongs.
     no_comments: 1,
   });
 
@@ -132,10 +145,11 @@ export async function uploadVideoFileToVk(input: {
 
   const ownerId = ids.ownerId || vkOwnerId();
   const videoUrl = publicVideoUrl(ownerId, ids.videoId);
+  const vkVideoId = videoAttachmentId(ownerId, ids.videoId);
 
   console.log(`[vk-video] ${videoUrl} ← ${input.label}`);
 
-  return { videoUrl, videoId: ids.videoId, ownerId };
+  return { videoUrl, videoId: ids.videoId, ownerId, vkVideoId };
 }
 
 /** Asks VK which videos the community has, to recover ids when save omitted them. */

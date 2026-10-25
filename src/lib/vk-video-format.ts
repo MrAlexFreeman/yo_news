@@ -138,14 +138,40 @@ export function extractVideoIds(
 }
 
 /**
+ * Canonicalises a video attachment id coming back from the editor's form.
+ *
+ * The hidden field that carries it is a form field like every other, so the server does not
+ * take its word for the shape. That is not paranoia about editors: `wall.post` given a
+ * malformed attachment does not post text without a video, it answers error 100 and publishes
+ * nothing — the same trap `buildAttachments` documents for link attachments. A value that is
+ * not `video{owner}_{id}` therefore becomes "no video", not a broken post.
+ */
+export function normaliseVkVideoId(value: string | null | undefined): string | null {
+  const trimmed = (value ?? "").trim();
+  if (!/^video-?\d+_\d+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+/**
+ * The attachment id VK expects in `attachments`: `video{owner}_{id}`.
+ *
+ * The owner id carries the minus for a community video — `video-241944021_678901` — and
+ * this is the one place that decides it. `publicVideoUrl` is built from it, so the address
+ * an editor sees and the id the wall post is given cannot disagree about the sign.
+ */
+export function videoAttachmentId(ownerId: string, videoId: string): string {
+  const owner = ownerId.startsWith("-") ? ownerId : `-${ownerId}`;
+  return `video${owner}_${videoId}`;
+}
+
+/**
  * The public address of an uploaded video, as an editor would paste it.
  *
  * VK addresses community videos with a negative owner id and a hyphen:
  * `vk.com/video-241944021_678901`.
  */
 export function publicVideoUrl(ownerId: string, videoId: string): string {
-  const owner = ownerId.startsWith("-") ? ownerId : `-${ownerId}`;
-  return `https://vk.com/video${owner}_${videoId}`;
+  return `https://vk.com/${videoAttachmentId(ownerId, videoId)}`;
 }
 
 /** Parses `video-241944021_678901` or `clip-241944021_678901` out of a video URL. */

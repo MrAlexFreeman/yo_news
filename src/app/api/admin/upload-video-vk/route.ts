@@ -16,15 +16,20 @@ import { requireVkVideoConfig, uploadVideoFileToVk } from "@/lib/vk-video-upload
 export const runtime = "nodejs";
 
 /**
- * Uploads an editor's video file to VK Video and returns the public link.
+ * Uploads an editor's video file to VK Video and returns the public link and attachment id.
  *
  * Under /api/admin/, so the matcher in src/proxy.ts puts Basic Auth in front of it.
- * The token never leaves the server: the browser sends the file and receives a URL.
+ * The token never leaves the server: the browser sends the file and receives an address.
  *
- * The file is streamed to disk rather than parsed into memory. nginx accepts 500 MB
- * for this path, and `request.formData()` on that body is a couple of hundred
- * megabytes of heap on a 709 MB box — enough to take the site down rather than fail
- * one request.
+ * **The file is streamed to disk, never parsed into memory.** nginx accepts 500 MB for this
+ * path, and `request.formData()` on that body is a couple of hundred megabytes of heap on a
+ * 709 MB box — enough to take the site down rather than fail one request.
+ *
+ * **`title` and `description` must come before the file part.** The streaming parser returns
+ * the moment the file's closing boundary is read — that is the point of it — so text fields
+ * behind the file would never be seen. The form sends them first, and a caller that forgets
+ * loses the name, not the upload: `video.save` falls back to a timestamp and `video.edit`
+ * replaces it at publication anyway.
  *
  * The VK half — reserve, stream, read back the ids — lives in `lib/vk-video-upload.ts`,
  * shared with the route that imports a video from Облако Mail.ru. What is here is only the
@@ -58,48 +63,65 @@ export async function POST(request: Request) {
     tempPath = upload.filePath;
 
     if (upload.size === 0) {
-      return NextResponse.json({ error: "Файл пустой." }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "Файл пустой." }, { status: 400 });
     }
 
     if (!isVideoFilename(upload.filename) && !upload.contentType.startsWith("video/")) {
       return NextResponse.json(
-        { error: "Ожидается видеофайл: .mp4, .mov, .webm или .mkv." },
+        { ok: false, error: "Ожидается видеофайл: .mp4, .mov, .webm или .mkv." },
         { status: 415 },
       );
     }
 
     if (upload.size > VK_MAX_BYTES) {
       return NextResponse.json(
-        { error: "Файл больше 2 ГБ — ВК такой ролик не примет." },
+        { ok: false, error: "Файл больше 2 ГБ — ВК такой ролик не примет." },
         { status: 413 },
       );
     }
+
+    const title = (upload.fields.title ?? "").trim().slice(0, 128);
+    const description = (upload.fields.description ?? "").trim().slice(0, 1_000);
 
     const result = await uploadVideoFileToVk({
       token,
       community,
       filePath: upload.filePath,
       label: `${upload.filename}, ${Math.round(upload.size / 1024 / 1024)} МБ`,
+      ...(title ? { name: title } : {}),
+      ...(description ? { description } : {}),
     });
 
-    return NextResponse.json({ success: true, ...result });
+    /*
+      `playerUrl` is the public page the site embeds from — `https://vk.com/video-…`. VK's
+      `video.save` also answers with a `player` field, an iframe-ready embed; it is not passed
+      through because the storefront builds its own player from this address
+      (`buildVideoEmbed`), and two ways to embed one video is one way too many.
+    */
+    return NextResponse.json({
+      ok: true,
+      vkVideoId: result.vkVideoId,
+      playerUrl: result.videoUrl,
+      videoId: result.videoId,
+      ownerId: result.ownerId,
+    });
   } catch (error) {
     if (error instanceof UploadTooLargeError) {
-      return NextResponse.json({ error: error.message }, { status: 413 });
+      return NextResponse.json({ ok: false, error: error.message }, { status: 413 });
     }
     if (error instanceof MalformedUploadError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
     }
     if (error instanceof VkVideoError) {
       // 503 for configuration, 502 for an upstream that answered badly.
       const status = /Не задан/.test(error.message) ? 503 : 502;
       console.error(`[vk-video] ${error.stage}: ${error.message}`);
-      return NextResponse.json({ error: error.message }, { status });
+      return NextResponse.json({ ok: false, error: error.message }, { status });
     }
 
     console.error("[vk-video] необработанная ошибка", error);
     return NextResponse.json(
-      { error: "Не удалось загрузить видео в ВК. Попробуйте ещё раз." },
+      { ok: false, error: "Не удалось загрузить видео в ВК. Попробуйте ещё раз." },
       { status: 500 },
     );
   } finally {
