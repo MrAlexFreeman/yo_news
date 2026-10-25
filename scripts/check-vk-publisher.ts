@@ -23,7 +23,7 @@ import {
   vkCommunityGroupId,
   vkPhotoAttachmentId,
 } from "../src/lib/vk-publisher";
-import { normaliseVkVideoId } from "../src/lib/vk-video-format";
+import { normaliseVkVideoId, videoPartFilename } from "../src/lib/vk-video-format";
 
 const checks: { name: string; ok: boolean; detail: string }[] = [];
 
@@ -417,6 +417,32 @@ async function main() {
       "photo276313599_457240126" &&
       buildAttachments(null, "both", null) === "",
     `${buildAttachments("photo276313599_457240126", "both", "")} / ${buildAttachments(null, "both", null)}`,
+  );
+
+  // --- the filename VK's upload endpoint sees --------------------------------
+  /*
+    Measured against the live service during this work: the same bytes under
+    `filename="<uuid>.upload"` answer HTTP 415 — Unsupported Media Type (a Tomcat page) — and
+    under `filename="<uuid>.mp4"` answer HTTP 200 with a `video_hash`. The temporary copy on
+    disk is named `vk-video-<uuid>.upload`, so deriving the part's name from that path is
+    exactly how the browser upload failed while the code looked right.
+  */
+  check(
+    "Имя части для ВК: временный .upload становится video.mp4",
+    videoPartFilename("vk-video-123e4567-e89b-42d3-a456-426614174000.upload") === "video.mp4",
+    videoPartFilename("vk-video-123e4567-e89b-42d3-a456-426614174000.upload"),
+  );
+  check(
+    "Имя части для ВК: расширение ролика сохраняется, каталог срезан",
+    videoPartFilename("Репортаж с площади.MP4") === "Репортаж с площади.MP4" &&
+      videoPartFilename("/tmp/abc.mov") === "abc.mov",
+    `${videoPartFilename("Репортаж с площади.MP4")} / ${videoPartFilename("/tmp/abc.mov")}`,
+  );
+  check(
+    "Имя части для ВК: кавычки чистятся, внедрённый заголовок не проходит",
+    videoPartFilename('сме"шной\\ролик.mp4') === "сме_шной_ролик.mp4" &&
+      videoPartFilename("ролик.mp4\r\nX-Injected: 1") === "video.mp4",
+    JSON.stringify(videoPartFilename('сме"шной\\ролик.mp4')),
   );
 
   // --- the attachment id that arrives from the form ------------------------

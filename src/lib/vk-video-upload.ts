@@ -6,6 +6,7 @@ import {
   extractVideoIds,
   publicVideoUrl,
   videoAttachmentId,
+  videoPartFilename,
 } from "@/lib/vk-video-format";
 import { videoUploadBody } from "@/lib/multipart-stream";
 import { vkCommunityId, vkOwnerId } from "@/lib/vk-publisher";
@@ -70,6 +71,15 @@ export async function uploadVideoFileToVk(input: {
   label: string;
   name?: string;
   /**
+   * The name the multipart part carries. **It must keep a video extension.**
+   *
+   * The temporary copy is `vk-video-<uuid>.upload`, and VK's upload endpoint answers HTTP 415
+   * to that name while the same bytes under `.mp4` answer 200 — measured, see
+   * `videoPartFilename`. So this is the caller's validated name, not something to derive from
+   * the path; a path-derived name only reaches a safe fallback.
+   */
+  filename?: string;
+  /**
    * Short description for the video record. Optional: the upload route takes it from the
    * editor, the Mail.ru import has nothing to say beyond the filename.
    */
@@ -101,7 +111,9 @@ export async function uploadVideoFileToVk(input: {
     HTTP 412, and the same bytes under a `video_file` part answer HTTP 200. `contentLength`
     is exact, so the request is not chunked — which also removes a class of proxy surprises.
   */
-  const filename = input.filePath.split(/[\\/]/).pop() || "video.mp4";
+  const filename = videoPartFilename(
+    input.filename ?? input.filePath.split(/[\\/]/).pop(),
+  );
   const { body, contentType, contentLength } = await videoUploadBody(input.filePath, filename);
 
   const uploadResponse = await fetch(uploadUrl, {

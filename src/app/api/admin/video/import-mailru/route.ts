@@ -121,6 +121,9 @@ export async function POST(request: Request) {
       community: config.community,
       filePath: downloaded.filePath,
       label: `${resolved.filename}, ${Math.round(downloaded.size / 1024 / 1024)} МБ`,
+      // The uploaded part keeps the cloud file's own name: the temp copy is `<uuid>.mp4`, and
+      // VK reads the extension (see `videoPartFilename`).
+      filename: resolved.filename,
       // Named after the file it came from, which for an imported video is more useful than
       // a timestamp: the editor can find it in the community's list afterwards.
       name: resolved.filename.slice(0, 120),

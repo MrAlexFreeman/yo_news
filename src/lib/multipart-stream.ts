@@ -5,6 +5,8 @@ import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 
+import { VIDEO_FILE_EXTENSIONS } from "@/lib/vk-video-format";
+
 /**
  * Streams a single file out of a multipart request onto disk.
  *
@@ -44,13 +46,17 @@ export type ParsedUpload = {
 /** How much of a text field is kept. Titles and descriptions are short by nature. */
 const FIELD_MAX_BYTES = 4 * 1024;
 
-/** Anything a browser plausibly calls a video. */
-const VIDEO_EXTENSIONS = new Set([
-  ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".3gp",
-]);
+/**
+ * Anything a browser plausibly calls a video.
+ *
+ * Re-exported from `vk-video-format`, where it is also the list that decides which extension
+ * VK's upload endpoint will accept on the multipart part. Two copies of this list is how a
+ * file passes validation here and is refused there.
+ */
+export { VIDEO_FILE_EXTENSIONS };
 
 export function isVideoFilename(name: string): boolean {
-  return VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase());
+  return VIDEO_FILE_EXTENSIONS.has(path.extname(name).toLowerCase());
 }
 
 /** Extracts the boundary token from a multipart Content-Type. */

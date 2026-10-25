@@ -153,6 +153,42 @@ export function normaliseVkVideoId(value: string | null | undefined): string | n
 }
 
 /**
+ * Anything a browser plausibly calls a video.
+ *
+ * Lives here, in the module about VK's expectations, because the upload endpoint validates
+ * the extension of the multipart part: a name it does not recognise is refused with HTTP 415.
+ * The browser-side validator in `multipart-stream` reads the same set, so a file one accepts
+ * is a file the other can hand over.
+ */
+export const VIDEO_FILE_EXTENSIONS = new Set([
+  ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".3gp",
+]);
+
+/**
+ * The filename VK's upload endpoint must see on the multipart part.
+ *
+ * Measured on the live service: identical bytes under `filename="…<uuid>.upload"` answer
+ * **HTTP 415 — Unsupported Media Type** (a Tomcat error page), and under
+ * `filename="…<uuid>.mp4"` answer **HTTP 200** with a `video_hash`. So the extension on this
+ * parameter is load-bearing, and it is the one thing the temporary copy on disk cannot
+ * supply: it is deliberately named `vk-video-<uuid>.upload`, because the client's filename is
+ * attacker-controlled and gets joined onto a directory.
+ *
+ * A name without a recognised video extension becomes `video.mp4`. Nothing else about the
+ * name matters to VK here — `video.save` carries the real title — so a fallback costs
+ * nothing and keeps a forgotten `filename` argument from turning into a refused upload.
+ */
+export function videoPartFilename(name: string | null | undefined): string {
+  const cleaned = (name ?? "").trim().replace(/["\\\r\n]/g, "_");
+  // A full path is tolerated: only VK's extension check reads this, and a path separator in
+  // the parameter would be an odd thing to forward.
+  const base = cleaned.split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  const extension = dot === -1 ? "" : base.slice(dot).toLowerCase();
+  return VIDEO_FILE_EXTENSIONS.has(extension) ? base.slice(0, 180) : "video.mp4";
+}
+
+/**
  * The attachment id VK expects in `attachments`: `video{owner}_{id}`.
  *
  * The owner id carries the minus for a community video — `video-241944021_678901` — and

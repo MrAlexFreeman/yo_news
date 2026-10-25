@@ -88,6 +88,9 @@ export async function POST(request: Request) {
       community,
       filePath: upload.filePath,
       label: `${upload.filename}, ${Math.round(upload.size / 1024 / 1024)} МБ`,
+      // The name the browser sent, which already passed `isVideoFilename`. The temp copy on
+      // disk is `.upload`, and that extension is refused by VK (see `videoPartFilename`).
+      filename: upload.filename,
       ...(title ? { name: title } : {}),
       ...(description ? { description } : {}),
     });
