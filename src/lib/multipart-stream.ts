@@ -47,14 +47,12 @@ export type ParsedUpload = {
 const FIELD_MAX_BYTES = 4 * 1024;
 
 /**
- * Anything a browser plausibly calls a video.
+ * Whether a filename is one this route accepts as a video.
  *
- * Re-exported from `vk-video-format`, where it is also the list that decides which extension
- * VK's upload endpoint will accept on the multipart part. Two copies of this list is how a
- * file passes validation here and is refused there.
+ * The extension list itself lives in `vk-video-format`, next to the rule that decides which
+ * extension VK's upload endpoint will accept on the multipart part. Two copies is how a file
+ * passes validation here and is refused there.
  */
-export { VIDEO_FILE_EXTENSIONS };
-
 export function isVideoFilename(name: string): boolean {
   return VIDEO_FILE_EXTENSIONS.has(path.extname(name).toLowerCase());
 }
