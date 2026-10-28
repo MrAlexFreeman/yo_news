@@ -25,6 +25,22 @@ type Provider = {
   build: (url: URL) => string | null;
 };
 
+/** VK's own hosts, in one list: the provider below and the clip check both read it. */
+const VK_HOSTS = [
+  "vk.com",
+  "www.vk.com",
+  "m.vk.com",
+  "vk.ru",
+  "www.vk.ru",
+  "m.vk.ru",
+  // The player host VK has been moving links to. A pasted vkvideo address carries
+  // the same ids and is built into the same player URL below.
+  "vkvideo.ru",
+  "www.vkvideo.ru",
+  "vkvideo.com",
+  "www.vkvideo.com",
+] as const;
+
 const PROVIDERS: readonly Provider[] = [
   {
     label: "YouTube",
@@ -59,28 +75,26 @@ const PROVIDERS: readonly Provider[] = [
   },
   {
     label: "VK Видео",
-    hosts: [
-        "vk.com",
-        "www.vk.com",
-        "m.vk.com",
-        "vk.ru",
-        "www.vk.ru",
-        "m.vk.ru",
-        // The player host VK has been moving links to. A pasted vkvideo address carries
-        // the same ids and is built into the same player URL below.
-        "vkvideo.ru",
-        "www.vkvideo.ru",
-        "vkvideo.com",
-        "www.vkvideo.com",
-      ],
+    hosts: VK_HOSTS,
     build: (url: URL): string | null => {
       const fromQuery = url.searchParams.get("z");
       const fromPath = url.pathname.match(/video(-?\d+)_(\d+)/)?.[0];
       const pair = fromPath ?? fromQuery ?? "";
       const match = pair.match(/video(-?\d+)_(\d+)/);
-      if (!match) return null;
+      if (match) return buildVkPlayerUrl(match[1]!, match[2]!);
 
-      return buildVkPlayerUrl(match[1]!, match[2]!);
+      /*
+        The player address itself, pasted as-is — what an editor gets from "copy the iframe
+        src" or from another site's article. Same ids, but as separate parameters rather than
+        as `video{owner}_{id}` in the path, so the path match above never sees them.
+      */
+      if (/\/video_ext\.php$/.test(url.pathname)) {
+        const oid = url.searchParams.get("oid") ?? "";
+        const id = url.searchParams.get("id") ?? "";
+        if (/^-?\d+$/.test(oid) && /^\d+$/.test(id)) return buildVkPlayerUrl(oid, id);
+      }
+
+      return null;
     },
   },
 ];
@@ -232,6 +246,40 @@ export function buildVideoEmbed(input: string): string | null {
 }
 
 /**
+ * The iframe address inside a vetted embed, or null when the link is not one of ours.
+ *
+ * Extracted because three callers need exactly this step: the toolbar's video dialog, the
+ * Mail.ru import, and the paste handler (a pasted video address should become a player, not
+ * text). A second copy of the regular expression is a second thing to get out of step with
+ * what `buildVideoEmbed` emits.
+ */
+export function videoEmbedSrc(input: string): string | null {
+  const embed = buildVideoEmbed(input);
+  return embed ? new RegExp(`<iframe[^>]*\\ssrc="([^"]+)"`).exec(embed)?.[1] ?? null : null;
+}
+
+/**
+ * True for a VK Клип address (`vk.com/clip-{owner}_{id}`).
+ *
+ * Kept apart from the provider list rather than silently accepted there: clips and ordinary
+ * videos are different things on VK, and this site's player is built for the video endpoint.
+ * Recognising the shape here is what lets the editor be told *which* link does not work
+ * instead of a generic "unsupported host" for a host that is supported.
+ */
+export function isVkClipLink(input: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+  } catch {
+    return false;
+  }
+  return (
+    (VK_HOSTS as readonly string[]).includes(parsed.hostname) &&
+    /^\/clip-?\d+_\d+/.test(parsed.pathname)
+  );
+}
+
+/**
  * Hosts that refuse to be framed, named so the message can say which one and why.
  *
  * `cloud.mail.ru` answers with **both** `X-Frame-Options: SAMEORIGIN` and a
@@ -277,6 +325,21 @@ export function unsupportedVideoMessage(input: string): string {
       "frame-ancestors, где eartnews.ru не указан, поэтому плеер внутри статьи " +
       "не откроется. Скачайте файл и загрузите его в VK Видео или на YouTube — " +
       "они встраиваются."
+    );
+  }
+
+  /*
+    Клипы ВК — отдельный случай, и он заслуживает отдельной строки: хост поддерживается,
+    поэтому общее «не удалось встроить видео с vk.com» отправляло бы редактора искать
+    проблему не там. Плеер статьи строится для обычного видео (`video_ext.php`), и ссылку
+    на клип он не открывает.
+  */
+  if (isVkClipLink(input)) {
+    return (
+      "Это ссылка на Клип ВК. Плеер статьи встраивает обычные видео ВК — " +
+      "адрес вида vk.com/video-…, — а Клипы открываются по другому адресу. " +
+      "Если ролик есть среди обычных видео сообщества, скопируйте его ссылку; " +
+      "иначе скачайте файл и загрузите его в блоке видео."
     );
   }
 

@@ -333,12 +333,13 @@ check(
 );
 
 check(
-  "Тулбар: обе кнопки спецврезок вставлены и вставляют узлы, а не текст",
+  "Тулбар: обе кнопки спецврезок вставляют узлы через общую точку вставки",
   editorSource.includes("Акцентная цифра / Факт") &&
     editorSource.includes("Было / Стало") &&
-    editorSource.includes("insertContent(factContent())") &&
-    editorSource.includes("insertContent(compareContent())"),
-  "factContent + compareContent",
+    editorSource.includes("block: factContent") &&
+    editorSource.includes("block: compareContent") &&
+    editorSource.includes("insertBlockAtWorkPoint(editor, action.block(), caretPlaced)"),
+  "factContent + compareContent → insertBlockAtWorkPoint",
 );
 
 for (const { name, ok, detail } of checks) {

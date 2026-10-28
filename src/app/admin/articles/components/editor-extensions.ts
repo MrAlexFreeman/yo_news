@@ -7,6 +7,7 @@ import Underline from "@tiptap/extension-underline";
 import StarterKit from "@tiptap/starter-kit";
 
 import { VideoEmbed } from "@/app/admin/articles/components/video-embed-node";
+import { VideoLinkPaste } from "@/app/admin/articles/components/video-link-paste";
 import {
   ArticleFigure,
   ArticleFigcaption,
@@ -113,6 +114,11 @@ export function editorExtensions() {
     // while the schema is being built.
     TableKit.configure({ table: { resizable: false } }),
     VideoEmbed,
+    /*
+      Pasting a video address turns into the player. A plugin rather than a node, so it is
+      registered beside the node it inserts.
+    */
+    VideoLinkPaste,
     /*
       The card reference, registered after Link so its mark wins where the two overlap —
       an entity href is a site-relative path and Link's parser would otherwise claim every

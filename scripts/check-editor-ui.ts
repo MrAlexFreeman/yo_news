@@ -1903,6 +1903,7 @@ async function checkSidebarInsertion() {
       handle: () => handle,
       html: () => latest,
       caretReports,
+      host,
       surface: host.querySelector('[contenteditable="true"]') as HTMLElement | null,
       async unmount() {
         root.unmount();
@@ -1930,6 +1931,78 @@ async function checkSidebarInsertion() {
     withoutCaret === "end" &&
       fresh.html().trimEnd().endsWith(figureHtml("/uploads/side.webp", "Из панели")),
     `размещение ${withoutCaret}: ${fresh.html().slice(-120)}`,
+  );
+
+  /*
+    Спецврезка без курсора. Замер до правки: блок уезжал в самое начало документа — на
+    длинном материале это вне экрана, и кнопка выглядела нерабочей. Теперь правило то же,
+    что у фото: нет курсора — в конец.
+  */
+  const factButton = fresh.host.querySelector<HTMLButtonElement>(
+    'button[aria-label="Акцентная цифра / Факт"]',
+  );
+  check(
+    "Тулбар: кнопка «Акцентная цифра / Факт» на месте",
+    factButton !== null,
+    factButton ? "есть" : "нет",
+  );
+
+  await actIfNeeded(act, () => {
+    factButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await settle();
+
+  check(
+    "Тулбар: без курсора врезка встаёт в конец текста, а не в начало",
+    fresh.html().indexOf("article-fact") > fresh.html().indexOf("Второй абзац") &&
+      fresh.html().trimEnd().endsWith("</div>"),
+    `врезка на ${fresh.html().indexOf("article-fact")}, текст на ${fresh.html().indexOf("Второй абзац")}`,
+  );
+
+  /*
+    Ссылка на видео из буфера. Редактор вставляет её в текст, ожидая плеер, — так и должно
+    быть. Вторая половина проверки важнее первой: слишком жадный обработчик превращал бы в
+    блок любую ссылку внутри фразы и разваливал абзац.
+  */
+  async function paste(text: string) {
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        getData: (type: string) => (type === "text/plain" ? text : ""),
+        files: [],
+        types: ["text/plain"],
+      },
+    });
+    await actIfNeeded(act, () => {
+      fresh.surface?.dispatchEvent(event);
+    });
+    await settle();
+  }
+
+  const playersBefore = (fresh.html().match(/video-embed/g) ?? []).length;
+  await paste("Смотрите ролик: https://vk.com/video-241944021_456239033 — он хорош.");
+  const playersAfterSentence = (fresh.html().match(/video-embed/g) ?? []).length;
+  check(
+    "Вставка ссылки: адрес внутри фразы остаётся текстом",
+    playersAfterSentence === playersBefore,
+    `плееров ${playersBefore} → ${playersAfterSentence}`,
+  );
+
+  await paste("https://vk.com/clip-241944021_456239033");
+  const playersAfterClip = (fresh.html().match(/video-embed/g) ?? []).length;
+  const clipAlert = fresh.host.querySelector('[role="alert"]')?.textContent ?? "";
+  check(
+    "Вставка ссылки: клип ВК не встраивается, но причина названа",
+    playersAfterClip === playersAfterSentence && clipAlert.includes("Клип"),
+    `плееров ${playersAfterSentence} → ${playersAfterClip}, сообщение: ${clipAlert.slice(0, 60) || "нет"}`,
+  );
+
+  await paste("https://vk.com/video-241944021_456239033");
+  const playersAfterLink = (fresh.html().match(/video-embed/g) ?? []).length;
+  check(
+    "Вставка ссылки: голая ссылка ВК становится плеером",
+    playersAfterLink === playersAfterSentence + 1 && fresh.html().includes("video_ext.php"),
+    `плееров ${playersAfterSentence} → ${playersAfterLink}`,
   );
 
   await fresh.unmount();

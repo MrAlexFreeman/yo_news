@@ -3280,12 +3280,41 @@ function checkVideoEmbedParams() {
     forced ?? "плеер не собран",
   );
 
-  // A raw video_ext.php URL is a player URL, not a share link: there is no
-  // video<oid>_<id> pair to parse. Documented rather than silently ignored.
+  /*
+    An embed address pasted as-is (someone copies the player's `src`, or the embed code from
+    another site) carries the same ids, but as `oid`/`id` parameters rather than as
+    `video{owner}_{id}` in the path. It is now parsed — refusing it was one of the shapes an
+    editor could reasonably paste, and the refusal read as "the video feature is broken".
+
+    The address is not forwarded, it is rebuilt, so a foreign `autoplay=1` or a stray `hash`
+    in the pasted URL does not survive.
+  */
+  const direct = buildVideoEmbed(
+    "https://vk.ru/video_ext.php?oid=-12345&id=678901&autoplay=1&hash=abc",
+  );
   check(
-    "VK Видео: прямая ссылка на player не разбирается",
-    buildVideoEmbed("https://vk.ru/video_ext.php?oid=1&id=2") === null,
-    "возвращает null, плеер не рендерится",
+    "VK Видео: ссылка на плеер разбирается, автозапуск из неё не проходит",
+    Boolean(
+      direct &&
+        direct.includes("oid=-12345") &&
+        direct.includes("id=678901") &&
+        direct.includes("autoplay=0") &&
+        !direct.includes("autoplay=1") &&
+        !direct.includes("hash="),
+    ),
+    direct ?? "плеер не собран",
+  );
+
+  /*
+    Клипы ВК — отдельный адрес (`vk.com/clip-…`), и этот плеер их не строит. Проверка держит
+    две вещи: клип не превращается в iframe, который на странице окажется битым, и редактор
+    получает сообщение, называющее причину, а не общее «не удалось встроить видео с vk.com».
+  */
+  const clip = "https://vk.com/clip-241944021_456239033";
+  check(
+    "VK Клипы: ссылка не встраивается и объясняется по имени",
+    buildVideoEmbed(clip) === null && unsupportedVideoMessage(clip).includes("Клип"),
+    unsupportedVideoMessage(clip).slice(0, 80),
   );
 
   check(

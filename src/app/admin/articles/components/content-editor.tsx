@@ -1,6 +1,7 @@
 "use client";
 
 import { EditorContent, useEditor } from "@tiptap/react";
+import type { JSONContent } from "@tiptap/core";
 import {
   AlignCenter,
   AlignJustify,
@@ -41,6 +42,7 @@ import {
 } from "@/app/admin/articles/components/article-figure-node";
 import { insertQuoteSourceAtCaret } from "@/app/admin/articles/components/article-quote";
 import { compareContent, factContent } from "@/app/admin/articles/components/special-blocks";
+import { VIDEO_PASTE_REJECTED_EVENT } from "@/app/admin/articles/components/video-link-paste";
 import { EntityCardPicker } from "@/app/admin/articles/components/entity-card-picker";
 import { ReadAlsoPicker } from "@/app/admin/articles/components/read-also-picker";
 import { StockPhotoPicker } from "@/app/admin/articles/components/stock-photo-picker";
@@ -49,7 +51,7 @@ import {
   type LinkRequest,
 } from "@/app/admin/articles/components/link-dialog";
 import type { MediaItem } from "@/lib/article-media";
-import { buildVideoEmbed, unsupportedVideoMessage } from "@/lib/video-embed";
+import { unsupportedVideoMessage, videoEmbedSrc } from "@/lib/video-embed";
 import { isMailruPublicLink } from "@/lib/mailru-cloud";
 import { cn } from "@/lib/utils";
 
@@ -68,6 +70,14 @@ type ToolbarAction = {
     isActive: (editor: Editor) => boolean;
     run: (editor: Editor) => void;
   };
+  /**
+   * A block to insert: not a toggle, because a second press puts a second block rather than
+   * removing the first. A factory, so the placeholder content is built per press.
+   *
+   * Why not `command` like the rest: insertion has to know whether the writer has a caret,
+   * and a plain `run(editor)` cannot see that. `applyAction` owns the placement rule.
+   */
+  block?: () => JSONContent;
   opens?: "link" | "video" | "figure" | "quoteSource" | "entityCard" | "readAlso" | "stockPhoto";
   /**
    * Only shown when this returns true.
@@ -221,18 +231,12 @@ const toolbarGroups = (autoRelated: boolean): ToolbarAction[][] => [
     {
       label: "Акцентная цифра / Факт",
       icon: Hash,
-      command: {
-        isActive: () => false,
-        run: (editor) => editor.chain().focus().insertContent(factContent()).run(),
-      },
+      block: factContent,
     },
     {
       label: "Было / Стало",
       icon: Columns2,
-      command: {
-        isActive: () => false,
-        run: (editor) => editor.chain().focus().insertContent(compareContent()).run(),
-      },
+      block: compareContent,
     },
   ],
   [
@@ -270,18 +274,6 @@ const toolbarGroups = (autoRelated: boolean): ToolbarAction[][] => [
     },
   ],
 ];
-
-/**
- * The iframe address inside a vetted embed, or undefined when the host is not one of ours.
- *
- * The toolbar, the Mail.ru import and the imperative handle all insert a player the same
- * way; one copy of the regular expression means they cannot drift apart, and the provider
- * list stays the single authority on what counts as a video address.
- */
-function embedSource(url: string): string | undefined {
-  const embed = buildVideoEmbed(url);
-  return embed ? new RegExp(`<iframe[^>]*\\ssrc="([^"]+)"`).exec(embed)?.[1] : undefined;
-}
 
 /**
  * Attributes for the editable element itself.
@@ -486,6 +478,22 @@ export const ContentEditor = memo(function ContentEditor({
     return () => onCaretChange?.(false);
   }, [editor, onCaretChange]);
 
+  /*
+    Ссылка на видео, которую плеер не берёт (Клип ВК), сообщает о себе сама. Обработчик
+    вставки живёт в расширении и не может открыть состояние React, поэтому он бросает событие
+    на DOM редактора, а строка ошибки — здесь, над текстом, где её видно.
+  */
+  useEffect(() => {
+    if (!editor) return;
+    const dom = editor.view.dom;
+    const onRejected = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (typeof detail === "string" && detail) setToolbarError(detail);
+    };
+    dom.addEventListener(VIDEO_PASTE_REJECTED_EVENT, onRejected);
+    return () => dom.removeEventListener(VIDEO_PASTE_REJECTED_EVENT, onRejected);
+  }, [editor]);
+
   /**
    * The sidebar's way in.
    *
@@ -519,7 +527,7 @@ export const ContentEditor = memo(function ContentEditor({
 
         // Same provider list the toolbar uses: an address that is not one of ours never
         // becomes a node, so a vetted iframe is the only thing that can land in the body.
-        const src = embedSource(url);
+        const src = videoEmbedSrc(url);
         if (!src) return null;
 
         const placement: PhotoPlacement = caretPlaced ? "caret" : "end";
@@ -528,7 +536,12 @@ export const ContentEditor = memo(function ContentEditor({
           editor.chain().focus().setTextSelection(end).run();
         }
 
-        editor.chain().focus().insertContent({ type: "videoEmbed", attrs: { src } }).run();
+        editor
+          .chain()
+          .focus()
+          .insertContent({ type: "videoEmbed", attrs: { src } })
+          .scrollIntoView()
+          .run();
         return placement;
       },
     }),
@@ -650,7 +663,7 @@ export const ContentEditor = memo(function ContentEditor({
 
     // Built through the vetted provider list rather than interpolated into a src:
     // buildVideoEmbed is what decides a host is one of ours.
-    const src = embedSource(answer);
+    const src = videoEmbedSrc(answer);
 
     if (!src) {
       setToolbarError(unsupportedVideoMessage(answer));
@@ -658,11 +671,7 @@ export const ContentEditor = memo(function ContentEditor({
     }
 
     setToolbarError(null);
-    editorInstance
-      .chain()
-      .focus()
-      .insertContent({ type: "videoEmbed", attrs: { src } })
-      .run();
+    insertBlockAtWorkPoint(editorInstance, { type: "videoEmbed", attrs: { src } }, caretPlaced);
   }
 
   /**
@@ -699,7 +708,7 @@ export const ContentEditor = memo(function ContentEditor({
 
       // The address VK returned goes through the same provider list as a pasted one, so the
       // node can only ever carry a src this site already trusts.
-      const src = embedSource(payload.videoUrl);
+      const src = videoEmbedSrc(payload.videoUrl);
 
       if (!src) {
         setToolbarError(
@@ -708,11 +717,7 @@ export const ContentEditor = memo(function ContentEditor({
         return;
       }
 
-      editorInstance
-        .chain()
-        .focus()
-        .insertContent({ type: "videoEmbed", attrs: { src } })
-        .run();
+      insertBlockAtWorkPoint(editorInstance, { type: "videoEmbed", attrs: { src } }, caretPlaced);
     } catch {
       setToolbarError("Не удалось обратиться к серверу загрузки видео.");
     } finally {
@@ -722,6 +727,12 @@ export const ContentEditor = memo(function ContentEditor({
 
   function applyAction(action: ToolbarAction) {
     if (!editor) return;
+
+    if (action.block) {
+      setToolbarError(null);
+      insertBlockAtWorkPoint(editor, action.block(), caretPlaced);
+      return;
+    }
 
     if (action.command) {
       setToolbarError(null);
@@ -845,6 +856,31 @@ export const ContentEditor = memo(function ContentEditor({
           ))}
         </div>
 
+        {/*
+          Сообщения тулбара стоят здесь — сразу под панелью, над текстом, — а не под
+          редактируемым полем. Редактор сообщил, что «видео не появляется»: отказ на ссылку
+          писался ниже тридцатисантиметрового поля, и на телефоне его просто не было видно.
+          Отказ, которого не видно, — это молчание.
+        */}
+        {videoBusy ? (
+          <p
+            role="status"
+            className="mx-3 mt-2 flex items-center gap-1.5 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-600"
+          >
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            {videoBusy}
+          </p>
+        ) : null}
+
+        {toolbarError ? (
+          <p
+            role="alert"
+            className="mx-3 mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {toolbarError}
+          </p>
+        ) : null}
+
         {editor ? (
           <EditorContent editor={editor} />
         ) : (
@@ -852,19 +888,6 @@ export const ContentEditor = memo(function ContentEditor({
           <div className="min-h-[30rem]" aria-hidden />
         )}
       </div>
-
-      {videoBusy ? (
-        <p role="status" className="flex items-center gap-1.5 text-sm text-neutral-500">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-          {videoBusy}
-        </p>
-      ) : null}
-
-      {toolbarError ? (
-        <p role="alert" className="text-sm text-red-600">
-          {toolbarError}
-        </p>
-      ) : null}
 
       <p className="text-xs text-neutral-400">
         Форматирование видно сразу, как на сайте. «Ссылка» (или Ctrl+K) открывает
@@ -1007,6 +1030,32 @@ export const ContentEditor = memo(function ContentEditor({
  * it as the search query. One implementation, so the two cannot come to disagree about
  * what "the selected text" means.
  */
+/**
+ * Inserts a block where the writer is working, and makes sure they see it.
+ *
+ * **Measured on the mounted editor, and the reason this exists.** With the caret never
+ * placed, ProseMirror's selection sits at the very start of the document, so pressing
+ * «Акцентная цифра / Факт» on a freshly opened story inserted the block *above* the article.
+ * Scrolled halfway down a long text, that looks exactly like a button that does nothing —
+ * and the next press, now with a caret in the body, works. That is the reported defect.
+ *
+ * The photo path has had the rule for a while («no caret → end»); the special blocks and the
+ * video dialog did not. `scrollIntoView` is the second half: a block inserted in the right
+ * place can still land off-screen, and the desk writes on a phone as often as at a desk.
+ */
+function insertBlockAtWorkPoint(
+  editor: Editor,
+  content: JSONContent,
+  caretPlaced: boolean,
+): void {
+  if (!caretPlaced) {
+    const end = editor.state.doc.content.size;
+    editor.chain().focus().setTextSelection(end).run();
+  }
+
+  editor.chain().focus().insertContent(content).scrollIntoView().run();
+}
+
 function selectedText(editor: Editor | null): string {
   if (!editor) return "";
   const { from, to, empty } = editor.state.selection;
