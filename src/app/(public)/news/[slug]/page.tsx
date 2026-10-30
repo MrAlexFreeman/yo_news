@@ -24,6 +24,8 @@ import { composeLoopRows, pickStable, splitForLoop } from "@/lib/content-loop";
 import { automaticPlateAllowed, splitAroundReadAlso } from "@/lib/read-also";
 import { readingMinutes } from "@/lib/reading-time";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
+import { buildArticleJsonLd, serializeJsonLd } from "@/lib/article-jsonld";
+import { ROBOTS_INDEXABLE, ROBOTS_NOINDEX } from "@/lib/seo";
 import { formatDateTime } from "@/lib/date";
 import { sanitizeArticleHtml } from "@/lib/sanitize";
 import {
@@ -117,9 +119,7 @@ export async function generateMetadata({
     // Both branches are explicit. Passing `undefined` for the indexable case
     // still emitted a robots meta, so an editor toggling noIndex on and off was
     // never sure which state the page was actually in.
-    robots: article.noIndex
-      ? { index: false, follow: false }
-      : { index: true, follow: true },
+    robots: article.noIndex ? ROBOTS_NOINDEX : ROBOTS_INDEXABLE,
     // De-duplicated: a story whose rubric is "Спорт" and which also carries a
     // "Спорт" tag would otherwise emit the keyword twice.
     keywords: [
@@ -348,6 +348,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   })();
 
   const timestamp = article.publishedAt ?? article.createdAt;
+  const jsonLd = buildArticleJsonLd(article);
 
   // Read out of the JSON column here rather than in the query layer, so every
   // caller gets the same defensive parsing for a column that holds anything a
@@ -369,6 +370,15 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
         Sidebar last in the DOM, so on a phone it lands strictly under the story with no
         ordering rule needed to achieve it.
       */}
+      {/*
+        NewsArticle markup. It lives in the body because a Server Component cannot write
+        into the head directly; Google reads structured data from either place.
+      */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }}
+      />
+
       <ReadingRibbon
         title={article.title}
         minutes={readingMinutes(article.contentHtml)}

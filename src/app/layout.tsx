@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, Lora } from "next/font/google";
 
 import { NativeShell } from "@/components/native-shell";
+import { ROBOTS_INDEXABLE } from "@/lib/seo";
 import { SITE_NAME, SITE_TAGLINE, SITE_TAGLINE_LONG, siteUrl } from "@/lib/site";
 
 import "./globals.css";
@@ -98,11 +99,7 @@ export const metadata: Metadata = {
     title: `${SITE_NAME} — ${SITE_TAGLINE}`,
     description: SITE_TAGLINE_LONG,
   },
-  robots: {
-    index: true,
-    follow: true,
-    googleBot: { index: true, follow: true, "max-image-preview": "large" },
-  },
+  robots: ROBOTS_INDEXABLE,
 };
 
 /**

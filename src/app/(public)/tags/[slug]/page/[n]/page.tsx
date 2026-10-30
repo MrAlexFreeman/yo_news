@@ -7,6 +7,7 @@ import { plural } from "@/lib/date";
 import { getArticlesByTag, getTagBySlug } from "@/lib/public-queries";
 import { PAGE_SIZE, tagsPageHref, totalPages } from "@/lib/pagination";
 import { SITE_NAME } from "@/lib/site";
+import { ROBOTS_INDEXABLE } from "@/lib/seo";
 
 export const revalidate = 300;
 
@@ -36,7 +37,7 @@ export async function generateMetadata({
     // `robots` is set explicitly on both branches. Passing `undefined` left the
     // key present-but-empty in the rendered tag on a live page, which is what
     // made noindex silently not appear.
-    robots: { index: true, follow: true },
+    robots: ROBOTS_INDEXABLE,
     openGraph: { title, description, url, siteName: SITE_NAME },
   };
 }
