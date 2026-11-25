@@ -5,6 +5,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 
 import { UPLOAD_DIR } from "@/lib/upload-dir";
+import { encodeUpload } from "@/lib/upload-encode";
 
 /**
  * Local media upload for the editorial CMS.
@@ -65,9 +66,26 @@ export async function POST(request: Request) {
     );
   }
 
-  // The extension comes from the allowlist above, never from the client-supplied
-  // filename, so a crafted name cannot influence the stored path.
-  const filename = `${randomUUID()}${extension}`;
+  const original = Buffer.from(await file.arrayBuffer());
+
+  /*
+    Re-encode before storing: this is the one place every photograph passes through, and a
+    body image never reaches the `next/image` optimiser afterwards. Measured before this
+    existed: 298 MB of uploads, 78 files over 1 MB, and a 1.2 MB JPEG downloaded in full by
+    every reader of one article. See `lib/upload-encode.ts` for why the format is preserved
+    and why a failure here still stores the file.
+  */
+  const encoded = await encodeUpload(original, file.type);
+  if (!encoded) {
+    return NextResponse.json(
+      { error: "Допустимы только JPG, PNG и WebP." },
+      { status: 415 },
+    );
+  }
+
+  // The extension comes from the bytes `sharp` actually found, never from the
+  // client-supplied filename or MIME, so a crafted name cannot influence the stored path.
+  const filename = `${randomUUID()}${encoded.extension}`;
 
   /*
     A failed write is answered in JSON, like every other failure on this route.
@@ -79,10 +97,7 @@ export async function POST(request: Request) {
   */
   try {
     await mkdir(UPLOAD_DIR, { recursive: true });
-    await writeFile(
-      path.join(UPLOAD_DIR, filename),
-      Buffer.from(await file.arrayBuffer()),
-    );
+    await writeFile(path.join(UPLOAD_DIR, filename), encoded.bytes);
   } catch (error) {
     console.error("[upload] не удалось записать файл", error);
     const noSpace =

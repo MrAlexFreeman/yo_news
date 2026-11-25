@@ -148,6 +148,15 @@ export function RiverArticleCard({
               src={article.coverImage as string}
               alt=""
               sizes="(max-width: 768px) 100vw, (max-width: 1280px) 60vw, 460px"
+              /*
+                The lead card is the LCP element of the home page, and it used to be the
+                only cover on the site still marked `loading="lazy"` — the audit measured
+                LCP 2.53 s with the image deferred until layout decided it was needed.
+                `preload` emits the `<link rel="preload">` and loads it eagerly; every
+                other card in the river stays lazy, because preloading eleven photographs
+                would trade one fast image for eleven slow ones.
+              */
+              preload={lead}
               className="h-full w-full object-cover object-top transition-transform duration-500 group-hover:scale-[1.02]"
             />
           </Link>

@@ -14,6 +14,30 @@ const nextConfig: NextConfig = {
       { protocol: "http", hostname: "**" },
     ],
     dangerouslyAllowSVG: false,
+    /*
+      The default is 60 seconds: an optimised variant whose URL has not been seen for a
+      minute is re-encoded from the source on the next request. Upload filenames are UUIDs
+      and the bytes behind them now change only when the file is replaced deliberately, so
+      a variant can be kept for a month. On a single core this is CPU spent once per size
+      instead of once per minute, and it is what makes a cold cache stop being a slow page.
+    */
+    minimumCacheTTL: 60 * 60 * 24 * 30,
+  },
+
+  /**
+   * Static art under `public/` is served by Next with `cache-control: public, max-age=0`,
+   * so every repeat visit re-downloads the mascots (127 KB and 140 KB) and revalidates the
+   * icons. The audit counted both as missing cache policy. Names here change only when the
+   * artwork does, which is rare and under our control — a month is long enough to remove
+   * the re-download and short enough that a replaced mascot is not stranded for a year.
+   */
+  async headers() {
+    const artCache = "public, max-age=2592000, stale-while-revalidate=604800";
+    return [
+      { source: "/mascots/:path*", headers: [{ key: "Cache-Control", value: artCache }] },
+      { source: "/icons/:path*", headers: [{ key: "Cache-Control", value: artCache }] },
+      { source: "/placeholder.png", headers: [{ key: "Cache-Control", value: artCache }] },
+    ];
   },
 
   /**
