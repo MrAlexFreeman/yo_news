@@ -34,8 +34,29 @@ export const BODY_IMAGE_WIDTH = 1200;
 /** Quality used by `next/image` by default; stated so the URL is readable. */
 export const BODY_IMAGE_QUALITY = 75;
 
+/**
+ * Width for the small fixed thumbnails (80–120 px on screen).
+ *
+ * 256 is the nearest allowed `imageSizes` value to 2× of them. `next/image` rejects a
+ * width it does not know with HTTP 400, and that failure would show up as a broken
+ * thumbnail rather than as an error — so the list is not something to invent a number for.
+ */
+export const THUMBNAIL_IMAGE_WIDTH = 256;
+
 /** A stored file this server owns and the optimiser can read. */
 const LOCAL_UPLOAD = /^\/uploads\/[^"'\s?#<>]+\.(?:jpe?g|png|webp)$/i;
+
+/**
+ * The optimiser URL for one local upload, or the original address when it is not local.
+ *
+ * Used by the body transform and by the two blocks that print fixed-size thumbnails with a
+ * plain `<img>`: the sidebar and «Читайте также». Measured before: an 80×80 thumbnail
+ * downloaded a 293 KB original, four of them on every article page.
+ */
+export function optimisedUploadSrc(src: string, width = BODY_IMAGE_WIDTH): string {
+  if (!LOCAL_UPLOAD.test(src)) return src;
+  return `/_next/image?url=${encodeURIComponent(src)}&w=${width}&q=${BODY_IMAGE_QUALITY}`;
+}
 
 /** The `src` of one `<img>`, double- or single-quoted as the sanitiser leaves it. */
 function srcOf(tag: string): { attribute: string; value: string } | null {
@@ -62,10 +83,7 @@ export function optimiseBodyImages(html: string): string {
     const src = srcOf(tag);
     if (!src || !LOCAL_UPLOAD.test(src.value)) return tag;
 
-    const optimised =
-      `/_next/image?url=${encodeURIComponent(src.value)}` +
-      `&w=${BODY_IMAGE_WIDTH}&q=${BODY_IMAGE_QUALITY}`;
-
+    const optimised = optimisedUploadSrc(src.value);
     return tag.replace(src.attribute, `src="${optimised}"`);
   });
 }

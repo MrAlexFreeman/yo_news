@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 
 import { MAX_UPLOAD_EDGE, encodeUpload } from "../src/lib/upload-encode";
-import { optimiseBodyImages } from "../src/lib/body-images";
+import { optimiseBodyImages, optimisedUploadSrc, THUMBNAIL_IMAGE_WIDTH } from "../src/lib/body-images";
 
 const sharp = (await import("sharp")).default;
 
@@ -172,6 +172,28 @@ check(
   "Быстрый путь: HTML без /uploads возвращается тем же значением",
   optimiseBodyImages(noUploads) === noUploads,
   "без изменений",
+);
+
+check(
+  "Миниатюра 80 px отдаётся через оптимизатор шириной 256, а не полным файлом",
+  optimisedUploadSrc("/uploads/a.jpg", THUMBNAIL_IMAGE_WIDTH) ===
+    "/_next/image?url=%2Fuploads%2Fa.jpg&w=256&q=75",
+  optimisedUploadSrc("/uploads/a.jpg", THUMBNAIL_IMAGE_WIDTH),
+);
+check(
+  "Внешняя миниатюра остаётся своим адресом",
+  optimisedUploadSrc("https://images.unsplash.com/p.jpg", THUMBNAIL_IMAGE_WIDTH) ===
+    "https://images.unsplash.com/p.jpg",
+  "без изменений",
+);
+
+const thumbnails = ["../src/components/article-sidebar.tsx", "../src/components/read-also-block.tsx"].map(
+  (file) => readFileSync(new URL(file, import.meta.url), "utf8"),
+);
+check(
+  "Боковая колонка и «Читайте также» берут миниатюры через optimisedUploadSrc",
+  thumbnails.every((source) => source.includes("optimisedUploadSrc(")),
+  "оба блока",
 );
 
 const articlePage = readFileSync(

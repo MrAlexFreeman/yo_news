@@ -1,6 +1,7 @@
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 
+import { THUMBNAIL_IMAGE_WIDTH, optimisedUploadSrc } from "@/lib/body-images";
 import { readingMinutes } from "@/lib/reading-time";
 import { READ_ALSO_KICKER } from "@/lib/read-also";
 
@@ -90,7 +91,7 @@ export function ReadAlsoBlock({ story }: { story: ReadAlsoStory }) {
           // a {/* ... */} in that position is what the parser choked on.
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={cover}
+            src={optimisedUploadSrc(cover, THUMBNAIL_IMAGE_WIDTH)}
             alt=""
             loading="lazy"
             decoding="async"

@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { ArticleShare } from "@/components/article-share";
+import { THUMBNAIL_IMAGE_WIDTH, optimisedUploadSrc } from "@/lib/body-images";
 import { ForumTopicsBlock } from "@/components/forum-topics";
 import { NowReading } from "@/components/now-reading";
 import { SubscribeBlock } from "@/components/subscribe-block";
@@ -134,9 +135,11 @@ export async function ArticleSidebar({
                         <span className="shrink-0">
                           {/* eslint-disable-next-line @next/next/no-img-element --
                               A fixed 80×80 thumbnail in a list of four does not need
-                              the image optimiser; CoverImage is for full-bleed art. */}
+                              next/image's layout machinery — but it does need the optimiser
+                              for its bytes. Measured: this row downloaded four 224–293 KB
+                              originals to paint four 80 px squares. */}
                           <img
-                            src={item.coverImage}
+                            src={optimisedUploadSrc(item.coverImage, THUMBNAIL_IMAGE_WIDTH)}
                             alt=""
                             width={80}
                             height={80}
