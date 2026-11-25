@@ -108,8 +108,44 @@ fi
 echo "==> applying migrations"
 npx prisma migrate deploy
 
+# Bring the app back if anything below fails, so a broken deploy does not leave the site
+# down. Harmless on success: by then the process is already online.
+start_app_if_down() {
+  if ! pm2 list --no-color | grep -q "$APP_NAME.*online"; then
+    echo "==> $APP_NAME is not running — starting it" >&2
+    PM2_APP="$APP_NAME" pm2 startOrReload ecosystem.config.cjs >&2 || true
+    pm2 save >/dev/null 2>&1 || true
+  fi
+}
+trap start_app_if_down EXIT
+
+# On a small box the build and the running app do not fit in memory together.
+#
+# Measured on 2026-11-25 on this 709 MB VPS: `next build` was killed by the OOM killer
+# (anon-rss ~500 MB) while the app was running, twice. The first attempt left `.next`
+# half-written — 1.7 MB instead of ~1 GB — and the site kept answering from the old
+# process in memory, which could not be restarted. A build with the app stopped completed.
+#
+# So the app is stopped for the build on hosts below 1 GB and started again right after;
+# the downtime is the build itself. A larger host builds with the app running, as before.
+TOTAL_MB=$(free -m | awk 'NR==2 {print $2}')
+if [ "$TOTAL_MB" -lt 1024 ]; then
+  echo "==> stopping $APP_NAME for the build (${TOTAL_MB} MB RAM: the build needs most of it)"
+  pm2 stop "$APP_NAME" >/dev/null 2>&1 || true
+  sync
+  # Page cache is not memory the build can use, but dropping it makes the kernel reclaim
+  # free pages instead of reaching for the OOM killer on the first spike.
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+else
+  echo "==> ${TOTAL_MB} MB RAM: building with $APP_NAME running"
+fi
+
 echo "==> building (NODE_OPTIONS=$NODE_OPTIONS_VALUE)"
 NODE_OPTIONS="$NODE_OPTIONS_VALUE" npm run build
+
+echo "==> starting $APP_NAME"
+PM2_APP="$APP_NAME" pm2 startOrReload ecosystem.config.cjs
+pm2 save >/dev/null 2>&1 || true
 
 echo "==> trusting the Ministry of Digital Development CA (for MAX)"
 # MAX is served with a certificate from the Russian Trusted CA, which is in neither
