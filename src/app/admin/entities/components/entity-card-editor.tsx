@@ -4,6 +4,7 @@ import { Loader2, Upload, X } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { ENTITY_MAX_SUMMARY, cleanEntityWhitespace, slugify } from "@/lib/entity-card";
+import { readUploadJson } from "@/lib/upload-image";
 import { cn } from "@/lib/utils";
 
 /**
@@ -120,8 +121,8 @@ export function EntityCardEditor({
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-        const payload = (await response.json()) as { url?: string };
-        if (!payload.url) throw new Error("Сервер не вернул адрес файла");
+        const payload = await readUploadJson(response);
+        if (!payload.url) throw new Error(payload.error ?? "Сервер не вернул адрес файла");
         uploaded.push(payload.url);
       }
 

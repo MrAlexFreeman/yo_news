@@ -66,6 +66,30 @@ else
 fi
 echo "    $(git log --oneline -1)"
 
+echo "==> checking free space"
+# An 8.7 GB box with a ~1 GB build cache, a ~1 GB node_modules and a journald log that
+# grew to 844 MB will fill up. Measured on 2026-11-25: the disk reached 100%, `writeFile`
+# in /api/upload started failing, and the editor got an HTML error page where JSON was
+# expected. Free what is safe to free, then refuse to build rather than fill the disk again.
+free_mb() { df -Pm / | awk 'NR==2 {print $4}'; }
+
+AVAILABLE_MB=$(free_mb)
+echo "    free: ${AVAILABLE_MB} MB"
+if [ "$AVAILABLE_MB" -lt 2048 ]; then
+  echo "    below 2048 MB — cleaning build, npm and apt caches and the journal"
+  rm -rf .next/cache
+  npm cache clean --force >/dev/null 2>&1 || true
+  apt-get clean >/dev/null 2>&1 || true
+  journalctl --vacuum-size=200M >/dev/null 2>&1 || true
+  AVAILABLE_MB=$(free_mb)
+  echo "    free after cleaning: ${AVAILABLE_MB} MB"
+fi
+if [ "$AVAILABLE_MB" -lt 1200 ]; then
+  echo "ERROR: only ${AVAILABLE_MB} MB free; install and build need about 1.2 GB." >&2
+  echo "       Remove old logs, backups or uploads, then run again." >&2
+  exit 1
+fi
+
 echo "==> installing dependencies"
 # `npm ci` wipes node_modules and reinstalls from the lockfile. It also runs
 # postinstall, which is `prisma generate` — but see below for why that is not enough.
@@ -208,3 +232,4 @@ fi
 pm2 list --no-color | grep "$APP_NAME"
 
 echo "==> done: $(git log --oneline -1)"
+echo "    disk: $(df -h / | awk 'NR==2 {print $3 " used, " $4 " free (" $5 ")"}')"

@@ -69,11 +69,33 @@ export async function POST(request: Request) {
   // filename, so a crafted name cannot influence the stored path.
   const filename = `${randomUUID()}${extension}`;
 
-  await mkdir(UPLOAD_DIR, { recursive: true });
-  await writeFile(
-    path.join(UPLOAD_DIR, filename),
-    Buffer.from(await file.arrayBuffer()),
-  );
+  /*
+    A failed write is answered in JSON, like every other failure on this route.
+
+    Measured on production when the disk filled: `writeFile` rejected, Next answered with
+    its HTML error page, and every caller's `response.json()` died with
+    `Unexpected token '<', "<html> <h"… is not valid JSON`. The editor was shown a parser
+    error for a server that had run out of space — the one message that could not help.
+  */
+  try {
+    await mkdir(UPLOAD_DIR, { recursive: true });
+    await writeFile(
+      path.join(UPLOAD_DIR, filename),
+      Buffer.from(await file.arrayBuffer()),
+    );
+  } catch (error) {
+    console.error("[upload] не удалось записать файл", error);
+    const noSpace =
+      error instanceof Error && /ENOSPC|no space left/i.test(`${error.message} ${error.name}`);
+    return NextResponse.json(
+      {
+        error: noSpace
+          ? "На сервере закончилось место — файл не сохранён. Сообщите администратору."
+          : "Не удалось сохранить файл на сервере. Попробуйте ещё раз.",
+      },
+      { status: noSpace ? 507 : 500 },
+    );
+  }
 
   return NextResponse.json(
     { url: `/uploads/${filename}` },

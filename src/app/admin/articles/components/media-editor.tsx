@@ -20,6 +20,7 @@ import {
   type MediaItem,
 } from "@/lib/article-media";
 import { readImageDimensions } from "@/lib/image-dimensions";
+import { readUploadJson } from "@/lib/upload-image";
 import { cn } from "@/lib/utils";
 
 /**
@@ -126,7 +127,7 @@ export function MediaEditor({ items, onChange }: MediaEditorProps) {
         const body = new FormData();
         body.append("file", file);
         const response = await fetch("/api/upload", { method: "POST", body });
-        const payload = (await response.json()) as { url?: string; error?: string };
+        const payload = await readUploadJson(response);
 
         if (!response.ok || !payload.url) {
           problems.push(`${file.name}: ${payload.error ?? "загрузка не удалась"}`);

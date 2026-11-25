@@ -63,6 +63,7 @@ import { AI_GENERATED_SOURCE } from "@/lib/photo-sources";
 import { RewritePanel } from "@/app/admin/articles/components/rewrite-panel";
 import { QualityChecklist } from "@/app/admin/articles/components/quality-checklist";
 import { canSetDzenExperiment } from "@/lib/dzen-experiment";
+import { readUploadJson } from "@/lib/upload-image";
 import {
   DZEN_MIN_CARD_WIDTH,
   NARROW_COVER_WARNING,
@@ -672,10 +673,7 @@ export function ArticleForm({
       body.append("file", file);
 
       const response = await fetch("/api/upload", { method: "POST", body });
-      const payload = (await response.json()) as {
-        url?: string;
-        error?: string;
-      };
+      const payload = await readUploadJson(response);
 
       if (!response.ok || !payload.url) {
         throw new Error(payload.error ?? "Не удалось загрузить файл.");
