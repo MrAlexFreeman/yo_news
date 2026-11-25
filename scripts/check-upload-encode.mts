@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 
 import { MAX_UPLOAD_EDGE, encodeUpload } from "../src/lib/upload-encode";
+import { optimiseBodyImages } from "../src/lib/body-images";
 
 const sharp = (await import("sharp")).default;
 
@@ -130,6 +131,57 @@ check(
   "GIF под видом image/png отвергается, а не сохраняется как .png",
   disguised === null,
   disguised ? `принят как ${disguised.format}` : "null — 415",
+);
+
+// --- фотографии в тексте идут через оптимизатор ------------------------------
+
+const bodyFigure =
+  '<figure class="article-figure"><img src="/uploads/a.jpg" alt="Клюква"><figcaption>Фото: РИА</figcaption></figure>';
+const optimised = optimiseBodyImages(bodyFigure);
+check(
+  "Текст статьи: локальный /uploads становится URL оптимизатора, alt и подпись на месте",
+  optimised.includes(
+    'src="/_next/image?url=%2Fuploads%2Fa.jpg&w=1200&q=75"',
+  ) &&
+    optimised.includes('alt="Клюква"') &&
+    optimised.includes("<figcaption>Фото: РИА</figcaption>"),
+  optimised.slice(0, 120),
+);
+
+const external = '<p><img src="https://images.unsplash.com/photo-1.jpg" alt="п"></p>';
+check(
+  "Внешняя картинка не переписывается (чужой CDN не наш)",
+  optimiseBodyImages(external) === external,
+  "без изменений",
+);
+
+const untouched = [
+  '<img src="/_next/image?url=%2Fuploads%2Fa.jpg&w=1200&q=75" alt="">',
+  '<img src="/uploads/logo.svg" alt="">',
+  '<img src="/uploads/a.jpg?v=2" alt="">',
+  '<img data-src="/uploads/a.jpg" alt="">',
+].join("");
+check(
+  "Уже оптимизированное, SVG, query-строка и data-src не трогаются",
+  optimiseBodyImages(untouched) === untouched,
+  "без изменений",
+);
+
+const noUploads = "<p>Текст без картинок</p>";
+check(
+  "Быстрый путь: HTML без /uploads возвращается тем же значением",
+  optimiseBodyImages(noUploads) === noUploads,
+  "без изменений",
+);
+
+const articlePage = readFileSync(
+  new URL("../src/app/(public)/news/[slug]/page.tsx", import.meta.url),
+  "utf8",
+);
+check(
+  "Страница статьи прогоняет тело через оптимизатор после санитайзера",
+  /optimiseBodyImages\(stripTrailingKicker\(sanitizeArticleHtml\(/.test(articlePage),
+  "sanitize → optimiseBodyImages",
 );
 
 // --- маршрут и конфигурация действительно используют это ----------------------

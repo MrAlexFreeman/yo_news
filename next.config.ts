@@ -6,6 +6,19 @@ import {
 } from "./src/lib/categories";
 
 const nextConfig: NextConfig = {
+  /**
+   * Type errors are a gate, but not this one.
+   *
+   * `next build` runs `tsc` inside its own process, next to Turbopack's compiled graph. On
+   * the 709 MB deployment that phase is what the OOM killer takes first: both failed builds
+   * of 2026-11-25 printed "Compiled successfully", then "Running TypeScript ...", then a
+   * kill, and left `.next` without a BUILD_ID. `deploy.sh` therefore runs `npm run typecheck`
+   * as its own step before the build — same compiler, same config, the whole box to itself —
+   * and `npm run check` has always included it. Nothing is shipped that `tsc --noEmit` has
+   * not approved; it is only checked in a process that can survive.
+   */
+  typescript: { ignoreBuildErrors: true },
+
   images: {
     // Editors paste cover URLs from arbitrary hosts, so next/image cannot be
     // restricted to one CDN. Patterns stay on http(s) only, SVG stays off.

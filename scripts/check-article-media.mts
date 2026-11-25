@@ -101,9 +101,11 @@ async function main() {
     );
 
     check(
-      "Статья: картинка ведёт на загруженный файл",
-      visible.includes(`src="${COVER_URL}"`),
-      COVER_URL,
+      "Статья: картинка отдаётся через оптимизатор и ведёт на загруженный файл",
+      visible.includes(
+        `src="/_next/image?url=${encodeURIComponent(COVER_URL)}&w=1200&q=75"`,
+      ),
+      (visible.match(/<figure class="article-figure">[\s\S]{0,220}/) ?? ["нет figure"])[0],
     );
 
     check(

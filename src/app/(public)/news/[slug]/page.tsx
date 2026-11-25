@@ -19,6 +19,7 @@ import { SubscribeBlock } from "@/components/subscribe-block";
 import { ViewCounter } from "@/components/view-counter";
 import type { LoopCardStory } from "@/components/loop-card";
 import { parseMedia } from "@/lib/article-media";
+import { optimiseBodyImages } from "@/lib/body-images";
 import { plainTextPreview, stripTrailingKicker } from "@/lib/article-html";
 import { composeLoopRows, pickStable, splitForLoop } from "@/lib/content-loop";
 import { automaticPlateAllowed, splitAroundReadAlso } from "@/lib/read-also";
@@ -200,7 +201,7 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     the end is neither rendered nor counted as a paragraph the plate could be placed after.
     See `stripTrailingKicker` for what it does and does not touch.
   */
-  const body = stripTrailingKicker(sanitizeArticleHtml(article.contentHtml));
+  const body = optimiseBodyImages(stripTrailingKicker(sanitizeArticleHtml(article.contentHtml)));
 
   /*
     The body, taken apart at whatever plates it carries — read once, from the sanitised

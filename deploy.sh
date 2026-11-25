@@ -140,8 +140,50 @@ else
   echo "==> ${TOTAL_MB} MB RAM: building with $APP_NAME running"
 fi
 
+# The working build is kept aside before anything replaces it.
+#
+# Measured on the deploy of 438f173: `next build` was killed while "Running TypeScript",
+# leaving `.next` at 48 MB without a BUILD_ID. The EXIT trap then did what it is told to do
+# — started the process — and the process exited with "Could not find a production build
+# in the '.next' directory". A failed deploy took the site down while the previous build
+# was perfectly good. Copying it first turns that failure into a no-op: the copy is put
+# back and the app starts on the build that was live a minute ago.
+PREVIOUS_BUILD=".next.previous"
+rm -rf "$PREVIOUS_BUILD"
+if [ -f .next/BUILD_ID ]; then
+  cp -a .next "$PREVIOUS_BUILD"
+  echo "==> keeping the current build aside ($(du -sh "$PREVIOUS_BUILD" | cut -f1))"
+fi
+
+# Type checking is its own step, not a phase inside `next build`.
+#
+# In the same process as Turbopack's compiled graph, `tsc` is what died: both failed builds
+# printed "Compiled successfully", then "Running TypeScript ...", then a kill. Run alone it
+# has the whole box, and a type error now fails the deploy before any output file is
+# replaced — which is the same gate, earlier and with the previous build untouched.
+echo "==> type checking"
+if ! NODE_OPTIONS="$NODE_OPTIONS_VALUE" npm run typecheck; then
+  echo "ERROR: typecheck failed — the build was not attempted, the previous build is intact." >&2
+  exit 1
+fi
+
 echo "==> building (NODE_OPTIONS=$NODE_OPTIONS_VALUE)"
-NODE_OPTIONS="$NODE_OPTIONS_VALUE" npm run build
+if ! NODE_OPTIONS="$NODE_OPTIONS_VALUE" npm run build; then
+  echo "WARNING: the build failed — clearing the build cache and retrying once" >&2
+  rm -rf .next/cache
+  sync
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+  if ! NODE_OPTIONS="$NODE_OPTIONS_VALUE" npm run build; then
+    echo "ERROR: the build failed twice." >&2
+    if [ -d "$PREVIOUS_BUILD" ]; then
+      rm -rf .next
+      mv "$PREVIOUS_BUILD" .next
+      echo "    restored the previous build; the site will start on it." >&2
+    fi
+    exit 1
+  fi
+fi
+rm -rf "$PREVIOUS_BUILD"
 
 echo "==> starting $APP_NAME"
 PM2_APP="$APP_NAME" pm2 startOrReload ecosystem.config.cjs
